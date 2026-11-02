@@ -1,3 +1,4 @@
+import copy
 import json
 import random
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from so101.control_model.simulation_dataset import EntityTrajectoryDataset
 from so101.evaluate_entity_sim import EntityPolicy
 import so101.evaluate_entity_sim as evaluator
 import so101.train_entity_sim as trainer
+from so101.resume_rng import plan_device_rng
 
 
 def test_triangular_schedule_peaks_at_early_warmup_then_decays():
@@ -23,6 +25,98 @@ def test_triangular_schedule_peaks_at_early_warmup_then_decays():
     assert all(left >= right for left, right in zip(values[500:-1], values[501:], strict=True))
     assert trainer.scheduled_learning_rate(750, 5000, 1e-5, "triangular", .1) == values[750]
     assert trainer.scheduled_learning_rate(750, 5000, 1e-5, "constant") == 1e-5
+
+
+def test_sft_full_state_migration_preserves_model_adam_sampling_and_cpu_rng(tmp_path, monkeypatch):
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    model(torch.ones(1, 2)).sum().backward()
+    optimizer.step()
+    sampling = np.random.default_rng(42)
+    config = {"device": "cpu", "learning_rate": 1e-5, "validation_interval": 96}
+    path = tmp_path / "training_state.pt"
+    trainer.save_training_state(path, model, optimizer, 304, sampling, {
+        "run_config": config, "steps": [{"step": 304, "samples_seen": 19456}],
+    })
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    assert state["rng"]["backend"] == "cpu"
+    original_model = {key: value.clone() for key, value in state["model"].items()}
+    original_optimizer = copy.deepcopy(state["optimizer"])
+    expected_sampling = np.random.default_rng()
+    expected_sampling.bit_generator.state = state["rng"]["sampling"]
+    # Legacy MPS states identify their backend through run_config.device.
+    state["rng"].pop("backend")
+    state["log"]["run_config"]["device"] = "mps"
+    state["rng"]["device"] = torch.tensor([1, 2, 3], dtype=torch.uint8)
+    with pytest.raises(ValueError, match="explicitly allow"):
+        plan_device_rng(state, "cuda")
+    target = torch.nn.Linear(2, 1)
+    target_optimizer = torch.optim.AdamW(target.parameters(), lr=1e-3)
+    target_sampling = np.random.default_rng(99)
+    seeded = []
+    monkeypatch.setattr(torch.cuda, "manual_seed", seeded.append)
+    monkeypatch.setattr(torch.cuda, "set_rng_state", lambda *args: pytest.fail("foreign RNG applied"))
+    log = trainer.restore_training_state(
+        state, target, target_optimizer, target_sampling, {**config, "device": "cuda"},
+        plan_device_rng(state, "cuda", True, 61000),
+    )
+    assert seeded == [61000]
+    assert log["steps"] == [{"step": 304, "samples_seen": 19456}]
+    assert log["run_config"]["device"] == "cuda"
+    assert log["device_rng_migrations"][-1]["bit_exact"] is False
+    for name, value in target.named_parameters():
+        torch.testing.assert_close(value, original_model[name], rtol=0, atol=0)
+    actual_optimizer = target_optimizer.state_dict()
+    for key, original in original_optimizer["state"].items():
+        for name, value in original.items():
+            torch.testing.assert_close(actual_optimizer["state"][key][name], value, rtol=0, atol=0)
+    assert target_optimizer.param_groups[0]["lr"] == 1e-5
+    assert target_sampling.random() == expected_sampling.random()
+    assert random.getstate() == state["rng"]["python"]
+    np.testing.assert_array_equal(np.random.get_state()[1], state["rng"]["numpy"][1])
+    torch.testing.assert_close(torch.random.get_rng_state(), state["rng"]["torch"], rtol=0, atol=0)
+    assert torch.load(path, map_location="cpu", weights_only=False)["log"]["run_config"]["device"] == "cpu"
+
+
+def test_sft_same_backend_recovery_reproduces_next_optimizer_update(tmp_path):
+    random.seed(17)
+    np.random.seed(18)
+    torch.manual_seed(19)
+    sampling = np.random.default_rng(20)
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    config = {"device": "cpu", "learning_rate": 1e-5, "validation_interval": 96}
+
+    def update(policy, adam, generator):
+        adam.zero_grad()
+        batch = torch.randn(4, 2) + generator.random() + random.random() + np.random.random()
+        loss = policy(batch).square().mean()
+        loss.backward()
+        adam.step()
+        return loss.detach()
+
+    update(model, optimizer, sampling)
+    path = tmp_path / "training_state.pt"
+    trainer.save_training_state(path, model, optimizer, 1, sampling, {
+        "run_config": config, "steps": [{"step": 1, "samples_seen": 64}],
+    })
+    expected_loss = update(model, optimizer, sampling)
+    target = torch.nn.Linear(2, 1)
+    target_adam = torch.optim.AdamW(target.parameters(), lr=1e-3)
+    target_rng = np.random.default_rng(999)
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    log = trainer.restore_training_state(
+        state, target, target_adam, target_rng, config, plan_device_rng(state, "cpu"),
+    )
+    actual_loss = update(target, target_adam, target_rng)
+    torch.testing.assert_close(actual_loss, expected_loss, rtol=0, atol=0)
+    for actual, expected in zip(target.parameters(), model.parameters(), strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for actual, expected in zip(target_adam.state.values(), optimizer.state.values(), strict=True):
+        for key in expected:
+            torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
+    assert log["steps"] == [{"step": 1, "samples_seen": 64}]
+    assert "device_rng_migrations" not in log
 
 
 @pytest.mark.parametrize("warmup", [0, 1, float("nan")])

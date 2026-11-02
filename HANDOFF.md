@@ -173,11 +173,16 @@ Local originals are retained. Nothing has been launched for training on AWS.
    GPU-launch permissions, trusted credential broker, cost/hour bounds,
    interruption recovery, and independent shutdown backstop are not ready.
    Review `docs/AWS_SPOT_OPERATIONS.md` before implementing those pieces.
-3. Qualify cross-device continuation explicitly. `sweep_entity_sft.py`
-   currently hardcodes `--device mps`; it cannot run unchanged on Linux.
-   MPS device RNG state cannot simply be loaded as CUDA RNG state. Preserve
-   optimizer/sample history, identify unavoidable RNG differences, and do not
-   claim bitwise-identical cross-device recovery.
+3. Qualify cross-device continuation explicitly. `sweep_entity_sft.py` accepts
+   `--device cuda` while retaining MPS as the default and preserving the recipe.
+   Both SFT and RL require `--allow-device-rng-migration --device-rng-seed SEED`
+   for a backend change. Legacy SFT states identify their backend through saved
+   `run_config.device`; new states also record it in RNG metadata. Foreign RNG
+   bytes are never applied to the new accelerator. CPU/sampling RNG, model,
+   Adam state, sample history, and the continuous log are restored; the new
+   device RNG is explicitly seeded and the non-bitwise migration is recorded.
+   Source support is not CUDA recovery qualification. Do not clear original
+   STOP or restart training without the runtime qualification/handoff above.
 4. Only after runtime qualification and launch approval, explicitly clear
    `STOP` and resume the second trial from update304, then finish the approved
    grid serially. Do not silently change samples, batch, microbatch, learning

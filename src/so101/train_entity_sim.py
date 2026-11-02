@@ -27,9 +27,10 @@ from so101.control_model.modeling_entity_smolvla import (
     save_entity_checkpoint,
 )
 from so101.control_model.simulation_dataset import EntityTrajectoryDataset
-from so101.cloud_checkpoint import atomic_json
+from so101.cloud_checkpoint import atomic_json, validate_state
 from so101.evaluate_entity_sim import EntityPolicy
 from so101.robot_sim import BeamSimulation, MODEL_ROOT
+from so101.resume_rng import DeviceRNGPlan, plan_device_rng, restore_device_rng
 from so101.train_trajectory_rl import CorpusEpisode, validation_metrics
 
 
@@ -126,7 +127,8 @@ def forward_supervised_batch(
     )
 
 
-def resume_training_log(saved: dict, requested_config: dict, step: int) -> dict:
+def resume_training_log(saved: dict, requested_config: dict, step: int,
+                        allow_device_migration: bool = False) -> dict:
     previous_interval = saved["run_config"]["validation_interval"]
     previous_config = dict(saved["run_config"])
     if previous_config.pop("contrast_coefficient", 0) != 0:
@@ -135,8 +137,17 @@ def resume_training_log(saved: dict, requested_config: dict, step: int) -> dict:
         if name in requested_config:
             previous_config.setdefault(name, False)
     comparable = {**previous_config, "validation_interval": requested_config["validation_interval"]}
+    device_changed = previous_config.get("device") != requested_config.get("device")
+    if device_changed and allow_device_migration:
+        comparable["device"] = requested_config["device"]
     if comparable != requested_config:
         raise ValueError("Resumed SFT configuration must match its recorded schedule and split")
+    if device_changed:
+        saved.setdefault("configuration_changes", []).append({
+            "step": step, "setting": "device", "from": previous_config["device"],
+            "to": requested_config["device"],
+        })
+        saved["run_config"]["device"] = requested_config["device"]
     if previous_interval != requested_config["validation_interval"]:
         saved.setdefault("configuration_changes", []).append({
             "step": step, "setting": "validation_interval",
@@ -172,6 +183,7 @@ def save_training_state(
     if rng is not None:
         device = str(next(policy.parameters()).device).split(":")[0]
         state["rng"] = {
+            "backend": device,
             "sampling": rng.bit_generator.state, "python": random.getstate(),
             "numpy": np.random.get_state(), "torch": torch.random.get_rng_state(),
             "device": (torch.mps.get_rng_state() if device == "mps"
@@ -181,6 +193,32 @@ def save_training_state(
         state["log"] = log
     torch.save(state, temporary)
     temporary.replace(path)
+
+
+def restore_training_state(
+    state: dict,
+    policy: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    rng: np.random.Generator,
+    requested_config: dict,
+    device_rng_plan: DeviceRNGPlan,
+) -> dict:
+    log = resume_training_log(
+        state["log"], requested_config, int(state["step"]), device_rng_plan.migration,
+    )
+    named_parameters = dict(policy.named_parameters())
+    with torch.no_grad():
+        for name, value in state["model"].items():
+            named_parameters[name].copy_(value.to(named_parameters[name].device))
+    optimizer.load_state_dict(state["optimizer"])
+    for group in optimizer.param_groups:
+        group["lr"] = requested_config["learning_rate"]
+    rng.bit_generator.state = state["rng"]["sampling"]
+    random.setstate(state["rng"]["python"])
+    np.random.set_state(state["rng"]["numpy"])
+    torch.random.set_rng_state(state["rng"]["torch"].cpu())
+    restore_device_rng(device_rng_plan, state, torch)
+    return log
 
 
 def supervised_batch_losses(
@@ -361,6 +399,8 @@ def train(
     warmup_fraction: float = .1,
     supervised_validation_probe_enabled: bool = False,
     retain_validation_checkpoints: bool = False,
+    allow_device_rng_migration: bool = False,
+    device_rng_seed: int | None = None,
 ) -> None:
     scheduled_learning_rate(0, steps, learning_rate, learning_rate_schedule, warmup_fraction)
     if (
@@ -398,6 +438,11 @@ def train(
         raise ValueError("Frozen validation sources are missing from the requested collection")
     resume_state = (torch.load(training_state, map_location="cpu", weights_only=False)
                     if training_state is not None and training_state.exists() else None)
+    if resume_state is not None:
+        validate_state(resume_state)
+    device_rng_plan = (plan_device_rng(
+        resume_state, device, allow_device_rng_migration, device_rng_seed,
+    ) if resume_state is not None else None)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -478,29 +523,15 @@ def train(
     }
     validation_interval_changed = False
     if resume_state is not None:
+        assert device_rng_plan is not None
         state = resume_state
-        named_parameters = dict(policy.named_parameters())
-        with torch.no_grad():
-            for name, value in state["model"].items():
-                named_parameters[name].copy_(value.to(named_parameters[name].device))
-        optimizer.load_state_dict(state["optimizer"])
-        for group in optimizer.param_groups:
-            group["lr"] = learning_rate
         start_step = int(state["step"]) + 1
-        if "log" in state:
-            validation_interval_changed = (
-                state["log"]["run_config"]["validation_interval"] != validation_interval
-            )
-            log = resume_training_log(state["log"], log["run_config"], int(state["step"]))
-        if "rng" in state:
-            rng.bit_generator.state = state["rng"]["sampling"]
-            random.setstate(state["rng"]["python"])
-            np.random.set_state(state["rng"]["numpy"])
-            torch.random.set_rng_state(state["rng"]["torch"].cpu())
-            if device == "mps":
-                torch.mps.set_rng_state(state["rng"]["device"].cpu())
-            elif device == "cuda":
-                torch.cuda.set_rng_state(state["rng"]["device"].cpu())
+        validation_interval_changed = (
+            state["log"]["run_config"]["validation_interval"] != validation_interval
+        )
+        log = restore_training_state(
+            state, policy, optimizer, rng, log["run_config"], device_rng_plan,
+        )
         del state
         del resume_state
     log["memory_optimization"] = {
@@ -779,6 +810,8 @@ def main() -> None:
         default=0.,
     )
     parser.add_argument("--training-state", type=Path)
+    parser.add_argument("--allow-device-rng-migration", action="store_true")
+    parser.add_argument("--device-rng-seed", type=int)
     parser.add_argument("--checkpoint-interval", type=int, default=25)
     parser.add_argument(
         "--trainable-scope",
@@ -819,6 +852,8 @@ def main() -> None:
         args.warmup_fraction,
         args.supervised_validation_probe,
         args.retain_validation_checkpoints,
+        args.allow_device_rng_migration,
+        args.device_rng_seed,
     )
 
 

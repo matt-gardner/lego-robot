@@ -43,3 +43,21 @@ def test_jerk_comparison_excludes_failed_and_unshared_problems():
     assert comparison["problems"] == 1
     assert comparison["left_rms_jerk"] == 3
     assert comparison["right_rms_jerk"] == 2
+
+
+def test_cuda_device_selection_preserves_every_recipe_argument():
+    for trial in trials(24576, Path("outputs/sweep")):
+        original = command(trial)
+        cuda = command(trial, "cuda")
+        assert original[original.index("--device") + 1] == "mps"
+        cuda[cuda.index("--device") + 1] = "mps"
+        assert cuda == original
+        migrated = command(trial, "cuda", True, 61000)
+        assert migrated[:-3] == command(trial, "cuda")
+        assert migrated[-3:] == ["--allow-device-rng-migration", "--device-rng-seed", "61000"]
+
+
+@pytest.mark.parametrize("seed", [None, True, -1, 2**64])
+def test_sweep_migration_requires_valid_explicit_seed(seed):
+    with pytest.raises(ValueError, match="seed"):
+        command(trials(24576, Path("outputs/sweep"))[0], "cuda", True, seed)

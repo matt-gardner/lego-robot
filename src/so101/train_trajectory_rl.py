@@ -35,6 +35,7 @@ from so101.robot_sim import (
 from so101.cloud_checkpoint import publish as publish_resume_checkpoint
 from so101.cloud_checkpoint import atomic_json
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
+from so101.resume_rng import plan_device_rng, restore_device_rng
 
 
 TASKS = ("grasp", "view", "push", "place")
@@ -624,16 +625,9 @@ def restore_resume_state(
 ) -> dict[str, Any]:
     if state["step"] != state["log"]["steps"][-1]["step"]:
         raise ValueError("Resume model and log steps do not match")
-    device_rng = state["rng"]["device"]
-    source_backend = state["rng"].get(
-        "backend", state["log"].get("run_config", {}).get("device")
+    device_rng_plan = plan_device_rng(
+        state, controller.device, allow_device_rng_migration, device_rng_seed,
     )
-    migration = device_rng is not None and source_backend != controller.device
-    if migration and (not allow_device_rng_migration or device_rng_seed is None):
-        raise ValueError(
-            f"Device RNG backend {source_backend!r} cannot restore on "
-            f"{controller.device}; explicitly allow migration and supply a device RNG seed"
-        )
     parameters = dict(controller.policy.named_parameters())
     with torch.no_grad():
         for name, value in state["model"].items():
@@ -645,21 +639,7 @@ def restore_resume_state(
     random.setstate(state["rng"]["python"])
     np.random.set_state(state["rng"]["numpy"])
     torch.random.set_rng_state(state["rng"]["torch"].cpu())
-    if migration:
-        if controller.device == "cuda":
-            torch.cuda.manual_seed(device_rng_seed)
-        elif controller.device == "mps":
-            torch.mps.manual_seed(device_rng_seed)
-        state["log"].setdefault("device_rng_migrations", []).append({
-            "after_step": state["step"], "source": source_backend,
-            "target": controller.device, "seed": device_rng_seed,
-            "bit_exact": False,
-        })
-    elif device_rng is not None:
-        if controller.device == "mps":
-            torch.mps.set_rng_state(device_rng.cpu())
-        elif controller.device == "cuda":
-            torch.cuda.set_rng_state(device_rng.cpu())
+    restore_device_rng(device_rng_plan, state, torch)
     return state["log"]
 
 

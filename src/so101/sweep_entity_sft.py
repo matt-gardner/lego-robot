@@ -35,11 +35,18 @@ def trials(samples: int, output: Path) -> list[dict]:
     ]
 
 
-def command(trial: dict) -> list[str]:
-    return [
+def command(trial: dict, device: str = "mps", allow_device_rng_migration: bool = False,
+            device_rng_seed: int | None = None) -> list[str]:
+    if device not in ("cpu", "mps", "cuda"):
+        raise ValueError("Unsupported sweep device")
+    if allow_device_rng_migration and (
+        type(device_rng_seed) is not int or not 0 <= device_rng_seed < 2**64
+    ):
+        raise ValueError("Device RNG migration requires an explicit valid device RNG seed")
+    args = [
         sys.executable, "-u", "-m", "so101.train_entity_sim",
         "--collection", COLLECTION, "--output", trial["output"],
-        "--pretrained", "lerobot/smolvla_base", "--device", "mps",
+        "--pretrained", "lerobot/smolvla_base", "--device", device,
         "--steps", str(trial["steps"]), "--batch-size", str(trial["batch_size"]),
         "--history-steps", "4", "--depth-mode", "known",
         "--learning-rate", str(trial["learning_rate"]),
@@ -52,6 +59,9 @@ def command(trial: dict) -> list[str]:
         "--checkpoint-interval", str(max(1, trial["validation_interval"] // 4)),
         "--obstacle-input-end-probability", "1",
     ]
+    if allow_device_rng_migration:
+        args.extend(["--allow-device-rng-migration", "--device-rng-seed", str(device_rng_seed)])
+    return args
 
 
 def verify_log(log: dict, trial: dict, reference: dict) -> None:
@@ -207,7 +217,8 @@ def plots(output: Path, results: list[dict]) -> None:
     plt.close(figure)
 
 
-def run(output: Path, samples: int) -> None:
+def run(output: Path, samples: int, device: str = "mps",
+        allow_device_rng_migration: bool = False, device_rng_seed: int | None = None) -> None:
     plan = trials(samples, output)
     previous = json.loads(PREVIOUS.read_text())
     if previous["status"] != "completed" or active_run_outputs():
@@ -250,7 +261,9 @@ def run(output: Path, samples: int) -> None:
                 if log is None or log["status"] != "completed":
                     write("training", current_trial=trial)
                     with (output / f"{target.name}.stdout.log").open("a") as stream:
-                        child = subprocess.Popen(command(trial), env=env, stdout=stream,
+                        child = subprocess.Popen(command(
+                            trial, device, allow_device_rng_migration, device_rng_seed,
+                        ), env=env, stdout=stream,
                                                  stderr=subprocess.STDOUT)
                         write("training", trainer_pid=child.pid)
                         code = child.wait()
@@ -280,12 +293,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("outputs/entity_smolvla_sft_sweep_24576"))
     parser.add_argument("--samples", type=int, default=24576)
+    parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="mps")
+    parser.add_argument("--allow-device-rng-migration", action="store_true")
+    parser.add_argument("--device-rng-seed", type=int)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.dry_run:
-        print(json.dumps({"trials": trials(args.samples, args.output)}, indent=2))
+        plan = trials(args.samples, args.output)
+        print(json.dumps({"trials": plan, "commands": [
+            command(trial, args.device, args.allow_device_rng_migration, args.device_rng_seed)
+            for trial in plan
+        ]}, indent=2))
     else:
-        run(args.output, args.samples)
+        run(args.output, args.samples, args.device, args.allow_device_rng_migration, args.device_rng_seed)
 
 
 if __name__ == "__main__":

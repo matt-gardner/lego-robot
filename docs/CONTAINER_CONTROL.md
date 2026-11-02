@@ -272,6 +272,29 @@ ownership, or launch training. Guard installation/activation and later
 immutable start/stop orchestration still require separate operator integration
 and real qualification.
 
+### SFT device continuation source support
+
+The serial SFT driver accepts `--device cpu|mps|cuda` (default `mps`).
+Changing this option leaves the grid, sample counts, microbatch, seeds,
+learning-rate schedule, frozen probes, evaluation cadence, and retention flags
+unchanged. Its dry-run output includes the actual trainer commands.
+
+SFT and RL share backend-aware device RNG recovery. Cross-backend recovery
+requires both `--allow-device-rng-migration` and a valid explicit
+`--device-rng-seed`; otherwise it fails before restoring model/optimizer state.
+The source backend comes from saved RNG metadata, or the legacy saved
+`run_config.device`, never from the requested target. Same-backend recovery
+restores device RNG bytes without reseeding. A migration preserves CPU and
+sampling RNG, model/Adam state and optimizer/sample history, seeds only the
+target device RNG, and records `device_rng_migrations` with `bit_exact=false`.
+Only the device field may change under this opt-in; unrelated recipe changes
+remain rejected. New SFT saves record the RNG backend explicitly.
+
+This source support does not load or modify the stopped update-304 checkpoint,
+clear STOP, authorize training, or qualify CUDA/full-state recovery on a real
+worker. Keep using a separately verified attempt and the existing runtime
+handoff/qualification requirements.
+
 ### Offline AWS worker hard lease asset
 
 `src/so101/aws_worker_guard.py` and
