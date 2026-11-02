@@ -122,6 +122,44 @@ roles. Before enabling `gpu_enabled`, configure and qualify:
 5. Real CUDA dry-run/recovery qualification and an explicitly authorized,
    bounded paid lifecycle test before claiming the GPU path operational.
 
+### Proposed AWS resource contract
+
+These are **proposed names**, agreed for scoped operator inventory, not a
+deployment manifest or evidence of resource existence, permissions, or runtime
+qualification. Resolve inventory collisions before creating resources. Keep GPU
+jobs disabled until the prerequisites above are satisfied.
+
+| Resource or policy field | Proposed value |
+| --- | --- |
+| Region | `us-west-2` |
+| Worker IAM role and instance profile | `so101-gpu-worker` |
+| EC2 launch-template name | `so101-gpu-worker` |
+| Dedicated worker security-group name | `so101-gpu-worker` (no inbound rules) |
+| SSM start document | `so101-worker-start` |
+| SSM checkpoint-stop document | `so101-worker-checkpoint-stop` |
+| Scheduler group | `so101-worker` |
+| Scheduler termination role | `so101-worker-shutdown` |
+| CloudWatch log group / policy `log_prefix` | `/so101/worker` / `/so101/` |
+| Log stream | Exact broker job ID |
+| Artifact bucket | `so101-training-133961745003-us-west-2` |
+| Input object prefix | `inputs/lego-robot/` |
+| Recovery/output object prefix | `runs/lego-robot/` |
+| Policy `artifact_prefix` | `s3://so101-training-133961745003-us-west-2/runs/lego-robot/` |
+| Attempt output prefix | `runs/lego-robot/<job-id>/` |
+
+The bucket name comes from the operator-reported existing worker IAM policy;
+bucket existence, ownership, encryption, and versioning still need inventory.
+Versioned inputs and recovery require narrowly scoped `GetObjectVersion`, not
+just `GetObject`. Worker SSM-agent and log publishing permissions also need
+verification; naming agreement grants none of them.
+
+The existing internal broker ID remains `lego-robot`; schedule names remain
+`so101-<job-id>`. Do not reuse or modify the shared CPU security group for GPU
+workers. AMI ID, CUDA image digest, subnet/security-group IDs, actual launch
+template ID and numeric version, and SSM document numeric versions are
+**unselected**. Pin them only after inventory and qualification; never assume
+version `1`, `$Latest`, or a deployed ARN from a proposed name.
+
 ### Offline AWS worker hard lease asset
 
 `src/so101/aws_worker_guard.py` and
