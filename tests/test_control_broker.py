@@ -79,7 +79,8 @@ class BrokerTests(unittest.TestCase):
                 "ImageId": "ami-123abc", "InstanceType": "g6.2xlarge",
                 "UserData": base64.b64encode(b"qualified idle bootstrap").decode(),
                 "InstanceMarketOptions": {"MarketType": "spot", "SpotOptions": {"MaxPrice": "0.5"}},
-                "MetadataOptions": {"HttpTokens": "required"},
+                "MetadataOptions": {"HttpTokens": "required", "InstanceMetadataTags": "enabled"},
+                "InstanceInitiatedShutdownBehavior": "terminate",
                 "BlockDeviceMappings": [{"Ebs": {
                     "Encrypted": True, "DeleteOnTermination": True, "VolumeSize": 80,
                 }}],
@@ -251,6 +252,30 @@ class BrokerTests(unittest.TestCase):
         row = dict(self.broker.db.execute("SELECT * FROM jobs").fetchone())
         self.assertEqual(row["status"], "recovery-required")
         self.assertEqual(row["reserved"], .5)
+
+    def test_unsafe_shutdown_or_invisible_deadline_rejected_before_launch(self):
+        original = self.broker.run
+        for key, value in (
+            ("InstanceInitiatedShutdownBehavior", None),
+            ("InstanceInitiatedShutdownBehavior", "stop"),
+            ("MetadataOptions", {"HttpTokens": "required"}),
+            ("MetadataOptions", {"HttpTokens": "required", "InstanceMetadataTags": "disabled"}),
+        ):
+            with self.subTest(key=key, value=value):
+                def run(args, **kwargs):
+                    result = original(args, **kwargs)
+                    if "describe-launch-template-versions" in args:
+                        data = json.loads(result.stdout)
+                        data["LaunchTemplateVersions"][0]["LaunchTemplateData"][key] = value
+                        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(data))
+                    return result
+                self.broker.run = run
+                self.calls.clear()
+                with self.assertRaises(ValueError):
+                    self.broker.submit("session", "approved", self.digest())
+                self.assertFalse(any("run-instances" in args for args in self.calls))
+                self.broker.db.execute("DELETE FROM jobs")
+                self.broker.db.commit()
 
     def test_ambiguous_launch_reconciles_by_durable_job_tags(self):
         original = self.broker.run

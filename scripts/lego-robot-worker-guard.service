@@ -1,0 +1,21 @@
+[Unit]
+Description=Lego robot AWS worker hard lease guard
+Wants=network-online.target
+After=network-online.target
+Before=lego-robot-worker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 -I /opt/lego-robot-worker/aws_worker_guard.py
+Restart=always
+RestartSec=1
+TimeoutStopSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

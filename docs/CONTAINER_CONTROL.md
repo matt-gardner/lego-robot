@@ -75,7 +75,8 @@ start a policy. The job/digest/deadline are passed as EC2 tags. Bind each
 template version to the exact registered spec; qualification must demonstrate
 that a mismatched job digest fails before running anything. The broker checks
 template AMI, bootstrap hash, instance type, bounded one-time Spot pricing,
-IMDSv2, encrypted ephemeral disks, and disk-size policy before allocation.
+IMDSv2 with instance metadata tags enabled, OS-initiated shutdown set to
+`terminate`, encrypted ephemeral disks, and disk-size policy before allocation.
 This project does not yet include a qualified AWS worker bootstrap or
 SSM documents. Do not substitute the Azure worker.
 
@@ -120,6 +121,33 @@ roles. Before enabling `gpu_enabled`, configure and qualify:
    interruption checkpoint/upload, and durable recovery before terminating.
 5. Real CUDA dry-run/recovery qualification and an explicitly authorized,
    bounded paid lifecycle test before claiming the GPU path operational.
+
+### Offline AWS worker hard lease asset
+
+`src/so101/aws_worker_guard.py` and
+`scripts/lego-robot-worker-guard.service` are source assets, not an installed
+or qualified worker. The operator must install a root-owned, non-writable copy
+at `/opt/lego-robot-worker/aws_worker_guard.py` and the unit on the **GPU
+worker**, never the CPU controller. Enable it before staging or training.
+Do not run the guard on this coding host: it requests OS poweroff.
+
+The stdlib-only guard uses proxy-free IMDSv2 to read `so101-deadline` and the
+instance launch time. It expires at the earlier of the tagged deadline or
+launch plus twelve hours; restarting cannot renew that bound. After capture,
+both wall and monotonic clocks enforce the limit, so clock rollback cannot
+extend it. Missing/invalid/unavailable metadata fails closed to poweroff.
+Shutdown errors propagate and the unit retries. Metadata requests are bounded;
+the polling interval is five seconds. This is a hard backstop, not a promise
+of exact-second termination or successful AWS termination.
+
+The immutable template must expose metadata tags and use
+`InstanceInitiatedShutdownBehavior=terminate`; otherwise poweroff may merely
+stop a billable-storage instance. The broker now rejects either missing
+setting before launch. The worker identity must not permit deadline-tag
+changes. Keep the independent controller-created termination schedule.
+This asset does not yet implement Spot interruption checkpoint/upload,
+bootstrap staging, trainer start/stop, or S3 recovery. Those and live shutdown
+qualification remain prerequisites; do not enable GPU jobs from offline tests.
 
 ### Controller identity and credential refresh
 

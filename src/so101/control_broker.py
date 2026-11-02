@@ -376,6 +376,10 @@ class Broker:
                     raise ValueError("Spot template must have a bounded price and no persistent replacement")
                 if template.get("MetadataOptions", {}).get("HttpTokens") != "required":
                     raise ValueError("Worker must require IMDSv2")
+                if template.get("MetadataOptions", {}).get("InstanceMetadataTags") != "enabled":
+                    raise ValueError("Worker must expose lease tags through IMDSv2")
+                if template.get("InstanceInitiatedShutdownBehavior") != "terminate":
+                    raise ValueError("Worker OS shutdown must terminate the instance")
                 disks = template.get("BlockDeviceMappings", [])
                 if not disks or any(
                     not item.get("Ebs", {}).get("Encrypted")
