@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import configparser
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -35,15 +36,17 @@ def canonical(value: dict) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 
-def trusted_json(path: Path) -> dict:
-    info = path.stat()
-    if info.st_uid != 0 or info.st_mode & 0o022:
-        raise ValueError(f"Host policy must be root-owned and not group/world writable: {path}")
-    for parent in path.parents:
-        info = parent.stat()
+def trusted_text(path: Path) -> str:
+    resolved = path.resolve(strict=True)
+    for candidate in (path, *path.parents, resolved, *resolved.parents):
+        info = candidate.stat()
         if info.st_uid != 0 or info.st_mode & 0o022:
-            raise ValueError(f"Unsafe host policy parent: {parent}")
-    value = json.loads(path.read_text())
+            raise ValueError(f"Host file and parents must be root-owned and not writable: {candidate}")
+    return resolved.read_text()
+
+
+def trusted_json(path: Path) -> dict:
+    value = json.loads(trusted_text(path))
     if not isinstance(value, dict):
         raise ValueError(f"Expected a JSON object: {path}")
     return value
@@ -76,6 +79,7 @@ def validate_policy(policy: dict) -> None:
     if not isinstance(policy.get("gpu_enabled"), bool):
         raise ValueError("gpu_enabled must explicitly be true or false")
     if policy["gpu_enabled"]:
+        validate_controller_settings(policy)
         for key in ("max_hours", "max_usd_per_hour", "total_compute_usd", "max_disk_gib"):
             finite_positive(policy[key], key)
         if not 1 <= finite_positive(policy["checkpoint_grace_seconds"], "checkpoint grace") <= 600:
@@ -87,6 +91,64 @@ def validate_policy(policy: dict) -> None:
         for digest in policy.get("training_authorized_specs", []):
             if not DIGEST.fullmatch(digest):
                 raise ValueError("Training authorization must identify an exact spec digest")
+
+
+def validate_controller_settings(policy: dict) -> None:
+    if not isinstance(policy.get("aws_profile"), str) or not IDENTIFIER.fullmatch(policy["aws_profile"]):
+        raise ValueError("An explicit controller AWS profile is required")
+    if not re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/so101-controller",
+                        str(policy.get("controller_role_arn", ""))):
+        raise ValueError("The exact so101-controller role ARN is required")
+    for key in ("aws_cli", "aws_config"):
+        if not isinstance(policy.get(key), str) or not Path(policy[key]).is_absolute():
+            raise ValueError(f"{key} must be an absolute host path")
+    if policy.get("region") != "us-west-2":
+        raise ValueError("Only the qualified Oregon region is supported")
+
+
+def validate_controller_profile(policy: dict) -> None:
+    config = configparser.ConfigParser(interpolation=None)
+    config.read_string(trusted_text(Path(policy["aws_config"])))
+    section = "profile " + policy["aws_profile"]
+    expected = {
+        "role_arn": policy["controller_role_arn"],
+        "credential_source": "Ec2InstanceMetadata",
+        "region": policy["region"],
+    }
+    if config.defaults() or config.sections() != [section] or dict(config[section]) != expected:
+        raise ValueError("Controller config must contain only the pinned role and EC2 credential source")
+
+
+def controller_request(policy: dict, run, *args: str) -> dict:
+    validate_controller_settings(policy)
+    validate_controller_profile(policy)
+    # Do not inherit host access keys, alternate endpoints, profiles, or credential processes.
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/var/lib/lego-robot-control",
+        "AWS_CONFIG_FILE": policy["aws_config"],
+        "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+        "AWS_EC2_METADATA_DISABLED": "false",
+        "AWS_METADATA_SERVICE_TIMEOUT": "3",
+        "AWS_METADATA_SERVICE_NUM_ATTEMPTS": "1",
+        "AWS_MAX_ATTEMPTS": "1",
+    }
+    result = run([
+        policy["aws_cli"], *args, "--profile", policy["aws_profile"],
+        "--region", policy["region"], "--output", "json", "--no-cli-pager",
+    ], text=True, capture_output=True, check=True, timeout=60, env=environment)
+    return json.loads(result.stdout) if result.stdout.strip() else {}
+
+
+def verify_controller(policy: dict, run=subprocess.run) -> dict:
+    identity = controller_request(policy, run, "sts", "get-caller-identity")
+    account = policy["controller_role_arn"].split(":")[4]
+    prefix = f"arn:aws:sts::{account}:assumed-role/so101-controller/"
+    arn = identity.get("Arn")
+    if (identity.get("Account") != account or not isinstance(arn, str)
+            or not arn.startswith(prefix) or not arn.removeprefix(prefix)):
+        raise PermissionError("AWS caller is not the pinned so101-controller role")
+    return {"Account": account, "Arn": arn, "region": policy["region"]}
 
 
 def finite_positive(value: object, name: str) -> float:
@@ -175,6 +237,8 @@ class Broker:
     def __init__(self, policy: dict, state: Path, specs: Path, run=subprocess.run):
         validate_policy(policy)
         self.policy, self.specs, self.run = policy, specs, run
+        if policy["gpu_enabled"]:
+            verify_controller(policy, run)
         self.lock = threading.RLock()
         self.db = sqlite3.connect(state, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -188,15 +252,8 @@ class Broker:
         )
         self.db.commit()
 
-    def execute(self, args: list[str], timeout: int = 60) -> dict:
-        result = self.run(args, text=True, capture_output=True, check=True, timeout=timeout)
-        return json.loads(result.stdout) if result.stdout.strip() else {}
-
     def aws(self, *args: str) -> dict:
-        return self.execute([
-            self.policy["aws_cli"], *args, "--region", self.policy["region"],
-            "--output", "json", "--no-cli-pager",
-        ])
+        return controller_request(self.policy, self.run, *args)
 
     def identity(self, token: str, action: str) -> str:
         digest = hashlib.sha256(token.encode()).hexdigest()
@@ -447,7 +504,8 @@ class Broker:
             for job in jobs:
                 try:
                     self.status(job["owner"], job["id"])
-                except (OSError, subprocess.SubprocessError, RuntimeError, KeyError, ValueError):
+                except (OSError, subprocess.SubprocessError, RuntimeError, configparser.Error,
+                        KeyError, ValueError):
                     LOG.exception("GPU lease/checkpoint guard failed for %s", job["id"])
 
     def watch(self, stopped: threading.Event) -> None:
@@ -516,7 +574,7 @@ def make_server(broker: Broker, host: str, port: int) -> ThreadingHTTPServer:
                 self.reply(403, {"error": str(error)})
             except (ValueError, TypeError) as error:
                 self.reply(400, {"error": str(error)})
-            except (OSError, subprocess.SubprocessError, RuntimeError, KeyError, IndexError):
+            except (OSError, subprocess.SubprocessError, RuntimeError, configparser.Error, KeyError, IndexError):
                 LOG.exception("Broker operation failed: %s", self.path)
                 self.reply(503, {"error": "Host operation failed; inspect broker journal"})
 
@@ -551,6 +609,8 @@ def main() -> None:
     serve.add_argument("--cert", type=Path, required=True)
     serve.add_argument("--key", type=Path, required=True)
     sub.add_parser("token")
+    preflight = sub.add_parser("preflight", help="Read-only verification of the pinned AWS controller")
+    preflight.add_argument("--policy", type=Path, required=True)
     call = sub.add_parser("call")
     call.add_argument("action", choices=[
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
@@ -565,6 +625,8 @@ def main() -> None:
     if args.command == "token":
         token = secrets.token_urlsafe(48)
         print(json.dumps({"token": token, "token_sha256": hashlib.sha256(token.encode()).hexdigest()}))
+    elif args.command == "preflight":
+        print(json.dumps(verify_controller(trusted_json(args.policy))))
     elif args.command == "call":
         if urlsplit(args.url).scheme != "https":
             parser.error("Capabilities must be sent over verified HTTPS")

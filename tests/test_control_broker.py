@@ -11,7 +11,11 @@ from urllib.error import HTTPError
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from so101.control_broker import Broker, canonical, make_server, trusted_json, validate_spec, wait_for_dashboard
+from so101.control_broker import (
+    Broker, canonical, make_server, trusted_json,
+    validate_controller_profile, validate_controller_settings, validate_spec,
+    verify_controller, wait_for_dashboard,
+)
 
 
 class BrokerTests(unittest.TestCase):
@@ -24,6 +28,8 @@ class BrokerTests(unittest.TestCase):
             "dashboard_service": "so101-web.service",
             "dashboard_health_url": "http://127.0.0.1:8765/lego-robot/api/runs",
             "gpu_enabled": True, "broker_id": "lego-robot", "aws_cli": "/usr/bin/aws",
+            "aws_profile": "so101-controller", "aws_config": "/etc/lego-robot-control/aws-config",
+            "controller_role_arn": "arn:aws:iam::123456789012:role/so101-controller",
             "region": "us-west-2", "artifact_prefix": "s3://approved/lego-robot/",
             "instance_types": ["g6.2xlarge"], "amis": ["ami-123abc"],
             "max_hours": 2, "max_usd_per_hour": 1, "total_compute_usd": 4,
@@ -47,12 +53,16 @@ class BrokerTests(unittest.TestCase):
             "log_group": "/lego-robot/jobs",
         }
         self.calls = []
+        self.profile = patch("so101.control_broker.validate_controller_profile")
+        self.profile.start()
         self.broker = Broker(self.policy, self.root / "state.sqlite", self.root, self.command)
+        self.calls.clear()
         self.trust = patch("so101.control_broker.trusted_json", return_value=self.spec)
         self.trust.start()
 
     def tearDown(self):
         self.trust.stop()
+        self.profile.stop()
         self.broker.db.close()
         self.temporary.cleanup()
 
@@ -61,7 +71,10 @@ class BrokerTests(unittest.TestCase):
 
     def command(self, args, **kwargs):
         self.calls.append(args)
-        if "describe-launch-template-versions" in args:
+        if "get-caller-identity" in args:
+            data = {"Account": "123456789012",
+                    "Arn": "arn:aws:sts::123456789012:assumed-role/so101-controller/test"}
+        elif "describe-launch-template-versions" in args:
             data = {"LaunchTemplateVersions": [{"LaunchTemplateData": {
                 "ImageId": "ami-123abc", "InstanceType": "g6.2xlarge",
                 "UserData": base64.b64encode(b"qualified idle bootstrap").decode(),
@@ -98,6 +111,90 @@ class BrokerTests(unittest.TestCase):
         ):
             with self.subTest(key=key, value=value), self.assertRaises((ValueError, TypeError)):
                 validate_spec({**self.spec, key: value}, self.policy)
+
+    def test_controller_profile_is_explicit_and_credentials_are_not_inherited(self):
+        captured = {}
+        def run(args, **kwargs):
+            captured.update(kwargs)
+            return self.command(args, **kwargs)
+        with patch.dict("os.environ", {
+            "AWS_ACCESS_KEY_ID": "unrelated-host-key",
+            "AWS_ENDPOINT_URL": "https://untrusted.invalid",
+            "AWS_PROFILE": "administrator",
+        }):
+            identity = verify_controller(self.policy, run)
+        self.assertIn("assumed-role/so101-controller/", identity["Arn"])
+        args = self.calls[-1]
+        self.assertEqual(args[args.index("--profile") + 1], "so101-controller")
+        env = captured["env"]
+        self.assertNotIn("AWS_ACCESS_KEY_ID", env)
+        self.assertNotIn("AWS_ENDPOINT_URL", env)
+        self.assertNotIn("AWS_PROFILE", env)
+        self.assertEqual(env["AWS_CONFIG_FILE"], self.policy["aws_config"])
+        self.assertEqual(env["HOME"], "/var/lib/lego-robot-control")
+        self.assertEqual(env["AWS_SHARED_CREDENTIALS_FILE"], "/dev/null")
+        self.assertEqual(env["AWS_MAX_ATTEMPTS"], "1")
+
+    def test_controller_rejects_wrong_role_or_account_before_creating_ledger(self):
+        for account, role in (("123456789012", "dockyard-host"),
+                              ("999999999999", "so101-controller")):
+            with self.subTest(account=account, role=role):
+                def run(args, **kwargs):
+                    return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
+                        "Account": account, "Arn": f"arn:aws:sts::{account}:assumed-role/{role}/test",
+                    }))
+                state = self.root / "must-not-exist.sqlite"
+                with self.assertRaisesRegex(PermissionError, "pinned"):
+                    Broker(self.policy, state, self.root, run)
+                self.assertFalse(state.exists())
+
+    def test_controller_failure_is_not_replayed_or_replaced_with_host_credentials(self):
+        calls = []
+        def denied(args, **kwargs):
+            calls.append(args)
+            raise subprocess.CalledProcessError(1, args, stderr="AssumeRole denied")
+        with self.assertRaises(subprocess.CalledProcessError):
+            verify_controller(self.policy, denied)
+        self.assertEqual(len(calls), 1)
+
+    def test_controller_settings_do_not_default_to_host_chain(self):
+        for key in ("aws_profile", "controller_role_arn", "aws_config", "aws_cli"):
+            policy = dict(self.policy)
+            policy.pop(key)
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate_controller_settings(policy)
+
+    def test_profile_requires_pinned_role_and_only_ec2_source(self):
+        profile = (
+            "[profile so101-controller]\n"
+            "role_arn = arn:aws:iam::123456789012:role/so101-controller\n"
+            "credential_source = Ec2InstanceMetadata\nregion = us-west-2\n"
+        )
+        self.profile.stop()
+        with patch("so101.control_broker.trusted_text", return_value=profile):
+            validate_controller_profile(self.policy)
+        for altered in (
+            profile.replace("so101-controller\n", "administrator\n"),
+            profile.replace("credential_source = Ec2InstanceMetadata", "source_profile = default"),
+            profile + "credential_process = unsafe\n",
+            profile + "endpoint_url = https://untrusted.invalid\n",
+            "[default]\nregion = us-west-2\n" + profile,
+            "[DEFAULT]\nendpoint_url = https://untrusted.invalid\n" + profile,
+        ):
+            with self.subTest(config=altered), patch(
+                "so101.control_broker.trusted_text", return_value=altered,
+            ), self.assertRaisesRegex(ValueError, "pinned role"):
+                validate_controller_profile(self.policy)
+        self.profile.start()
+
+    def test_dashboard_only_startup_does_not_require_aws(self):
+        policy = {**self.policy, "gpu_enabled": False}
+        for key in ("aws_profile", "controller_role_arn", "aws_config", "aws_cli"):
+            policy.pop(key)
+        def unexpected(*args, **kwargs):
+            self.fail("Dashboard-only startup must not call AWS")
+        broker = Broker(policy, self.root / "dashboard.sqlite", self.root, unexpected)
+        broker.db.close()
 
     def test_capability_scope_and_cross_owner(self):
         self.assertEqual(self.broker.identity("secret", "gpu.submit"), "session")

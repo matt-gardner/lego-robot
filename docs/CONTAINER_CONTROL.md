@@ -121,6 +121,47 @@ roles. Before enabling `gpu_enabled`, configure and qualify:
 5. Real CUDA dry-run/recovery qualification and an explicitly authorized,
    bounded paid lifecycle test before claiming the GPU path operational.
 
+### Controller identity and credential refresh
+
+The broker must not use the CLI's default credential chain. GPU-enabled policy
+requires `aws_profile`, `aws_config`, and `controller_role_arn` as well as an
+absolute `aws_cli` path. For this deployment, use profile `so101-controller`,
+config `/etc/lego-robot-control/aws-config`, and role
+`arn:aws:iam::133961745003:role/so101-controller`.
+
+The config and all parent directories must be root-owned and not group/world
+writable. Its complete contents are:
+
+```ini
+[profile so101-controller]
+role_arn = arn:aws:iam::133961745003:role/so101-controller
+credential_source = Ec2InstanceMetadata
+region = us-west-2
+```
+
+This keeps temporary credential acquisition and refresh inside the trusted host
+CLI. The broker supplies an isolated environment, disables shared credential
+files and automatic API retries, and rejects additional profiles, credential
+processes, source profiles, or endpoint overrides. The CLI's temporary role cache
+is confined to the root-private `/var/lib/lego-robot-control/.aws/` directory,
+which remains writable under the systemd sandbox. It verifies the actual STS
+account and assumed controller role before opening the GPU ledger or serving
+requests. Dashboard-only startup remains independent of AWS.
+
+After installing AWS CLI v2 and the root-owned config/policy fields, run:
+
+```sh
+sudo /usr/bin/python3 -I /opt/lego-robot-control/control_broker.py preflight \
+  --policy /etc/lego-robot-control/policy.json
+```
+
+This performs only STS identity verification; it neither enables GPU operations
+nor creates a ledger or paid resources. Passing it proves authentication, not
+launch permissions, runtime qualification, budget controls, or CUDA recovery.
+Keep `gpu_enabled=false` until every other prerequisite above passes.
+
+### Independent termination
+
 The broker installs a one-time independent AWS termination schedule after
 allocation; if this fails it requests immediate termination and keeps the
 attempt in `recovery-required`. Its own guard reconciles ambiguous launches by
