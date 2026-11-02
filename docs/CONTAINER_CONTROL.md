@@ -160,6 +160,37 @@ template ID and numeric version, and SSM document numeric versions are
 **unselected**. Pin them only after inventory and qualification; never assume
 version `1`, `$Latest`, or a deployed ARN from a proposed name.
 
+### Offline versioned artifact staging primitive
+
+`so101.aws_artifacts` supplies `Artifact(uri, version, sha256, size)` and
+`ArtifactStore.stage(root, job_id, artifacts, max_bytes=...)`. This is a library
+asset, **not an installed bootstrap or a broker-wired staging command**. A future
+root-installed worker must obtain these references and the byte ceiling from
+its verified immutable manifest; a bare checksum does not authenticate a
+container-supplied manifest. Use an operator-owned, private staging root.
+
+The store allows only scoped S3 input/recovery prefixes, an explicit bucket
+owner, exact non-null object versions, and safe flat destination filenames.
+It checks the total declared byte ceiling before any transfer, then HEADs each
+exact version/size before GET and verifies both returned metadata and local
+SHA256/size. The AWS CLI receives an isolated environment using the worker
+instance role, not inherited user/controller credentials or alternate endpoints.
+No object content is deserialized or unpacked.
+
+Staging exclusively creates a new mode-0700 `<root>/<job-id>` directory.
+Existing attempts, including their STOP markers, are never reused or changed.
+Only after every object verifies and files are synced does `.staged.json`
+commit the complete staging receipt. An exception leaves an **uncommitted**
+attempt (possibly containing partial or individually verified files); never
+start from files alone or retry into that directory. A new attempt requires a
+new broker job ID. No cleanup or retention deletion is automatic.
+
+The byte ceiling is a local staging bound, **not** enforcement of the approved
+$5 storage/network allowance. This primitive does not publish checkpoints,
+prove checkpoint training-state completeness, implement S3 retention/recovery
+selection, handle Spot notices, authorize a trainer start, or qualify CUDA.
+Original dataset/checkpoint/STOP paths remain untouched.
+
 ### Offline AWS worker hard lease asset
 
 `src/so101/aws_worker_guard.py` and
