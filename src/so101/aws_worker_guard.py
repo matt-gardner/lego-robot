@@ -33,10 +33,14 @@ class Metadata:
             raise ValueError("IMDS response exceeds size limit")
         return value.decode("utf-8")
 
-    def deadline(self) -> float:
+    def token(self) -> str:
         token = self.read("api/token")
         if not token or len(token) > 4096:
             raise ValueError("Invalid IMDSv2 token")
+        return token
+
+    def deadline(self) -> float:
+        token = self.token()
         raw = self.read("meta-data/tags/instance/so101-deadline", token)
         if not re.fullmatch(r"[1-9][0-9]{0,11}", raw):
             raise ValueError("Invalid worker deadline tag")

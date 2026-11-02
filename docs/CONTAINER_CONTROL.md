@@ -148,7 +148,8 @@ jobs disabled until the prerequisites above are satisfied.
 | Attempt output prefix | `runs/lego-robot/<job-id>/` |
 
 The bucket name comes from the operator-reported existing worker IAM policy;
-bucket existence, ownership, encryption, and versioning still need inventory.
+the name alone does not establish bucket existence, ownership, encryption, or
+versioning. Verify those properties during operator inventory and qualification.
 Versioned inputs and recovery require narrowly scoped `GetObjectVersion`, not
 just `GetObject`. Worker SSM-agent and log publishing permissions also need
 verification; naming agreement grants none of them.
@@ -190,6 +191,59 @@ $5 storage/network allowance. This primitive does not publish checkpoints,
 prove checkpoint training-state completeness, implement S3 retention/recovery
 selection, handle Spot notices, authorize a trainer start, or qualify CUDA.
 Original dataset/checkpoint/STOP paths remain untouched.
+
+### Root-manifest-bound idle staging entrypoint
+
+`python3 -I -m so101.aws_worker_bootstrap` adds a **source-only** staging
+entrypoint, not a complete or deployed GPU bootstrap. A future operator-owned
+image must install the Python package and AWS CLI outside writable checkouts,
+create a root-owned staging directory with non-writable parents, install the
+lease guard, and invoke the entrypoint with fixed `--manifest`,
+`--manifest-sha256`, and `--root` arguments from its immutable bootstrap.
+Do not invoke it on the CPU controller. No real manifest/AMI/image/template
+or SSM payload is selected by this entrypoint.
+
+The root manifest and every parent must be root-owned and not group/world
+writable. Its SHA256 is over the broker's canonical JSON representation
+(sorted keys, compact separators), **not** a pretty-printed file. Pin that
+digest in the qualified bootstrap; never accept it from the coding container.
+The exact schema is:
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | Integer `1` |
+| `broker_id` | Exact approved broker tag |
+| `spec_sha256` | Canonical digest of the registered job specification |
+| `account_id` | Expected twelve-digit instance account and bucket owner |
+| `instance_type` | Approved `g5.2xlarge` or `g6.2xlarge` |
+| `ami` | Exact approved AMI ID |
+| `aws_cli` | Absolute root-installed AWS CLI path |
+| `prefixes` | Nonempty list of approved S3 input/recovery prefixes |
+| `max_bytes` | Positive integer staging-byte reservation |
+| `artifacts` | Flat filename to `{uri, version, sha256, size}` mapping |
+
+The operator must derive this manifest from the exact frozen job spec and
+verified dataset/split/checkpoint inventory; binding a spec digest does not
+itself prove the operator chose the right artifacts or recipe. This schema is
+a staging contract, not an alternative trainer recipe or training authorization.
+
+Before any transfer, the entrypoint verifies the manifest digest, root staging
+directory/AWS CLI ownership, an active `lego-robot-worker-guard.service`, and
+IMDSv2 identity (account, Oregon region, GPU type, AMI). The instance's job,
+spec, and broker tags must match. It captures the hard lease before transfer
+and rechecks expiry using wall and monotonic clocks, plus guard activity,
+before committing `.bootstrap.json`. That receipt binds the manifest/spec/job
+to the SHA256 of `.staged.json`; its phase is only `staged-idle`.
+
+Missing metadata, guard failures, identity mismatches, transfer failures, or
+expiry abort visibly. An attempt with `.staged.json` but no `.bootstrap.json`
+is not a successfully bound staging attempt. Neither receipt authorizes a
+trainer start, verifies the runtime image/code checkout, validates full-state
+CUDA recovery, or proves independent shutdown works. The entrypoint does not
+start services, power off, clear STOP, unpack data, load a model, change file
+ownership, or launch training. Guard installation/activation and later
+immutable start/stop orchestration still require separate operator integration
+and real qualification.
 
 ### Offline AWS worker hard lease asset
 

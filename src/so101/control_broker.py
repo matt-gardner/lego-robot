@@ -36,13 +36,17 @@ def canonical(value: dict) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 
-def trusted_text(path: Path) -> str:
+def trusted_path(path: Path) -> Path:
     resolved = path.resolve(strict=True)
     for candidate in (path, *path.parents, resolved, *resolved.parents):
         info = candidate.stat()
         if info.st_uid != 0 or info.st_mode & 0o022:
             raise ValueError(f"Host file and parents must be root-owned and not writable: {candidate}")
-    return resolved.read_text()
+    return resolved
+
+
+def trusted_text(path: Path) -> str:
+    return trusted_path(path).read_text()
 
 
 def trusted_json(path: Path) -> dict:
