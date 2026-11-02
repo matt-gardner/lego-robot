@@ -196,7 +196,7 @@ Original dataset/checkpoint/STOP paths remain untouched.
 
 `python3 -I -m so101.aws_worker_bootstrap` adds a **source-only** staging
 entrypoint, not a complete or deployed GPU bootstrap. A future operator-owned
-image must install the Python package and AWS CLI outside writable checkouts,
+image must install the Python package, AWS CLI, and Docker CLI outside writable checkouts,
 create a root-owned staging directory with non-writable parents, install the
 lease guard, and invoke the entrypoint with fixed `--manifest`,
 `--manifest-sha256`, and `--root` arguments from its immutable bootstrap.
@@ -211,9 +211,10 @@ The exact schema is:
 
 | Field | Meaning |
 | --- | --- |
-| `schema` | Integer `1` |
+| `schema` | Integer `2`; earlier staging-only schema `1` is rejected |
 | `broker_id` | Exact approved broker tag |
 | `spec_sha256` | Canonical digest of the registered job specification |
+| `spec` | Complete, exact registered specification contents |
 | `account_id` | Expected twelve-digit instance account and bucket owner |
 | `instance_type` | Approved `g5.2xlarge` or `g6.2xlarge` |
 | `ami` | Exact approved AMI ID |
@@ -221,6 +222,16 @@ The exact schema is:
 | `prefixes` | Nonempty list of approved S3 input/recovery prefixes |
 | `max_bytes` | Positive integer staging-byte reservation |
 | `artifacts` | Flat filename to `{uri, version, sha256, size}` mapping |
+| `runtime` | `{docker_cli, image, commit, source_sha256}` identity contract |
+
+Schema 2 requires `source.tar` and `training_state.pt` artifacts. The manifest's
+`spec` must hash to `spec_sha256`; its AMI/instance type must match the manifest,
+its image/commit must match `runtime`, and its
+checkpoint URI/version/SHA256 must match `training_state.pt`. `source.tar` must
+match `runtime.source_sha256`. Other dataset/split/cache references still need
+operator validation against the exact recipe and artifact inventory. This is
+an intentional source-schema change: regenerate and re-pin any prepared schema-1
+manifest before using this entrypoint; no deployed manifest is migrated.
 
 The operator must derive this manifest from the exact frozen job spec and
 verified dataset/split/checkpoint inventory; binding a spec digest does not
@@ -228,17 +239,33 @@ itself prove the operator chose the right artifacts or recipe. This schema is
 a staging contract, not an alternative trainer recipe or training authorization.
 
 Before any transfer, the entrypoint verifies the manifest digest, root staging
-directory/AWS CLI ownership, an active `lego-robot-worker-guard.service`, and
+directory/AWS CLI/Docker CLI ownership, an active `lego-robot-worker-guard.service`, and
 IMDSv2 identity (account, Oregon region, GPU type, AMI). The instance's job,
 spec, and broker tags must match. It captures the hard lease before transfer
 and rechecks expiry using wall and monotonic clocks, plus guard activity,
 before committing `.bootstrap.json`. That receipt binds the manifest/spec/job
-to the SHA256 of `.staged.json`; its phase is only `staged-idle`.
+to the SHA256 of `.staged.json` and the checked runtime identity; its phase is
+only `staged-idle` (binding receipt schema 2).
+
+Before S3 staging, `so101.aws_runtime` inspects **only an already-local image**
+via the worker's fixed root-controlled Unix Docker socket. It requires the
+exact repository digest, Linux amd64 platform, and both
+`org.opencontainers.image.revision` and `io.so101.source-sha256` labels matching
+the root manifest. Missing/mismatched images fail; there is no pull, container
+creation, or execution, and inherited Docker contexts/endpoints are ignored.
+The installed worker Docker socket must never be mounted into coding agents.
+
+These label checks verify **declared source identity**, not the installed code
+contents or trusted build provenance. The pinned image digest and verified
+source archive bind immutable inputs; a future qualified build still must
+prove that the image actually contains/uses those source bytes, the correct
+CUDA dependencies, and no secret/data payloads. Runtime CUDA/EGL/full-state
+qualification remains separate.
 
 Missing metadata, guard failures, identity mismatches, transfer failures, or
 expiry abort visibly. An attempt with `.staged.json` but no `.bootstrap.json`
 is not a successfully bound staging attempt. Neither receipt authorizes a
-trainer start, verifies the runtime image/code checkout, validates full-state
+trainer start, proves installed code contents/build provenance, validates full-state
 CUDA recovery, or proves independent shutdown works. The entrypoint does not
 start services, power off, clear STOP, unpack data, load a model, change file
 ownership, or launch training. Guard installation/activation and later

@@ -19,22 +19,37 @@ class BootstrapTests(unittest.TestCase):
         self.body = b"checkpoint bytes; no deserialization"
         self.cli = self.root / "aws"
         self.cli.write_text("test-only executable placeholder")
+        self.docker = self.root / "docker"
+        self.docker.write_text("test-only executable placeholder")
         self.manifest = {
-            "schema": 1, "broker_id": "lego-robot", "spec_sha256": "b" * 64,
+            "schema": 2, "broker_id": "lego-robot", "spec_sha256": "b" * 64,
             "account_id": "133961745003", "instance_type": "g6.2xlarge", "ami": "ami-123abc",
             "aws_cli": str(self.cli), "prefixes": ["s3://approved/runs/lego-robot/"],
-            "max_bytes": len(self.body), "artifacts": {
+            "max_bytes": 2 * len(self.body), "artifacts": {
                 "training_state.pt": {
                     "uri": "s3://approved/runs/lego-robot/state.pt", "version": "version-1",
                     "sha256": hashlib.sha256(self.body).hexdigest(), "size": len(self.body),
                 },
             },
         }
+        self.manifest["artifacts"]["source.tar"] = copy.deepcopy(
+            self.manifest["artifacts"]["training_state.pt"])
+        self.manifest["runtime"] = {
+            "docker_cli": str(self.docker), "image": "example/worker@sha256:" + "d" * 64,
+            "commit": "e" * 40, "source_sha256": hashlib.sha256(self.body).hexdigest(),
+        }
+        self.manifest["spec"] = {
+            "image": self.manifest["runtime"]["image"], "commit": self.manifest["runtime"]["commit"],
+            "ami": self.manifest["ami"], "instance_type": self.manifest["instance_type"],
+            "checkpoint": {key: value for key, value in
+                           self.manifest["artifacts"]["training_state.pt"].items() if key != "size"},
+        }
+        self.manifest["spec_sha256"] = hashlib.sha256(canonical(self.manifest["spec"])).hexdigest()
         self.identity = {
             "accountId": "133961745003", "region": "us-west-2",
             "instanceType": "g6.2xlarge", "imageId": "ami-123abc",
         }
-        self.tags = {"job": "a" * 32, "spec": "b" * 64, "broker": "lego-robot"}
+        self.tags = {"job": "a" * 32, "spec": self.manifest["spec_sha256"], "broker": "lego-robot"}
         self.metadata = Mock()
         self.metadata.token.return_value = "token"
         self.metadata.deadline.return_value = 1100
@@ -58,6 +73,15 @@ class BootstrapTests(unittest.TestCase):
         self.calls.append(args)
         if args[0] == "/usr/bin/systemctl":
             return subprocess.CompletedProcess(args, 0)
+        if args[0] == str(self.docker):
+            runtime = self.manifest["runtime"]
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps([{
+                "RepoDigests": [runtime["image"]], "Os": "linux", "Architecture": "amd64",
+                "Config": {"Labels": {
+                    "org.opencontainers.image.revision": runtime["commit"],
+                    "io.so101.source-sha256": runtime["source_sha256"],
+                }},
+            }]))
         if args[2] == "get-object":
             Path(args[-1]).write_bytes(self.body)
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
@@ -78,9 +102,11 @@ class BootstrapTests(unittest.TestCase):
         destination = self.stage()
         receipt = json.loads((destination / ".bootstrap.json").read_text())
         self.assertEqual(receipt["phase"], "staged-idle")
+        self.assertEqual(receipt["schema"], 2)
         self.assertEqual(receipt["manifest_sha256"], self.digest())
         self.assertEqual(receipt["spec_sha256"], self.tags["spec"])
         self.assertEqual(receipt["job_id"], self.tags["job"])
+        self.assertEqual(receipt["runtime"]["image"], self.manifest["runtime"]["image"])
         self.assertEqual(receipt["staging_receipt_sha256"],
                          hashlib.sha256((destination / ".staged.json").read_bytes()).hexdigest())
         system = [args for args in self.calls if args[0] == "/usr/bin/systemctl"]
@@ -100,7 +126,7 @@ class BootstrapTests(unittest.TestCase):
 
     def test_manifest_schema_is_exact_and_pins_approved_worker(self):
         for changes in (
-            {"schema": True}, {"extra": "not allowed"}, {"broker_id": "../bad"},
+            {"schema": True}, {"schema": 1}, {"extra": "not allowed"}, {"broker_id": "../bad"},
             {"spec_sha256": "main"}, {"instance_type": "p5.48xlarge"},
             {"ami": "latest"}, {"prefixes": []}, {"max_bytes": True}, {"artifacts": {}},
         ):
@@ -183,6 +209,46 @@ class BootstrapTests(unittest.TestCase):
         self.metadata.token.assert_not_called()
         with self.assertRaisesRegex(ValueError, "root-owned"):
             trusted_path(self.root)
+
+    def test_runtime_mismatch_aborts_before_artifact_transfer(self):
+        original = self.command
+        def command(args, **kwargs):
+            if args[0] == str(self.docker):
+                raise subprocess.CalledProcessError(1, args, stderr="No such image")
+            return original(args, **kwargs)
+        with self.assertRaises(subprocess.CalledProcessError):
+            stage_idle(self.root / "manifest.json", self.digest(), self.root,
+                       metadata=self.metadata, run=command)
+        self.assertFalse(any("s3api" in args for args in self.calls))
+        self.assertFalse((self.root / self.tags["job"]).exists())
+
+    def test_runtime_source_archive_must_match_manifest(self):
+        self.manifest["runtime"]["source_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "source.tar"):
+            self.stage()
+        self.assertEqual(self.calls, [])
+
+    def test_registered_spec_contents_must_hash_to_expected_digest(self):
+        self.manifest["spec"]["commit"] = "f" * 40
+        with self.assertRaisesRegex(ValueError, "registered specification"):
+            self.stage()
+        self.assertEqual(self.calls, [])
+
+    def test_runtime_and_checkpoint_cannot_differ_from_registered_spec(self):
+        original = copy.deepcopy(self.manifest)
+        for field in ("runtime", "checkpoint", "ami", "instance_type"):
+            self.manifest = copy.deepcopy(original)
+            if field == "runtime":
+                self.manifest["runtime"]["commit"] = "f" * 40
+            elif field == "checkpoint":
+                self.manifest["artifacts"]["training_state.pt"]["version"] = "other-version"
+            elif field == "ami":
+                self.manifest["ami"] = "ami-fff"
+            else:
+                self.manifest["instance_type"] = "g5.2xlarge"
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.stage()
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":

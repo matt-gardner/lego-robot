@@ -13,6 +13,7 @@ import subprocess
 import time
 
 from so101.aws_artifacts import Artifact, ArtifactStore
+from so101.aws_runtime import RuntimeImage
 from so101.aws_worker_guard import Metadata
 from so101.cloud_checkpoint import atomic_json, sha256
 from so101.control_broker import DIGEST, IDENTIFIER, canonical, trusted_json, trusted_path
@@ -20,7 +21,7 @@ from so101.control_broker import DIGEST, IDENTIFIER, canonical, trusted_json, tr
 
 FIELDS = {
     "schema", "broker_id", "spec_sha256", "account_id", "instance_type", "ami",
-    "aws_cli", "prefixes", "max_bytes", "artifacts",
+    "aws_cli", "prefixes", "max_bytes", "artifacts", "runtime", "spec",
 }
 
 
@@ -31,7 +32,7 @@ def load_manifest(path: Path, expected_sha256: str) -> dict:
     if hashlib.sha256(canonical(manifest)).hexdigest() != expected_sha256:
         raise ValueError("Root manifest differs from the pinned canonical SHA256")
     if (set(manifest) != FIELDS or type(manifest["schema"]) is not int
-            or manifest["schema"] != 1):
+            or manifest["schema"] != 2):
         raise ValueError("Unsupported root staging manifest schema")
     if not isinstance(manifest["broker_id"], str) or not IDENTIFIER.fullmatch(manifest["broker_id"]):
         raise ValueError("Invalid manifest broker ID")
@@ -46,6 +47,28 @@ def load_manifest(path: Path, expected_sha256: str) -> dict:
             or type(manifest["max_bytes"]) is not int or manifest["max_bytes"] <= 0
             or not isinstance(manifest["artifacts"], dict) or not manifest["artifacts"]):
         raise ValueError("Root manifest requires prefixes, byte ceiling, and artifacts")
+    runtime = manifest["runtime"]
+    if not isinstance(runtime, dict) or set(runtime) != {
+        "docker_cli", "image", "commit", "source_sha256",
+    }:
+        raise ValueError("Root manifest must pin the local runtime and source identity")
+    RuntimeImage(runtime["image"], runtime["commit"], runtime["source_sha256"]).validate()
+    spec = manifest["spec"]
+    if (not isinstance(spec, dict)
+            or hashlib.sha256(canonical(spec)).hexdigest() != manifest["spec_sha256"]
+            or spec.get("image") != runtime["image"] or spec.get("commit") != runtime["commit"]
+            or spec.get("ami") != manifest["ami"]
+            or spec.get("instance_type") != manifest["instance_type"]):
+        raise ValueError("Root runtime must match the exact registered specification contents")
+    source = manifest["artifacts"].get("source.tar")
+    if not isinstance(source, dict) or source.get("sha256") != runtime["source_sha256"]:
+        raise ValueError("Root runtime source digest must match the source.tar artifact")
+    checkpoint = spec.get("checkpoint")
+    staged_checkpoint = manifest["artifacts"].get("training_state.pt")
+    if (not isinstance(checkpoint, dict) or set(checkpoint) != {"uri", "version", "sha256"}
+            or not isinstance(staged_checkpoint, dict)
+            or any(staged_checkpoint.get(key) != value for key, value in checkpoint.items())):
+        raise ValueError("Staged training state must match the exact registered checkpoint")
     return manifest
 
 
@@ -70,6 +93,10 @@ def stage_idle(manifest_path: Path, manifest_sha256: str, root: Path, *,
     )
     if not trusted_path(Path(manifest["aws_cli"])).is_file():
         raise ValueError("Worker AWS CLI must be a root-installed executable file")
+    runtime = manifest["runtime"]
+    if (not isinstance(runtime["docker_cli"], str) or not Path(runtime["docker_cli"]).is_absolute()
+            or not trusted_path(Path(runtime["docker_cli"])).is_file()):
+        raise ValueError("Worker Docker CLI must be an absolute root-installed file")
     artifacts = {}
     for name, value in manifest["artifacts"].items():
         if not isinstance(value, dict) or set(value) != {"uri", "version", "sha256", "size"}:
@@ -96,6 +123,9 @@ def stage_idle(manifest_path: Path, manifest_sha256: str, root: Path, *,
             or tags["spec"] != manifest["spec_sha256"]
             or tags["broker"] != manifest["broker_id"]):
         raise ValueError("Worker job/spec/broker tags differ from the root staging manifest")
+    runtime_identity = RuntimeImage(
+        runtime["image"], runtime["commit"], runtime["source_sha256"],
+    ).verify(runtime["docker_cli"], run=run)
     started = monotonic()
     deadline = metadata.deadline()
     remaining = deadline - wall()
@@ -107,9 +137,10 @@ def stage_idle(manifest_path: Path, manifest_sha256: str, root: Path, *,
     if wall() >= deadline or monotonic() >= end:
         raise ValueError("Worker lease expired during staging; no idle binding committed")
     atomic_json(destination / ".bootstrap.json", {
-        "schema": 1, "phase": "staged-idle", "job_id": tags["job"],
+        "schema": 2, "phase": "staged-idle", "job_id": tags["job"],
         "manifest_sha256": manifest_sha256, "spec_sha256": manifest["spec_sha256"],
         "deadline": deadline, "staging_receipt_sha256": sha256(destination / ".staged.json"),
+        "runtime": runtime_identity,
     })
     return destination
 
