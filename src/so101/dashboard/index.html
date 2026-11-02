@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en" data-base-path="">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SO-101 · RL / SFT Observatory</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">SO-101 / TRAINING</span><h1><span id="observatory-title">RL Observatory</span><span class="accent">.</span></h1></div>
+    <div class="connection"><a href="/data">Data browser</a><span id="connection">Connecting</span><span id="updated"></span></div>
+  </header>
+  <nav class="training-tabs" role="tablist" aria-label="Training type">
+    <button id="tab-rl" role="tab" aria-selected="true" aria-controls="training-panel">RL</button>
+    <button id="tab-sft" role="tab" aria-selected="false" aria-controls="training-panel" tabindex="-1">SFT</button>
+  </nav>
+  <div id="step-timing" class="step-timing" role="status" aria-label="Selected run timing"></div>
+  <div id="error" role="alert" hidden></div>
+  <div id="training-panel" class="layout" role="tabpanel" aria-labelledby="tab-rl">
+    <aside>
+      <div class="section-title"><h2>Runs</h2><span id="run-count" class="tag">0</span></div>
+      <input id="search" type="search" placeholder="Filter runs…" aria-label="Filter runs">
+      <label class="archive"><input id="archives" type="checkbox"> Include archived experiments</label>
+      <div id="runs"></div>
+      <p class="hint">Select runs to overlay. Colors identify runs; dashed lines indicate evaluation. Historical logs are not evidence of an active trainer.</p>
+    </aside>
+    <main>
+      <div class="toolbar">
+        <label>Smoothing <input id="smoothing" type="range" min="0" max="95" step="5" value="0"><output id="smooth-value">Off</output></label>
+        <button id="reset">Reset view</button>
+        <button id="pause" aria-pressed="false">Pause updates</button>
+      </div>
+      <p id="context" class="context"></p>
+      <div id="cards" class="cards"></div>
+      <div id="plots" class="plot-sections"></div>
+      <section class="panel details">
+        <div class="section-title"><h2>Recent steps</h2><select id="focus" aria-label="Run for recent steps"></select></div>
+        <p id="recent-note" class="hint">Most recent 10 optimizer steps, plus the two preceding validation-only rows. Training success includes assisted and discarded trajectories; validation is unassisted.</p>
+        <div class="table-wrap"><table><thead><tr id="recent-head"><th>Step</th><th>Phase</th><th>Success</th><th>Efficiency</th><th title="Training: jerk minus reference margin. Validation: absolute RMS jerk (no margin logged).">Jerk gap / eval RMS</th><th>Wrong object</th><th>LR</th><th>Grad norm</th><th>Assistance</th></tr></thead><tbody id="recent"></tbody></table></div>
+        <details><summary>Run configuration &amp; assistance curriculum</summary><pre id="config"></pre></details>
+      </section>
+      <footer>Read-only · Local logs · Refreshes every 3 s · Drag to pan, double-click to reset</footer>
+    </main>
+  </div>
+  <div id="tooltip" role="status" hidden></div>
+</body>
+</html>

@@ -1,0 +1,1084 @@
+# SO-101 LeRobot workspace
+
+Python 3.12, LeRobot 0.6.1, and the `core_scripts` and `feetech` extras.
+Includes calibration, motor setup, teleoperation, recording, replay, and
+camera discovery. Training and policy-specific extras are not installed.
+
+Sources:
+- https://huggingface.co/docs/lerobot/en/installation
+- https://huggingface.co/docs/lerobot/en/so101
+
+## Project layout
+
+The AWS checkout is `/mnt/dockyard/lego-robot`. Persistent datasets, experiment
+outputs, and Hugging Face caches live separately under
+`/mnt/dockyard/lego-robot-data/{data,outputs,hf}`. The checkout's ignored
+`data` and `outputs` symlinks preserve existing relative-path commands.
+Set `HF_HOME=/mnt/dockyard/lego-robot-data/hf` when using the migrated cache.
+Neither datasets nor model/checkpoint files belong in Git.
+
+The read-only dashboard is served at
+`https://server.mgardner.org/lego-robot/`, behind Cloudflare Access. Its
+host-managed `so101-web.service` uses this checkout and the persistent
+`outputs` directory. Moving code does not authorize training or clearing STOP.
+For scoped container restart and GPU job controls, see
+[Container control](docs/CONTAINER_CONTROL.md); GPU infrastructure qualification
+and launch authorization are separate from implementing the broker.
+
+Application code is an installable package under `src/so101/`; tests are in
+`tests/`. Run commands from the project directory with
+`uv run --locked python -m so101.<module>` and run tests with
+`uv run --locked pytest -q`. Root-level Python scripts are no longer used.
+
+| Location / modules | Purpose |
+| --- | --- |
+| `src/so101/robot_control.py`, `robot_chat.py`, `describe_scene.py`, `robot_teacher.py` | Bounded hardware control, Copilot observation/chat, and teacher loop |
+| `record_demo.py`, `robot_demo.py`, `real_policy_runner.py`, `target_perception.py` (inside `src/so101/`) | Real demonstrations, dataset export, learned-policy execution, and visual grounding |
+| `robot_sim.py`, `collect_*_sim.py`, `build_command_benchmark.py`, `relabel_oriented_boxes.py` | Simulator, expert-data collection, benchmarks, and label conversion |
+| `train_*`, `evaluate_command_sim.py`, `evaluate_entity_sim.py`, `jerk_reference.py` | Supervised/RL training, evaluation, and reference-margin calibration |
+| `src/so101/control_model/` | Shared command schemas, datasets, SmolVLA architecture, and gradient utilities |
+| `src/so101/analysis/`, `src/so101/experiments/` | Offline metric audits/plots and isolated jerk/checkpoint trials; not automatic production training |
+| `rl_dashboard.py`, `training_data_browser.py`, `simulation_playback.py`, `rollout_evidence.py`, `visualize_data.py`; `src/so101/dashboard/` | Monitoring, dataset browsing, movie rendering, evidence capture, and packaged web assets |
+| `cloud_training.py`, `cloud_worker.py`, `cloud_checkpoint.py`, `cloud_requirements.py`; `cloud/` | Cloud controller, worker, durable backups, dependency conversion, and Azure configuration/templates |
+| `scripts/` | Shell entry points for teleoperation and cloud machine/disk setup |
+| `tests/` | Automated regression tests, separate from application code |
+| `docs/`, `docs/archive/` | Project/control-model plans, Azure/AWS setup checklists and operations guides, and historical proposal |
+| `data/`, `outputs/` | Demonstrations, simulator assets, trained checkpoints, logs, and retained recordings; not disposable clutter |
+
+The old learning-rate sweep was removed: it called deleted supervised-loss
+options and assumed obsolete checkpoint/log formats. Useful analysis utilities
+remain in the package. Plans are design documents, not proof of implemented
+behavior; the original proposal is retained only as history.
+
+## Install and run
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) on the
+computer connected to the robot, then run from this directory:
+
+```sh
+uv sync --locked
+uv run lerobot-calibrate --help
+uv run lerobot-find-port
+```
+
+No environment activation is necessary with `uv run`.
+
+Move or copy this entire project directory, including `uv.lock`, to its final
+location and run `uv sync --locked` there. Do not move a virtual environment
+between locations or operating systems; recreate it from the lockfile instead.
+In Dockyard, uv keeps the Linux environment outside `/mnt/data`, in
+container-local storage, to avoid overwriting a host macOS environment.
+
+Linux uses CPU PyTorch intentionally: motor control and recording do not
+require CUDA. macOS uses the standard PyTorch wheel, with MPS when available.
+GPU policy training needs a separate CUDA-appropriate setup.
+
+For Azure Spot training with local control/dashboard, retained storage and
+checkpoint resumption, follow [CLOUD_TRAINING_SETUP.md](docs/CLOUD_TRAINING_SETUP.md).
+It is the short account/billing/quota checklist; detailed commands are in
+[CLOUD_TRAINING_OPERATIONS.md](docs/CLOUD_TRAINING_OPERATIONS.md).
+Paid actions require `--apply`; nothing is provisioned automatically. The fresh
+Ubuntu GPU bootstrap is `scripts/setup_cloud_gpu.sh`. Actual GPU/deployment and
+eviction qualification are still required. Architecture and limits are in
+[CLOUD_TRAINING_PLAN.md](docs/CLOUD_TRAINING_PLAN.md).
+
+For AWS Spot GPUs, start with [AWS_SPOT_SETUP.md](docs/AWS_SPOT_SETUP.md):
+the short manual checklist includes copy-paste Copilot prompts for preparation,
+approved deployment, qualification, training, and cleanup. Explanations,
+Oregon/eastern-region tradeoffs, and persistent-storage/network costs are in
+[AWS_SPOT_OPERATIONS.md](docs/AWS_SPOT_OPERATIONS.md). AWS orchestration still
+needs implementation and real qualification; the existing controller is Azure-only.
+
+## Live RL / SFT dashboard
+
+```sh
+uv run --locked python -m so101.rl_dashboard --port 8765
+```
+
+Open **http://127.0.0.1:8765**. The read-only dashboard discovers trajectory
+(`trajectory_rl.json`), older chunk-level (`rl_training.json`) RL runs, and
+supervised (`sft_training.json`, `kind: "sft"`) runs
+under `outputs/`, including new runs created while the server is running.
+Use `--root /path/to/outputs` for another run directory. It binds to localhost
+by default; it has no authentication and should not be exposed publicly.
+No extra dependencies, external scripts, or model loading are needed.
+
+Behind an authenticated reverse proxy, use `--base-path /lego-robot` and preserve that
+prefix when proxying to the loopback server. Open `/lego-robot/` for the dashboard
+or `/lego-robot/data` for the integrated data browser; assets and API requests stay
+under the prefix. The default empty base path preserves direct-root serving.
+For example:
+
+```sh
+uv run --locked python -m so101.rl_dashboard --root /path/to/outputs --port 8765 --base-path /lego-robot
+```
+
+`--notice "Awaiting verified migration; no results loaded"` can label a deliberately
+empty staging root while data transfers finish. Do not point at incomplete archive
+parts or claim an empty staging dashboard contains the migrated results.
+
+The **RL** and **SFT** tabs filter runs and charts independently. RL selections
+and plot behavior are preserved when switching tabs. SFT defaults to an active
+run, or the latest discovered SFT run, even before its first validation.
+SFT optimizer steps show **total loss**, logged action/box components,
+learning rate, gradient norm and step timing; training does not invent rollout
+success, completion or jerk. SFT evaluation shows the same unassisted success,
+success-conditional completion efficiency, **absolute RMS jerk** and wrong-object
+metrics as RL validation, overall and in fixed grasp/view/push/place sections.
+Both tabs retain smoothing, shared pan/reset, page scrolling and the timing strip.
+SFT recent rows explicitly distinguish loss-only training from the two latest
+validation rows. `python -m so101.train_entity_sim` and the exact corresponding
+Python script are recognized as active SFT trainers; shell/wrapper mentions are
+not. The API exposes `kind: "rl" | "sft"` and scalar plot points, not model or
+per-frame payloads.
+
+Select multiple runs to overlay plots; enable archived experiments to compare
+saved `attempt*.json` branches. RL plots are grouped into independently collapsible
+**Eval metrics**, **Overall training performance**, separate **grasp/view/push/place
+training performance**, and **Training health** sections. Open/collapsed choices
+are remembered in this browser across full refreshes, along with the active RL/SFT
+tab, smoothing slider, archive toggle, search, independent run selections (including
+empty selections), and each tab's focused run and chart view. Updates resume live
+after a refresh. Eval, overall training and health start open; task sections start
+collapsed and only render charts when expanded.
+Each training-performance section includes success, completion efficiency, jerk,
+wrong-object rate, reward and assistance (including discarded and solved groups).
+Training jerk plots subtract **each problem's own expert-reference jerk** from
+each rollout's RMS commanded jerk, then average those differences, with a dashed
+zero line. Reference commands use the same assistance prefix as that rollout.
+There is no pooling across problems or command-level percentile. Historical
+plots recompute the matching problem references without rewriting historical
+losses. Missing references remain gaps; at least four commands are required,
+including failures. Validation retains explicitly labeled absolute RMS jerk.
+The old phase/task selectors are replaced by the sections: eval, overall training
+and health stay run-level, and each category stays pinned to its task.
+Hover for exact raw values and use the smoothing slider (faint lines retain raw
+data). Run comparisons, smoothing and shared pan/reset work across sections.
+The gradient-norm plot starts at the latest logged optimization change, so
+old-scale values do not dwarf calibrated updates. Raw history and other metrics
+remain intact, and new gradient spikes are not filtered.
+The training step-time plot shows duration in seconds (excluding validation and
+checkpoint writes). The top-of-page timing strip shows the last step duration
+for selected runs and a live "Since last step" counter only for runs with a live
+local trainer process or a fresh cloud
+worker heartbeat/contact and updates every
+second, including while polling is paused (activity is last observed until polling
+resumes). Archived runs never show a counter. New trainer
+steps record completion timestamps; older runs use a log-write-time estimate,
+marked `~`. Rewriting the same step does not reset that estimate while the
+dashboard server remains running.
+Cloud history remains available locally during an eviction; worker state, contact
+age and checkpoint backup step appear beside the run. `cloud_training.py watch`
+maintains the mirror without exposing an unauthenticated dashboard on the VM.
+Scrolling over a plot scrolls the page,
+without changing its axes. Drag to pan, and double-click or use **Reset view**
+to restore the full history. The recent-step table shows
+the latest ten training steps and the two earlier validation-only rows.
+
+Metrics refresh every three seconds. Assisted training and unassisted
+validation are labeled separately. Completion efficiency is conditional on
+success; jerk includes failures; discarded training groups remain included in
+training success. Missing historical metrics are gaps, not zeros. Log update
+times show freshness, not proof that a trainer is currently running. A
+partially written log retains the last complete snapshot with a visible
+warning and is retried automatically. The server does not start, stop, or
+modify training.
+
+### Fresh full-module SFT
+
+```sh
+uv run --locked python -m so101.train_entity_sim \
+  --collection data/simulation/entity_commands_with_difficulty_v1 \
+  --output outputs/entity_smolvla_sft_full_triangular_5000 \
+  --pretrained lerobot/smolvla_base \
+  --steps 5000 --batch-size 2 --depth-mode known \
+  --learning-rate 1e-5 --learning-rate-schedule triangular --warmup-fraction .1 \
+  --validation-split outputs/entity_smolvla_trajectory_rl_all_assisted_lr1e4_before_step243_rerun/data_split.json \
+  --validation-interval 250 --validation-seed 961000 --seed 61000 \
+  --training-state outputs/entity_smolvla_sft_full_triangular_5000/training_state.pt \
+  --obstacle-input-end-probability 1
+```
+
+This starts from pretrained SmolVLA plus fresh entity modules, **not an SFT/RL
+checkpoint**, and trains all existing trainable modules (default scope `all`).
+The asymmetric triangular learning rate warms up for **10%** of the run, peaks
+at **1e-5 at step 500** (not the midpoint), then declines to **zero at step 5000**.
+The 2,143-demo corpus excludes the frozen 40 validation demos, leaving **2,103
+training demos**; new normalization statistics use training data only.
+
+Validation every 250 steps uses the same frozen problems, original rollout
+seeds and success predicates as RL: unassisted SDE sampling with **σ = .1**,
+horizon **300** and action chunk **16**. Training and evaluation share one loaded
+model; evaluation restores the training RNG afterward. Use the **SFT** dashboard
+tab for loss-only training charts (including components); success, completion,
+absolute jerk and wrong-object charts remain evaluation-only.
+
+Loss charts show normalized means over valid action/entity labels, not batch
+totals; do not divide them by batch size again. All three supervised-loss charts
+use logarithmic step and loss axes; nonpositive values appear as gaps.
+For optimizer batches larger
+than 16, SFT uses activation-checkpointed microbatches of 16. Outputs are joined
+before computing the loss, preserving full-batch padding/entity weighting and
+one gradient clipping/Adam update per optimizer batch. The log records both the
+optimizer and microbatch sizes.
+
+### Sample-matched local SFT sweeps
+
+```sh
+uv run --locked python -m so101.sweep_entity_sft --dry-run
+uv run --locked python -m so101.sweep_entity_sft
+```
+
+The serial sweep starts only after the original batch comparison has completed
+and no trainer is active. It runs batches64/128 crossed with learning rates
+3e-6/1e-5/3e-5, each processing24,576 sequence samples (384/192 updates).
+New pilots use **10% warm-up followed by constant LR**, intentionally not the
+original triangular decay. Checkpoints and frozen40 evaluations occur at equal
+sample-budget quarters, not equal optimizer-step intervals.
+
+A deterministic held-out loss probe uses four fixed frames per frozen problem,
+training-only normalization, fixed diffusion noise/time, and the original
+supervised reductions without gradients. It reuses the live policy and restores
+training RNG/mode. Evaluation checkpoints retain full optimizer/RNG/history
+under each run's `checkpoints/`; latest resumable state is still overwritten.
+New log rows record `samples_seen`, and evaluation rows include supervised loss
+and evaluation duration. Contrast loss is no longer trained or plotted.
+
+Results and sample-axis loss/success plots are written under
+`outputs/entity_smolvla_sft_sweep_24576`. Existing outputs are preserved, and
+rerunning the same command resumes incomplete trials with strict recipe checks.
+Equal exposure is only a compute proxy; wall time, optimizer overhead, valid
+label counts and sampling streams can differ. Adam betas remain fixed.
+Frozen40 is used for tuning, not an independent final test set; pilot rankings
+need seed confirmation. The sweep does not automatically deploy a winner,
+restart RL, or provision cloud resources.
+
+### Long assisted trajectory RL
+
+```sh
+PYTORCH_MPS_HIGH_WATERMARK_RATIO=.65 PYTORCH_MPS_LOW_WATERMARK_RATIO=.5 \
+OMP_NUM_THREADS=2 uv run --locked python -m so101.train_trajectory_rl \
+  --checkpoint outputs/entity_smolvla_commands_norm_preserved_5000 \
+  --collection data/simulation/entity_commands_varied_recovery_intact_2127 \
+  --output outputs/entity_smolvla_trajectory_rl_all_assisted_lr1e4 \
+  --steps 5000 --learning-rate 1e-4 --curriculum-mode mastery \
+  --rl-estimator denoising-grpo --smoothness-advantage-weight 0 \
+  --jerk-regularizer-weight .02 --jerk-scale 6 \
+  --grasp-curriculum-max .95 --view-curriculum-max .95 \
+  --push-curriculum-max .95 --place-curriculum-max .95
+```
+
+Gold-prefix assistance now works for all four tasks (grasp/view defaults remain
+zero unless explicitly enabled). Each task/obstacle slice independently drops
+by five percentage points only after four perfect eight-rollout groups and
+a perfect assisted task-wide check at that same level. Unassisted validation
+is logged separately. Low success or stalled assistance does not stop training;
+non-finite gradients do, before corrupting the last completed state.
+
+Every completed step atomically saves `latest_state.pt`, containing trainable
+parameters, optimizer, curriculum/log, and sampling RNG states. Resume with
+the same arguments plus `--resume`; the atomic state is authoritative even
+if an interruption left the separate JSON/model exports incomplete.
+On Macs, run only one model-loaded trainer or qualification process at a time.
+The live worker uses `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.65` and
+`PYTORCH_MPS_LOW_WATERMARK_RATIO=0.5` to leave unified-memory headroom; these
+limit the MPS allocator, not total process/system memory.
+`run_config` in the log records the launch arguments. Updates combine
+task-reward policy gradients with a reference-margin jerk regularizer: no supervised demonstration loss or replay
+minibatches. Expert episodes still provide scene initialization, gold-prefix
+assistance, and reward references; held-out validation episodes remain excluded
+from the training pool. Old checkpoints retain their optimizer history, but
+receive no new supervised gradients. `training_objective_changes` records the
+objective transitions; historical supervised metrics remain intact.
+The obsolete `--sft-coefficient`, `--sft-batch-size`, and `--policy-target-kl`
+flags are removed.
+
+With `--jerk-regularizer-weight .02`, success/completion advantages retain
+weights **1 / 0.5**; `--smoothness-advantage-weight` must be **0** to avoid
+counting jerk twice. The direct regularizer is
+`max(RMS_command_jerk - problem_reference_jerk, 0)^2 / jerk_scale^2`, using the same
+recorded-noise denoising derivative as the pilot trials, with observations
+held fixed. It is not a gradient through MuJoCo.
+
+Each problem is identified by its source episode, not its command category
+(grasp/view/push/place). Its margin is the measured jerk of **that episode's own
+successful expert trajectory**, at the exact gold-prefix assistance level.
+No P90 or other aggregation across problems is used. Measurements require 10 Hz.
+Unlike the fixed-horizon pilot, production stops on success, so reference
+suffixes stop at their recorded end (or the configured horizon) without
+artificial hold padding. Reference commands are loaded on demand, and margins
+are cached as assistance changes. `jerk_reference_margins.json` records the
+source catalog, protocol and measured profiles. Missing references disable
+only that problem's jerk loss.
+An unpadded suffix with fewer than four reference commands is unavailable,
+not a measured zero jerk; its loss is disabled explicitly. A genuine zero
+measured from at least four commands remains active.
+
+Jerk gradients apply to successful and failed rollouts with at least four
+commands **only in groups with at least one successful rollout**.
+Zero-success groups are discarded from every learning component, including
+jerk and experimental boundary losses; they cannot advance Adam momentum.
+Task and jerk gradients are averaged over their own group counts before
+combination, shared clipping and full AdamW. Group logs include margins and
+losses; step logs include weighted component norms.
+Frozen validation also retains each source, noise seed, success, rejection
+reason and jerk summary, so comparisons can match successful rollouts instead
+of treating early failures as smoothness improvements.
+
+The experimental `--action-boundary-weight` (default **0**) adds a separate feasibility
+loss on raw arm targets: squared excess of the rollout's largest arm correction
+above the execution guard's **5-degree rejection limit**, divided by
+`--action-boundary-scale` squared (default **6 degrees**).
+It includes the rejected command even when no command executes, excludes the
+gripper, and does not need an expert reference. Its denoising gradient bypasses
+clipping, so saturated or rejected proposals can be corrected. Boundary gradients
+are zero for all proposals the guard accepts, including permitted clipping.
+They are averaged over their own eligible-group count before combination with task
+and jerk gradients. The execution guard is unchanged: an arm excursion above
+5 degrees still rejects the rollout. Logs record boundary losses, rejection
+counts, component norms and objective transitions. This option is not a claim
+that pass rates have recovered. The initial mean-excursion prototype penalized
+valid clipping as well; its matched trial removed view rejections
+but did not restore view passes and degraded other command probes, so it remains
+disabled in the canonical recipe.
+
+`--recover-zero-success-groups` makes the mastery curriculum recover when a
+group has no task-reward signal: increase that command's gold-prefix assistance
+by the existing curriculum increment, capped at its configured maximum.
+Perfect-group streaks reset at the new level; the existing mastery check still
+controls decreases. Losses and Adam updates are unchanged, and each problem's
+jerk reference uses its actual assistance. Recovery events are logged.
+Assisted training gains are not evidence of recovery: use the unchanged
+unassisted frozen validation to judge improvement.
+
+The legacy/diagnostic smoothness score remains
+`min(expert_jerk_p10 / max(rms_jerk, 1e-6), 1)`, not a within-group ranking.
+The reference is fixed per task in `data_split.json`; jerk is the RMS third
+difference of the five commanded arm-joint positions over the policy suffix.
+Completion and the diagnostic smoothness score remain success-only. Without
+the new regularizer (weight 0), each component is
+independently centered and standardized before combining advantages, with
+default success/completion/smoothness weights **1 / 0.5 / 1**. The logged scalar
+reward uses those same weights on the unnormalized scores.
+
+An eight-of-eight successful training problem enters the persistent
+`solved_problems` bucket, identified by episode source and exact assistance
+level. Historical perfect training groups seed the bucket on first resume;
+held-out episodes are excluded. Each step samples one additional problem
+uniformly from the bucket as it existed before that step, and collects a fresh
+group of eight stochastic rollouts. When all succeed, the success advantage
+is zero, leaving completion and the jerk regularizer to optimize. If failures
+return, their success signal is retained. Solved sampling neither lowers
+assistance nor advances mastery; ordinary task sampling continues unchanged.
+The bucket and sampling RNG are saved in the atomic resume state. An empty
+bucket simply waits for the first perfect group; no solved group is fabricated.
+Group logs distinguish `sampling_bucket: main` from `solved`; dashboard training
+aggregates include both, including their different applied assistance levels.
+
+### Data browser and task difficulty
+
+The read-only browser is at **http://127.0.0.1:8765/data**, linked from the
+dashboard. Filter source examples, recent policy trajectories, and exact
+source/assistance entries in the easy bucket by task, difficulty, usage and
+policy outcome. It joins logged source IDs to the current frozen split and
+the saved solved bucket. Discarded groups count as training attempts; passing
+an expert demonstration is not a policy pass. Easy-bucket membership means a
+historical perfect group at the displayed assistance, not unassisted mastery.
+Legacy examples remain explicitly **unrated**.
+
+`collect_difficulty_sim.py` generates four authored levels (0 easy, 1 standard,
+2 hard, 3 challenge) for each task using the procedural physics expert, without
+loading a policy. Levels describe scene factors, not measured policy pass rates:
+
+| Task | Increasing difficulty |
+|---|---|
+| Grasp | Clear central pickup; outer reach/rotation; distant camera/clutter; obstacle detour with collision-free retention |
+| View | Visible/central; off-center; initially outside the image; genuinely occluded initially, then parallax |
+| Push | Short straight; diagonal; cross-workspace; long diagonal with tighter destination tolerance |
+| Place | Short carry; diagonal carry; cross-workspace carry; longer carry and precise release |
+
+SO-101 has no mobile base: "search" means wrist/arm camera motion within reach.
+Search/occluded view scenes suppress unseen entity centers **and depth** so the
+policy cannot read the hidden target's ground-truth coordinates. Every scene
+saves its initial camera visibility and geometry. New per-scene destination
+tolerances and declared collision constraints are restored and enforced by RL;
+legacy scene criteria are unchanged.
+
+```sh
+# Sequential, model-free generation. Existing directories require explicit --resume.
+uv run --locked python -m so101.collect_difficulty_sim \
+  --root data/simulation/task_difficulty_v1 --count 1 --attempts-per-case 4 \
+  --resume --base-collection data/simulation/entity_commands_varied_recovery_intact_2127 \
+  --merged-root data/simulation/entity_commands_with_difficulty_v1
+```
+
+Increase `--count` in a new root for a larger range of seeded examples.
+Counts are bounded at 100 per cell and 10 attempts per example to keep seed
+ranges disjoint. Resume requires the original seed. Missing successful cells
+are reported explicitly and the command exits nonzero; incomplete collections
+are not exported as merged training collections.
+Failed experts and invalid scene attempts remain in the collection report;
+only successful, verified demonstrations enter `successful_episodes` and the
+optional separate merged collection. The existing run and its frozen validation
+cases are **not changed automatically**. Adopting a new corpus requires an
+explicit refresh/handoff; refresh also recomputes expert bounds, so compare
+jerk in raw units rather than assuming old/new smoothness scores are identical.
+
+Old policy logs contain only outcome metrics, not trajectories: the browser
+labels these **summary-only** rather than substituting expert images for policy
+footage. Future trainer invocations default to `--record-rollouts`: the first
+rollout in each main/solved group saves every executed bounded action, measured
+joint states, full physics positions, its seed and actual wrist frames every 16
+policy steps plus first/last frames. Open an example and click **Play side-by-side
+movie** for synchronized overview/wrist playback. **Previous/Next** arrows move
+through every retained recording of that source across training iterations
+(including multiple recordings at the same step); **Source expert** returns to
+the demonstration. Summary-only and expired iterations are not invented as
+movies. The slider still scrubs original wrist frames and plots the action trace.
+Recording covers the policy suffix after expert
+assistance. `--rollout-retention-steps 20` bounds retained step directories;
+expired recordings keep their historical summaries. Use `--no-record-rollouts`
+to disable. New recordings render both views from saved full physics positions.
+Legacy sources pair original wrist images with an explicitly labeled
+action-reconstructed overview; older policy recordings reconstruct both views
+from their saved commands and assistance prefix. These reconstructions are not
+claimed to be original camera footage. Playback requires `ffmpeg` with H.264
+support. It runs one on-demand, policy-free rendering subprocess at a time,
+caches at most 20 movies under `outputs/.data-browser-playback`, and supports
+seeking. It never loads another neural policy or changes training checkpoints.
+
+### Why jerk can still rise
+
+`uv run --locked python -m so101.analysis.audit_trajectory_jerk <run>/trajectory_rl.json`
+audits saved evidence without a model. The current measure is RMS third finite
+differences of five **bounded commanded arm-joint positions**, in degrees/frame^3
+at 10 Hz; multiply by 1000 for degrees/s^3. It excludes the gripper, assisted
+prefix and prefix-to-policy handoff. It is not measured mechanical joint jerk.
+
+The inverse-jerk score is absolute, but its advantage is still independently
+standardized within successful rollouts; completion and success are separately
+standardized too. Combined advantages are clipped and divided by their group
+L1 norm. Thus absolute reward magnitudes do not survive into the update, worse
+jerk can coexist with positive combined advantage, and doubling the jerk weight
+does not double the final update. The inverse score is also compressed near
+zero when policy jerk greatly exceeds the expert reference.
+Failures receive zero smoothness reward regardless of jerk, and all-failure
+groups are discarded. Dashboard/evaluation jerk nevertheless averages **all**
+rollouts, so the plotted population is wider than the smoothness objective.
+At evaluation step 240, push had zero successes: none of those unassisted
+failures receives a smoothness bonus under this objective.
+
+Before the reference-margin change, fixed unassisted evaluation jerk rose from **6.309 at step
+190 to 7.138 at step 240** (+13.1%), so changing training assistance is not the
+whole explanation. Across steps 215-243, 142 successful rollouts had below-group-
+mean smoothness but positive combined advantages; solved groups were 29/261
+accepted groups (11.1%), at mean assistance 62.1%. They have no success-advantage
+variation when perfect, but retain completion/smoothness competition and cannot
+guarantee the combined update improves either. Fixed stochastic sampling also
+introduces noise, but these logs do not isolate noise versus optimizer effects.
+
+Standardization is not ranking, and does not inherently prevent learning a
+jerk-only objective. These logs do not establish that scalar-reward centering
+is necessary or sufficient to fix the learning signal. Qualify jerk alone
+before choosing how to combine it with task objectives.
+
+`experiment_jerk.py` runs isolated real-policy trials from a reference checkpoint,
+without touching its weights, optimizer or STOP marker. Fixed trials use exactly
+eight source problems (two per task), the same training noise seeds each step,
+and independent fixed probe noise. Default pilot scope is 64 commanded actions
+after a fixed 80% expert prefix. Rollouts continue after success so an earlier
+stop cannot artificially lower jerk; completion uses the first sustained goal
+time. Invalid/truncated rollouts are reported and penalized in score-function
+trials. This is a short assisted pilot, not a full unassisted-task qualification.
+
+```sh
+PYTORCH_MPS_HIGH_WATERMARK_RATIO=.65 PYTORCH_MPS_LOW_WATERMARK_RATIO=.5 \
+uv run --locked python -m so101.experiments.experiment_jerk --steps 5 \
+  --output outputs/jerk_trials/score --representation negative-rms
+uv run --locked python -m so101.analysis.analyze_jerk_experiment outputs/jerk_trials/score/experiment.json
+```
+
+`--method pathwise` is an experimental alternative: differentiate a squared
+excess-RMS jerk loss of bounded executed commands through the recorded Gaussian draws and all
+denoising steps. Reentrant activation checkpointing limits memory. Cross-chunk
+jerk derivatives are included; observation/state-feedback derivatives through
+MuJoCo are **not**, so this is a local on-policy regularizer, not an unbiased
+full simulator gradient. It uses no expert action targets or imitation loss.
+The jerk margin is **each problem's own successful reference trajectory jerk**,
+not a percentile or pooled command statistic. Reference
+commands are measured after the same assistance prefix, over the same fixed
+action horizon; if the demonstration ends early, its final command is held to
+fill the window. Only recordings at the matching 10 Hz are used. The loss is
+`max(RMS_jerk - problem_reference_jerk, 0)^2 / jerk_scale^2`, so there is no smoothing
+pressure below that problem's reference. A problem without a usable reference has
+its jerk loss **disabled**, not replaced by zero or another problem's margin;
+its normal policy gradient remains active. Reports identify each problem's
+source, command, margin, and explicit reason when disabled. Old pooled-P90
+calibration files are rejected by new trials rather than silently reused.
+
+Pathwise trials calibrate and save `jerk_reference_margins.json` automatically.
+To measure once and reuse the exact same calibration:
+
+```sh
+uv run --locked python -m so101.jerk_reference \
+  --split outputs/entity_smolvla_trajectory_rl_all_assisted_lr1e4/data_split.json \
+  --output outputs/jerk_trials/reference_margins.json --horizon 64 --assistance .8
+# Pass --jerk-reference-margins outputs/jerk_trials/reference_margins.json to a pathwise trial.
+```
+
+Changing the horizon, assistance or frame rate requires a matching calibration.
+Earlier zero-margin qualification results predate this reference budget.
+Noise recording is opt-in and does not change sampled actions or RNG sequence.
+`--combined` retains separately normalized success/completion advantages;
+pathwise mode adds their policy gradient to the analytic jerk gradient.
+Combined trials log the actual weighted task/jerk gradient norms and their
+alignment before shared clipping and Adam preconditioning.
+`--varied --fresh-training-noise --steps 30` changes the eight training sources
+and noise each step while retaining the fixed probe panel. `--init-state` and
+`--continue-optimizer` support an explicit experimental continuation.
+Varied-data continuations restore the saved problem-sampling state and advance
+training-noise seeds rather than repeating the first batches after a pause.
+
+Run only one trial worker at a time. Experiments use full AdamW, no KL guards,
+backtracking or supervised loss. Logs/checkpoints stay in their own output
+directory, and no experimental objective becomes the production default
+without measured qualification.
+
+For harder data, collect into a separate directory while RL continues.
+Once a new merged collection is verified, create the run's `STOP` file.
+The trainer finishes and checkpoints its current step, then exits. Remove
+`STOP` and resume with the new `--collection`, `--resume --refresh-corpus`.
+This rebuilds the training pool and expert bounds while retaining the
+same validation cases and learned assistance levels. The new collection must
+retain the original episodes as well as the additions.
+
+### Denoising-path policy gradients
+
+Add these flags to the trajectory trainer to use sampled-path likelihoods
+instead of the default signed flow-matching MSE:
+
+```sh
+--rl-estimator denoising-grpo --denoising-noise-scale .1 --policy-clip .2
+```
+
+This keeps the flow model and relative success/completion/jerk advantages,
+but samples Gaussian reverse-flow transitions and differentiates their
+recorded log probabilities with a clipped policy-ratio objective. Log
+densities sum over latent coordinates, never average inside the probability
+ratio. A fixed `1 / (denoising_steps * chunk_size * latent_dimensions)`
+scales the policy loss outside that ratio, keeping the established gradient
+scale. Trajectory scores still sum over decisions
+without trajectory-length normalization.
+Likelihood recomputation uses the recorded path, not fresh denoising noise.
+Only the action input/output projections are trained; observation features
+and their cached prefix remain frozen.
+The trainer computes the frozen action expert in float32: bfloat16 rounding
+otherwise makes tiny action-input updates discontinuous and undermines
+likelihood-gradient accuracy. Frozen vision/text prefix
+features can remain bfloat16. This precision choice is recorded in
+`policy_optimization` and reapplied on trainer resume.
+Full entity checkpoints also record and restore the expert dtype before
+loading weights; older checkpoints without that metadata keep legacy
+loading behavior.
+
+The final transition marginalizes noise in output coordinates that cannot
+reach the simulator (padded dimensions and action slots beyond the execution
+window). Earlier transitions retain their full likelihood because those
+latents can influence later physical actions. This removes nuisance score
+variance without changing the expected reward gradient; even invalid first
+actions remain inside the scored execution window.
+
+Updates apply the full AdamW proposal at the configured learning rate after
+ordinary gradient-norm clipping. There are no conditional-KL probes,
+backtracking, proposal-fraction scaling, or KL-based update rejection.
+The policy-ratio clipping objective remains; it does not constrain the first
+Adam step on fresh data.
+Logs include policy/combined gradient norms (identical without imitation),
+zero replay-gradient norm for historical compatibility, and whether an optimizer
+update was applied. If no groups are accepted, the trainer
+explicitly skips the optimizer update: no Adam momentum, weight decay, or
+optimizer-counter advancement is applied.
+
+The sampler uses `sigma(t) = noise_scale * sqrt(t)`, with the corresponding
+reverse-SDE drift correction. This avoids endpoint singularities while
+keeping positive variance in every sampled transition, including the last
+transition to zero. Zero noise recovers the original Euler ODE sampler, but
+likelihood-based training requires a positive noise scale.
+
+Training, mastery checks, and trainer validation all use the selected
+sampler. Other existing evaluation/control entry points still use the
+original ODE sampler; their results are not SDE-policy evaluations.
+Deterministic inference after SDE training needs separate evaluation.
+Resume with the same sampler flags as the checkpoint's `run_config`.
+For an estimator handoff, first request a graceful `STOP`, then resume
+the latest atomic state with the new flags. Estimator changes are logged;
+the optimizer, assistance levels, validation split, and RNG state survive.
+
+## Video dependencies
+
+On Linux ARM64, this project excludes TorchCodec using a platform-specific uv
+override. Its published 0.11.1 ARM64 wheel requires CUDA libraries even from
+the CPU index. LeRobot automatically falls back to PyAV, whose wheel includes
+FFmpeg libraries. Video encoding and decoding work without a system `ffmpeg`.
+Do not explicitly select the `torchcodec` video backend on that platform.
+
+For TorchCodec on other platforms, install shared FFmpeg as the upstream
+installation guide instructs:
+
+```sh
+# macOS Apple Silicon
+brew install ffmpeg
+
+# Ubuntu/Debian (on your own machine, not inside Dockyard)
+sudo apt install ffmpeg
+```
+
+## Connect the robot
+
+Run on the computer with direct USB access to the arm. Dockyard did not expose
+any serial ports during setup, so hardware communication and calibration have
+not been verified. Cameras also require access from the process running LeRobot.
+
+Discover each controller with `uv run lerobot-find-port` and substitute its
+actual port below. Linux ports commonly look like `/dev/ttyACM0`; macOS ports
+look like `/dev/tty.usbmodem...`. The examples use Linux port names.
+On Linux, your account needs permission to open the serial device, typically
+through the `dialout` group (log out and back in after changing group membership).
+
+### Motor setup, only when required
+
+Skip this if the vendor already configured the motors. For unconfigured motors,
+follow the SO-101 assembly guide: connect only the single motor requested by
+the setup program, not the entire daisy chain.
+
+```sh
+uv run lerobot-setup-motors \
+  --robot.type=so101_follower \
+  --robot.port=/dev/ttyACM0
+```
+
+If you also have a leader:
+
+```sh
+uv run lerobot-setup-motors \
+  --teleop.type=so101_leader \
+  --teleop.port=/dev/ttyACM1
+```
+
+### Calibrate
+
+Follow the interactive prompts and the SO-101 guide. Keep the same IDs for
+subsequent commands so LeRobot can reuse the saved calibration.
+
+```sh
+uv run lerobot-calibrate \
+  --robot.type=so101_follower \
+  --robot.port=/dev/ttyACM0 \
+  --robot.id=so101_follower
+```
+
+If you also have a leader:
+
+```sh
+uv run lerobot-calibrate \
+  --teleop.type=so101_leader \
+  --teleop.port=/dev/ttyACM1 \
+  --teleop.id=so101_leader
+```
+
+Calibration is stored in LeRobot's user cache, not in this directory. Moving to
+another computer therefore requires copying calibration or calibrating again.
+
+### Teleoperate, with a leader and follower
+
+To teleoperate with the USB camera and a live Rerun display, set the verified
+arm ports and camera index on the host:
+
+```sh
+export FOLLOWER_PORT=/dev/tty.usbmodemFOLLOWER
+export LEADER_PORT=/dev/tty.usbmodemLEADER
+export CAMERA_INDEX=0
+bash scripts/teleoperate.sh
+```
+
+Replace the example values using `uv run lerobot-find-port` and
+`uv run lerobot-find-cameras opencv`. The script uses 640x480 at 30 FPS for
+the camera and a 30 Hz control loop. Extra LeRobot arguments can be passed
+to the script, for example `bash scripts/teleoperate.sh --fps=10`.
+This command moves the follower; clear the workspace before starting.
+
+Clear the workspace and be ready to disconnect power before starting:
+
+```sh
+uv run lerobot-teleoperate \
+  --robot.type=so101_follower \
+  --robot.port=/dev/ttyACM0 \
+  --robot.id=so101_follower \
+  --teleop.type=so101_leader \
+  --teleop.port=/dev/ttyACM1 \
+  --teleop.id=so101_leader
+```
+
+If you bought only a follower, leader/follower teleoperation requires a separate
+leader or a different supported input device.
+
+For cameras and dataset recording:
+
+```sh
+uv run lerobot-find-cameras opencv
+uv run lerobot-record --help
+uv run lerobot-replay --help
+```
+
+See https://huggingface.co/docs/lerobot/en/il_robots for camera configuration
+and the recording workflow. No motor setup, calibration, or movement is run
+automatically by this project.
+
+## Describe the current scene (camera only)
+
+For a single fresh camera snapshot and a Copilot description, run on the Mac:
+
+```sh
+uv run --locked python -m so101.describe_scene
+# Select a different camera or model if needed:
+uv run --locked python -m so101.describe_scene --camera_index=0 --model=gpt-4.1
+```
+
+This opens only the camera, sends its JPEG directly to a tool-free Copilot SDK
+session, prints the description, and exits. It never connects to the follower
+or changes motor torque. It uses the same Copilot authentication described below.
+`CAMERA_INDEX` sets the default camera index. Close other camera apps first and
+allow camera access for the terminal if macOS prompts. The image leaves the Mac
+for remote inference. Capture and SDK failures are reported as errors, not scene
+descriptions.
+
+Verified on this Mac on October 24, 2026: camera 0 supplied a fresh image and
+Copilot returned a description of a green studded baseplate and light-gray
+bricks, noting blur and tight framing. This camera-only check does not verify
+follower feedback, physical motion, or visual accuracy.
+
+## Host-side Copilot robot chat
+
+Run this application **on macOS**, not in Docker. It uses the Copilot Python SDK
+with real image tool results and direct LeRobot access to the follower. The
+leader is not needed. Stop teleoperation and other camera/robot apps first.
+
+Install/authenticate GitHub Copilot CLI if you have not already:
+
+```sh
+brew install copilot-cli
+copilot
+# Use /login in the CLI if prompted, then exit the CLI.
+```
+
+Your account needs Copilot access. The SDK downloads its own pinned runtime on
+first use and uses your local GitHub authentication. Camera images and chat
+content are sent to the configured Copilot model for inference.
+
+From this directory on your Mac:
+
+```sh
+uv sync --locked
+
+# No hardware: simulated joints and an explicitly labeled black test image.
+uv run python -m so101.robot_chat --simulate=true --motion=true
+
+# Real camera and position feedback, no commanded motion.
+uv run python -m so101.robot_chat
+
+# Real camera plus small follower joint moves.
+uv run python -m so101.robot_chat --motion=true
+```
+
+Defaults are your follower port `/dev/tty.usbmodem5B901012531`, camera `0`, and
+model `gpt-4.1`. Override with `FOLLOWER_PORT` / `CAMERA_INDEX`, or CLI options:
+
+```sh
+uv run python -m so101.robot_chat \
+  --follower_port=/dev/tty.usbmodem5B901012531 \
+  --camera_index=0 \
+  --model=gpt-4.1 \
+  --motion=true
+```
+
+Example conversation:
+
+```text
+Look at the camera and describe the workspace. Do not move.
+Read the current joint positions.
+Move wrist_roll by +2 degrees, then look again and describe the change.
+```
+
+To run one instruction and exit instead of opening an interactive prompt:
+
+```sh
+uv run --locked python -m so101.robot_chat --motion=true \
+  --prompt="Observe the scene and read joint positions. Move wrist_roll by +1 degree exactly once, then read positions and observe again. Report measured feedback. Do not move any other joint."
+```
+
+One-shot mode uses the same motion limits and shutdown behavior as interactive
+mode, including releasing torque on exit. Status and motion feedback are logged
+to the terminal independently of the model's description.
+
+The tools are `observe_scene`, `robot_status`, `nudge_joint`, and `stop_robot`.
+Only those tools are allowlisted; shell/filesystem permissions are denied.
+`observe_scene` returns JPEG bytes to the model, not a path it cannot read.
+Images are captured on demand, not streamed. Tool calls and errors are logged
+to the terminal. `/stop` latches motion off between turns without asking the
+model. `/quit` exits. Ctrl-C interrupts the app, including during a model turn;
+pending motion checks the stop flag between trajectory steps.
+
+### Motion limits and physical precautions
+
+Support the follower in a clear, stable starting pose **before launching**.
+Startup disables torque and validates existing calibration; it does not
+recalibrate. Even the observation-only mode connects to the motor bus and
+disables torque, so an unsupported arm can fall. Torque is enabled on the first
+motion request, after priming all goal positions from fresh joint feedback.
+
+The chat and teacher tools currently expose single-joint relative nudges:
+
+- At most 5 degrees per request, at a commanded 5 degrees/second.
+- Gripper uses 0-100 percentage units instead of degrees, with the same step/rate limits.
+- Targets stay within 15 units of each joint's startup position.
+- At most three moves per user turn.
+- Motion is serialized, completion is checked from feedback, and hardware faults
+  latch stop until restart.
+
+Direct control can also call `MotionController.move_to({...})` with absolute
+joint targets. This is one synchronized multi-joint trajectory and consumes one
+move, regardless of its distance within the configured bounds. For example,
+`controller.move_to({"shoulder_pan": 20, "shoulder_lift": 60})` moves both joints
+together, holding unspecified joints at their measured starting positions.
+Each joint advances at at most five units/second; intermediate servo updates do
+not split the request into separate nudges or require camera checks. Feedback
+checks enforce joint bounds, an eight-unit maximum tracking error, and a
+two-unit limit on uncommanded drift or overshoot beyond the planned path.
+Completion requires measured progress from every moving joint. Opt-in partial
+results identify unfinished targets explicitly. Configure bounds that contain
+the intended pose; the default startup envelope remains +/-15 units.
+
+These bounds are conservative starting values, **not collision avoidance,
+certified velocity limits, or proof that a pose is safe**. There is no inverse
+kinematics, depth estimation, tabletop calibration, or pick-and-place skill yet.
+The model can inspect and nudge; it cannot reliably sort Lego pieces yet.
+
+The software stop prevents further targets but may leave torque enabled and
+the arm pursuing its last target. Normal shutdown attempts to disable torque;
+communication failure can prevent that. Support the arm on exit and keep its
+physical power cutoff accessible. Do not rely on a model tool or Ctrl-C as a
+hardware emergency stop. The app lock excludes other copies of this app, not
+independent LeRobot programs.
+
+### Verification and handoff
+
+```sh
+uv run pytest -q tests/test_robot_control.py
+```
+
+Container verification covers simulated movement limits, stop/fault behavior,
+SDK image tool results, runtime startup, and restricted session creation.
+An authenticated model identified a synthetic image's red/green halves and
+executed a simulated wrist nudge through the SDK tools. The camera-only command
+above has also been exercised on the Mac with a real image.
+
+On October 24, 2026, a real one-shot Copilot session observed the scene, read
+follower feedback, requested one +1-degree wrist-roll nudge, and reobserved.
+The session reported wrist roll changing from approximately 109.23 to 109.85
+degrees toward a 110.23-degree target, with other joints unchanged. No clear
+camera-image change was distinguishable. This verifies one small-motion
+integration trial, not precise one-degree positioning or general motion safety.
+The controller's completion tolerance is one unit, so a completed nudge can
+still fall short of its requested delta.
+
+The user did not observe the wrist motion, so that trial is not considered
+camera-verified. A subsequent direct test bypassed Copilot, captured a baseline
+image, commanded two +5-degree shoulder-pan nudges, and captured images after
+each nudge while torque remained enabled. Direct inspection showed a substantial
+left/up shift of the baseplate and bricks in the image. Shoulder-pan feedback
+changed from -6.46 to +1.98 degrees (approximately +8.44 degrees).
+The evidence is saved in `outputs/direct_motion/before.jpg`,
+`outputs/direct_motion/after_step_1.jpg`, and
+`outputs/direct_motion/after_step_2.jpg`. This verifies camera-visible direct
+movement, not the earlier wrist-motion claim or general manipulation capability.
+
+For a new setup, start in simulation, then observation-only mode, then try one
+small wrist movement with a clear workspace.
+
+Later on October 24, direct assistant control using wrist camera 0 and laptop
+overview camera 1 picked up one long gray piece with coordinated `move_to`
+trajectories. Both cameras showed it held off the table at the lift endpoint and
+again 66.6 seconds later; it was then lowered, released, and the controller closed.
+Four earlier closures/lifts were empty and are retained in the trace. Evidence
+and measured feedback are in `data/direct_grasp/pickup_pose_20261024_1118/`,
+especially `overview_0023.jpg`, `overview_0024.jpg`, and `outcome.json`.
+This is a single direct pickup, not a verified autonomous SDK grasp, a repeatable
+policy, or a synchronized training dataset.
+
+Subsequent near-vertical approaches produced two further verified pickups of the
+large studded gray beam, including a changed starting arm pose and object
+location (`data/direct_grasp/repeatability/`, observations `0017`, `0018`, and
+`0026`). The other large, hollow-side-up gray beam has not been picked up;
+alternation and arbitrary-start reliability remain unverified. The latest
+attempt stopped on a joint-progress fault, without closing on or lifting a
+piece; see `data/direct_grasp/alternating_20261024_1316/status.json`.
+Demonstration collection remains paused.
+
+When `record_demo.py` is used without recording, low-light observations also
+produce brightness-corrected, averaged stationary-frame diagnostic JPEGs.
+Original snapshots are preserved. These derived images and the laptop overview
+remain outside demonstration episodes; recording uses only the wrist stream.
+
+Between moves, the controller preserves previously commanded holding goals,
+including a closed gripper's goal, rather than resetting them to measured
+positions that may lag under load. New trajectories start from those command
+goals. Unexpected movement between requests still latches stop; tracking,
+progress, speed, and travel guards are unchanged.
+
+## Wrist-only simulation and SmolVLA
+
+`robot_sim.py` runs entirely without USB access or real cameras. It uses the
+Apache-2.0 SO-101 model from MuJoCo Menagerie, pinned to
+`f3b6013629c7b94f8ee93fd977b161fa8350f9bc`; `setup` downloads the model,
+referenced meshes, and upstream license under `data/simulation/model/`.
+
+```sh
+uv sync --extra simulation --extra training
+uv run --locked --extra simulation python -m so101.robot_sim setup
+uv run --locked --extra simulation python -m so101.robot_sim collect \
+  --root=data/simulation/gray_beams --episodes=50 --attempts=150 --seed=0
+uv run --locked --extra simulation python -m so101.robot_sim export \
+  --collection=data/simulation/gray_beams \
+  --destination=data/simulation/gray_dataset --repo-id=local/gray_dataset
+uv run --locked --extra simulation --extra training python -m so101.robot_sim train \
+  --dataset=data/simulation/gray_dataset --output=outputs/smolvla_sim \
+  --steps=20000 --batch-size=1 --device=mps
+uv run --locked --extra simulation --extra training python -m so101.robot_sim evaluate \
+  --checkpoint=outputs/smolvla_sim/checkpoints/last/pretrained_model \
+  --root=data/simulation/policy_evaluation --episodes=20 --seed=10000
+```
+
+Use fresh collection, dataset, training, and evaluation directories. For a quick
+training smoke run, use `--steps=2`; that is not enough to learn the task.
+Training saves locally with Hub uploads and W&B disabled. `cpu` and `cuda`
+are also supported device choices. Rendering uses MuJoCo's local OpenGL backend.
+Training uses four persistent data workers and checkpoints every 1,000 steps
+and at completion. New policies predict sixteen actions (1.6 seconds at the
+dataset's 10 Hz, rather than the base model's five-second chunk) and replan
+every sixteen actions (1.6 simulated seconds); evaluation can override this with
+`--action-steps`. Use `train --pretrained=PATH --learning-rate=3e-5` to fine-tune
+an existing local checkpoint on a new collection at a lower learning rate.
+Evaluation saves wrist-frame trajectories, raw predictions,
+applied actions, and contact diagnostics for each rollout, with reproducible
+per-episode sampling seeds. Small finite boundary overshoots (at most five
+degrees or gripper units) are projected to the joint limits and explicitly
+counted in the report; larger or nonfinite predictions stop the rollout.
+
+The scene has white printed arm parts, a table, and two 128 x 16 x 9.6 mm gray
+beam proxies: a studded solid beam and an open hollow beam. Studs are visual-only;
+the hollow beam's base and walls participate in collisions. These are not
+measured CAD replicas of the actual pieces. Initial arm poses, object positions,
+and object yaw vary by seed; modest lighting and color variation is applied,
+while wrist-camera mounting and field of view stay fixed.
+Pass `--varied-layout` to both collection and evaluation to also randomize which
+piece is on each side and increase lateral position jitter to +/-2 cm. This
+prevents identifying the requested piece from a memorized left/right location.
+For corrective demonstrations, add `collect --recovery-checkpoint=PATH`: the
+learned policy first reaches an imperfect intermediate state, then the expert
+records a verified correction and pickup. The untrusted policy prefix is not
+exported as demonstration actions. Repeat `export --collection=PATH` to combine
+nominal and corrective collections.
+
+The scripted IK demonstrator alone uses privileged object poses. It approaches,
+descends, closes separately, requires contact with **both jaws**, then lifts.
+Success requires at least 5 cm elevation and both-jaw retention at every sample
+for one simulated second. No welds, object attachment, or object-pose writes
+are used after reset. Failed attempts remain in the collection report and cannot
+be exported. Targets alternate across independently reset successful episodes.
+
+Only `observation.images.wrist`, six measured joints, and the task condition the
+policy. Actions are absolute joint targets in degrees, with gripper travel mapped
+to 0-100; samples pair pre-action state/images with the next command at 10 Hz
+using the physics clock, not wall time. Diagnostic overviews and privileged
+object poses stay outside the dataset inputs. The exporter labels these datasets
+`so101_sim` and refuses mixed real/sim collections until their joint conventions
+are calibrated. Evaluation reports target-specific physical-contact success on
+new seeds, not training loss or expert success.
+Lifting the unrequested piece stops the rollout and is reported as a failure.
+
+This is a simulation bootstrap, **not a calibrated digital twin or verified
+sim-to-real policy**. Camera extrinsics, servo offsets/compliance, friction, and
+piece geometry still need real-unit calibration and transfer evaluation.
+Neither the training nor evaluation command can deploy a policy to hardware.
+
+The local bootstrap produced ten verified alternating expert episodes
+(1,192 wrist-only frames), and the expert passed another twenty unseen seeds.
+A 20-step MPS fine-tuning smoke run saved a checkpoint with changed weights at
+`outputs/smolvla_sim_verified/checkpoints/last/pretrained_model`. This verifies
+the training path, not a competent learned pickup policy. A subsequent
+evaluation with a 30-second budget stopped both unseen rollouts on invalid
+predicted joint targets (0/2 pickups). A full training run and real-robot
+transfer have not been completed. Detailed artifact checks are in
+`data/simulation/verification.json`.
+
+## Persistent Copilot teacher
+
+The experimental teacher tries to generate a grasp demonstration through slow,
+camera-guided robot interaction, without requiring leader operation:
+
+```sh
+uv run --locked python -m so101.robot_teacher --motion=true
+```
+
+It uses a vision-capable SDK model (`gpt-6.1-sol` by default), supplies a fresh
+image and joint state each turn, permits one bounded movement, and returns
+another image with measured feedback. Override `--model`, `--camera_index`,
+`--follower_port`, `--task`, `--max_steps`, or `--max_seconds` as needed.
+No motion is enabled without `--motion=true`. For hardware-free integration:
+
+```sh
+uv run --locked python -m so101.robot_teacher --simulate=true --motion=true \
+  --workspace=data/robot_teacher_sim --max_steps=2 \
+  --task="Test one wrist nudge, record a finding, then finish blocked because this is simulation."
+```
+
+The default persistent workspace is `data/robot_teacher/` (gitignored).
+`findings.jsonl` stores the model's observations and hypotheses across sessions;
+`runs/<run-id>/` contains timestamped events, camera JPEGs, and the outcome.
+`read_findings` and `record_finding` give the session notebook access without
+general filesystem or shell permissions. Notes are untrusted hypotheses, not
+verified calibration or instructions. Images and notes supplied to Copilot
+leave the Mac for inference. Use a separate workspace for simulated experiments.
+
+Teacher mode deliberately differs from the original chat controller: it allows
+at most 40 movements/turns and 900 seconds by default, one move per SDK turn,
+with arm joints within +/-20 degrees of startup clipped to saved calibration,
+and gripper targets within 0-60 percent. Each move remains at most five units,
+at a commanded five units/second. These are not collision-free envelopes.
+Target completion uses the same one-unit tolerance as ordinary chat and requires
+measured movement in the requested direction; merely being within tolerance while
+stationary is not success. Teacher mode can report `outcome: partial` when valid
+in-bounds feedback shows progress but the target is not reached within two seconds.
+It returns the measured delta, target error, and a fresh image so the session can
+learn the response. This is not a success result or permission to force a blocked
+direction. No progress, unexpected movement, invalid feedback, communication
+errors, and limit violations still latch stop. Ordinary chat retains its strict
+timeout behavior.
+Hardware/camera errors latch stop; budgets cannot be reset by model tools.
+The app holds the same lock as robot chat, but independent teleoperation programs
+still do not participate in it. Startup/shutdown torque precautions still apply;
+normal exit releases torque, including after a candidate grasp.
+
+The teacher cannot certify its own success. `candidate_grasp` requires recorded
+before/after image IDs and is saved with `independently_verified: false`; a human
+or separate image review must establish that the object was actually lifted and
+held. Simulation cannot claim a candidate grasp. Failure, uncertainty, and physical
+or visual blockers should be recorded, not converted into success.
+
+These exploratory per-movement traces are **not yet synchronized LeRobot training
+datasets**. SmolVLA base weights have been downloaded to the Hugging Face cache;
+policy dependencies, MPS inference/training validation, dataset recording, and
+fine-tuning are still pending.
+
+See [PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for the selected SmolVLA direction, teacher loop, visualization,
+demonstration collection, and physical evaluation stages.

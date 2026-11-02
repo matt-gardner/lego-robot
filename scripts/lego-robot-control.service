@@ -1,0 +1,25 @@
+[Unit]
+Description=Container capability broker for the Lego robot dashboard and GPU jobs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -I /opt/lego-robot-control/control_broker.py serve --policy /etc/lego-robot-control/policy.json --state /var/lib/lego-robot-control/jobs.sqlite --specs /etc/lego-robot-control/specs --host 127.0.0.1 --port 8766 --cert /etc/lego-robot-control/server.crt --key /etc/lego-robot-control/server.key
+Restart=on-failure
+RestartSec=5
+UMask=0077
+StateDirectory=lego-robot-control
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lego-robot-control
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

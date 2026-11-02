@@ -1,0 +1,32 @@
+.data-main { max-width: 1540px; margin: auto; padding: 22px; }
+.data-filters { display: flex; flex-wrap: wrap; gap: 12px; }
+.data-filters label { display: grid; gap: 5px; font-size: 12px; color: var(--muted, #929cad); }
+.data-filters select, .data-filters input { max-width: 310px; min-height: 36px; }
+.data-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 16px; }
+.data-example { text-align: left; padding: 14px; min-width: 0; border-radius: 12px; }
+.data-example h3 { margin: 0 0 8px; }
+.data-example p { font-size: 12px; line-height: 1.65; margin: 8px 0; overflow-wrap: anywhere; }
+.previews { display: flex; gap: 6px; }
+.previews figure { flex: 1; margin: 0; min-width: 0; }
+.previews img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #10151c; border-radius: 6px; }
+.previews figcaption { color: #a4afbe; font-size: 10px; }
+.data-pagination { display: flex; justify-content: center; gap: 20px; align-items: center; padding: 24px; }
+dialog { background: #141c28; color: #e8eef5; border: 1px solid #536578; border-radius: 12px; width: min(940px, 90vw); max-height: 90vh; padding: 24px; }
+dialog::backdrop { background: #000a; }
+#detail [hidden] { display: none; }
+dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 420px; overflow: auto; }
+#detail-image { display: block; width: min(640px, 100%); aspect-ratio: 4 / 3; object-fit: contain; margin: auto; background: #10151c; }
+#detail-movie { display: block; width: 100%; background: #10151c; }
+.trajectory-navigation { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 14px 0; }
+#trajectory-position { flex: 1; min-width: 180px; font-size: 12px; color: var(--muted, #929cad); }
+#frame-label { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0; }
+#frame { flex: 1; }
+#action-plot { width: 100%; background: #0e1420; border-radius: 8px; }
+.joint-0 { stroke: #5dc5e9; } .joint-1 { stroke: #a1e568; } .joint-2 { stroke: #f0bf67; }
+.joint-3 { stroke: #d18afb; } .joint-4 { stroke: #f8889b; }
+@media (max-width: 600px) {
+  .data-main { padding: 12px; }
+  .data-filters label { width: calc(50% - 6px); }
+  .data-filters select, .data-filters input { width: 100%; min-width: 0; }
+  dialog { padding: 12px; }
+}

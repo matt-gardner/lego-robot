@@ -1,0 +1,371 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+const vm = require("node:vm");
+
+class Element {
+  constructor(tag = "div") {
+    this.tagName = tag;
+    this.children = [];
+    this.events = {};
+    this.attributes = {};
+    this.dataset = {};
+    this.style = {setProperty() {}};
+    this.value = "";
+    this.checked = false;
+    this.hidden = false;
+  }
+  set textContent(value) { this.content = `${value}`; this.children = []; }
+  get textContent() { return (this.content || "") + this.children.map(child => child.textContent).join(""); }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.content = ""; this.children = [...children]; }
+  setAttribute(name, value) { this.attributes[name] = value; }
+  addEventListener(name, callback) { this.events[name] = callback; }
+  querySelector(tag) {
+    for (const child of this.children) {
+      if (child.tagName === tag) return child;
+      const found = child.querySelector(tag);
+      if (found) return found;
+    }
+    return null;
+  }
+  getBoundingClientRect() { return {width: 0, height: 0}; }
+  focus() {}
+}
+
+function run(id, kind, active = false) {
+  return {
+    id, kind, name: `${kind}-${id}`, active, archived: false, revision: "1",
+    axis: "Optimizer step", config: {}, last_step_at: Date.now() / 1000 - 3,
+    latest_train: {step: 10, learning_rate: 1e-5, step_seconds: 2,
+      ...(kind === "sft" ? {loss: 0.4, action_loss: 0.3} : {success_rate: 0.5, jerk_margin_gap: -1})},
+    latest_eval: {step: 10, success_rate: 0.5, completion_efficiency: 0.7, rms_jerk: 3, wrong_object_rate: 0},
+    series: [],
+  };
+}
+
+async function dashboard(catalog, saved = {}, options = {}) {
+  const elements = new Map();
+  const requests = [];
+  const basePath = options.basePath || "";
+  const storage = new Map(Object.entries(saved));
+  for (const run of catalog) run.series = [
+    {phase: "train", task: "all", points: [run.latest_train]},
+    {phase: "eval", task: "all", points: [run.latest_eval]},
+    {phase: "eval", task: "push", points: [run.latest_eval]},
+  ];
+  const context = vm.createContext({
+    document: {
+      documentElement: {dataset: {basePath}},
+      getElementById(id) {
+        if (!elements.has(id)) elements.set(id, new Element());
+        return elements.get(id);
+      },
+      createElement: tag => new Element(tag),
+      createDocumentFragment: () => new Element("fragment"),
+      createTextNode: value => Object.assign(new Element("text"), {textContent: value}),
+    },
+    localStorage: options.localStorage || {
+      getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value),
+    },
+    ResizeObserver: class { observe() {} },
+    setInterval() {},
+    AbortSignal, Date, console,
+    fetch: async route => {
+      requests.push(route);
+      return {
+      ok: true,
+      json: async () => route === `${basePath}/api/runs`
+        ? {runs: catalog, server_time: new Date().toISOString()}
+        : catalog.find(run => route.endsWith(run.id)),
+      };
+    },
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/so101/dashboard/dashboard.js"), "utf8"), context);
+  await new Promise(resolve => setImmediate(resolve));
+  return {
+    elements, storage, requests, eval: code => vm.runInContext(code, context),
+    reload: () => dashboard(catalog, Object.fromEntries(storage), options),
+  };
+}
+
+test("prefixed dashboard fetches catalog and run details without touching root API", async () => {
+  const page = await dashboard([run("11111111", "rl")], {}, {basePath: "/lego-robot"});
+  assert.ok(page.requests.includes("/lego-robot/api/runs"));
+  assert.ok(page.requests.includes("/lego-robot/api/runs/11111111"));
+  assert.ok(page.requests.every(route => route.startsWith("/lego-robot/api/")));
+});
+
+test("data browser prefixes catalog requests and image/movie endpoints", async () => {
+  const elements = new Map(), requests = [];
+  const context = vm.createContext({
+    document: {
+      documentElement: {dataset: {basePath: "/lego-robot"}},
+      getElementById(id) {
+        if (!elements.has(id)) elements.set(id, new Element());
+        return elements.get(id);
+      },
+    },
+    URLSearchParams,
+    fetch: async route => {
+      requests.push(route);
+      return {ok: true, json: async () => ({runs: []})};
+    },
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/so101/dashboard/data.js"), "utf8"), context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ["/lego-robot/api/runs"]);
+  elements.get("data-run").value = "run/id";
+  assert.equal(vm.runInContext('endpoint({image: "overview"})', context),
+    "/lego-robot/api/data/run%2Fid?image=overview");
+  assert.equal(vm.runInContext('endpoint({movie: "prepare"})', context),
+    "/lego-robot/api/data/run%2Fid?movie=prepare");
+});
+
+test("full reload restores controls and independent RL/SFT selections, focus, chart views and sections", async () => {
+  const rl = run("11111111", "rl"), otherRl = run("44444444", "rl");
+  const sft = run("22222222", "sft"), otherSft = run("33333333", "sft");
+  otherSft.archived = true;
+  let page = await dashboard([rl, otherRl, sft, otherSft], {
+    "rl-selected-runs": JSON.stringify([rl.id, otherRl.id]),
+    "sft-selected-runs": JSON.stringify([sft.id, otherSft.id]),
+  });
+  page.elements.get("smoothing").value = "65";
+  page.elements.get("smoothing").events.input({target: page.elements.get("smoothing")});
+  page.elements.get("archives").checked = true;
+  page.elements.get("archives").events.change();
+  page.elements.get("search").value = "333";
+  page.elements.get("search").events.input();
+  page.elements.get("focus").events.change({target: {value: otherRl.id}});
+  page.eval("state.zoom = [2, 8]");
+  page.eval("state.charts[0].canvas.events.pointerup()");
+  page.eval(`
+    const training = state.charts.find(chart => chart.section.id === "section-training").section;
+    training.open = false;
+    training.events.toggle();
+  `);
+  await page.elements.get("tab-sft").events.click();
+  page.elements.get("focus").events.change({target: {value: otherSft.id}});
+  page.eval("state.zoom = [1, 100]; state.charts.find(c => c.metric.logLog).canvas.events.pointerup()");
+  page.eval(`
+    const loss = state.charts.find(chart => chart.metric.logLog).section;
+    loss.open = false;
+    loss.events.toggle();
+  `);
+  page.elements.get("pause").events.click();
+  page = await page.reload();
+  assert.equal(page.eval("state.kind"), "sft");
+  assert.equal(page.eval("state.smoothing"), .65);
+  assert.equal(page.elements.get("smoothing").value, "65");
+  assert.equal(page.elements.get("smooth-value").textContent, "65%");
+  assert.equal(page.elements.get("archives").checked, true);
+  assert.equal(page.elements.get("search").value, "333");
+  assert.equal(page.elements.get("run-count").textContent, "1");
+  assert.equal(page.elements.get("focus").value, otherSft.id);
+  assert.equal(page.eval("JSON.stringify([...state.selected])"), JSON.stringify([sft.id, otherSft.id]));
+  assert.equal(page.eval("JSON.stringify(state.zoom)"), "[1,100]");
+  assert.equal(page.eval("state.charts.find(c => c.metric.logLog).section.open"), false);
+  assert.equal(page.eval("state.paused"), false, "refresh must reconnect to live updates");
+  await page.elements.get("tab-rl").events.click();
+  assert.equal(page.elements.get("focus").value, otherRl.id);
+  assert.equal(page.eval("JSON.stringify([...state.selected])"), JSON.stringify([rl.id, otherRl.id]));
+  assert.equal(page.eval("JSON.stringify(state.zoom)"), "[2,8]");
+  assert.equal(page.eval("state.charts.find(c => c.section.id === 'section-training').section.open"), false);
+  page.elements.get("reset").events.click();
+  page = await page.reload();
+  assert.equal(page.eval("state.kind"), "rl");
+  assert.equal(page.eval("state.zoom"), null);
+  await page.elements.get("tab-sft").events.click();
+  assert.equal(page.eval("JSON.stringify(state.zoom)"), "[1,100]");
+  page.eval("state.charts.find(c => c.metric.logLog).canvas.events.dblclick()");
+  page = await page.reload();
+  assert.equal(page.eval("state.zoom"), null);
+});
+
+test("explicit empty selections survive reload without selecting defaults in either tab", async () => {
+  let page = await dashboard([run("11111111", "rl"), run("22222222", "sft", true)]);
+  const unselect = async () => {
+    const checkbox = page.elements.get("runs").querySelector("input");
+    checkbox.checked = false;
+    await checkbox.events.change();
+  };
+  await unselect();
+  await page.elements.get("tab-sft").events.click();
+  await unselect();
+  page = await page.reload();
+  assert.equal(page.eval("state.kind"), "sft");
+  assert.equal(page.eval("chosen().length"), 0);
+  assert.equal(page.elements.get("focus").value, "");
+  await page.elements.get("tab-rl").events.click();
+  assert.equal(page.eval("chosen().length"), 0);
+  assert.equal(page.storage.get("rl-selected-runs"), "[]");
+  assert.equal(page.storage.get("sft-selected-runs"), "[]");
+});
+
+test("corrupt, obsolete and invalid preferences or unavailable storage do not break startup", async () => {
+  const catalog = [run("11111111", "rl"), run("22222222", "sft")];
+  for (const preferences of ["{", "null", "[]",
+    JSON.stringify({version: 0, kind: "sft", smoothing: 65, search: "obsolete"}),
+    JSON.stringify({version: 1, kind: "obsolete", smoothing: 100, search: {}, archives: "true",
+      views: {rl: {focus: "missing", zoom: [8, 2]}, sft: {zoom: [1, "100"]}}}),
+    JSON.stringify({version: 1, smoothing: 12, views: {rl: {focus: 123, zoom: [0, null]}}}),
+  ]) {
+    let page = await dashboard(catalog, {
+      "so101-dashboard-preferences": preferences,
+      "rl-selected-runs": '["missing"]', "sft-selected-runs": "{}",
+      "rl-section-open": '{"training":"false","obsolete":false}',
+    });
+    assert.equal(page.eval("state.kind"), "rl");
+    assert.equal(page.eval("state.smoothing"), 0);
+    assert.equal(page.elements.get("smoothing").value, "0");
+    assert.equal(page.elements.get("smooth-value").textContent, "Off");
+    assert.equal(page.elements.get("archives").checked, false);
+    assert.equal(page.elements.get("search").value, "");
+    assert.equal(page.eval("state.zoom"), null);
+    assert.equal(page.eval("state.focus"), catalog[0].id);
+    assert.equal(page.eval("chosen()[0].id"), catalog[0].id);
+    assert.equal(page.eval("state.charts.find(c => c.section.id === 'section-training').section.open"), true);
+    await page.elements.get("tab-sft").events.click();
+    assert.equal(page.eval("state.zoom"), null);
+    assert.equal(page.eval("chosen()[0].id"), catalog[1].id);
+    page = await page.reload();
+    assert.equal(page.eval("state.kind"), "sft");
+    assert.equal(page.eval("state.zoom"), null);
+  }
+  const page = await dashboard(catalog, {}, {
+    localStorage: {
+      getItem() { throw new Error("Storage disabled"); },
+      setItem() { throw new Error("Storage disabled"); },
+    },
+  });
+  await page.elements.get("tab-sft").events.click();
+  page.elements.get("smoothing").value = "95";
+  assert.doesNotThrow(() => page.elements.get("smoothing").events.input({target: page.elements.get("smoothing")}));
+  assert.equal(page.eval("state.smoothing"), .95);
+  assert.equal(page.eval("chosen()[0].id"), catalog[1].id);
+  await page.reload();
+});
+
+test("RL/SFT interaction preserves RL selection, zoom and metrics; SFT uses loss-only rows", async () => {
+  const rl = run("11111111", "rl");
+  const sft = run("22222222", "sft", true);
+  const newerSft = run("33333333", "sft");
+  const page = await dashboard([newerSft, sft, rl], {
+    "rl-selected-runs": JSON.stringify([rl.id]),
+    "rl-section-open": JSON.stringify({training: false}),
+  });
+  assert.equal(page.eval("chosen()[0].id"), rl.id);
+  assert.equal(page.elements.get("recent-head").textContent.includes("Loss"), false);
+  assert.equal(page.eval("seriesFor(sections[1].metrics[2])[0].values[0].raw"), -1);
+  page.eval("state.zoom = [2, 8]");
+  await page.elements.get("tab-sft").events.click();
+  assert.equal(page.eval("chosen()[0].id"), sft.id);
+  assert.equal(page.eval("state.zoom"), null);
+  assert.equal(page.elements.get("run-count").textContent, "2");
+  assert.equal(page.elements.get("observatory-title").textContent, "SFT Observatory");
+  assert.equal(page.elements.get("tab-sft").attributes["aria-selected"], "true");
+  assert.equal(page.elements.get("training-panel").attributes["aria-labelledby"], "tab-sft");
+  assert.match(page.elements.get("recent-head").textContent, /LossSuccessEfficiencyEval RMS jerk/);
+  const rows = page.elements.get("recent").children;
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].children[1].textContent, "SFT loss");
+  assert.equal(rows[0].children[2].textContent, "0.400");
+  assert.equal(rows[0].children[3].textContent, "—");
+  assert.equal(rows[1].children[1].textContent, "Validation only");
+  assert.equal(rows[1].children[2].textContent, "—");
+  assert.equal(rows[1].children[3].textContent, "50.0%");
+  assert.equal(page.eval("seriesFor(sftSections[0].metrics[0])[0].values[0].raw"), 0.4);
+  assert.equal(page.eval("seriesFor(sftSections[1].metrics[2])[0].values[0].raw"), 3);
+  assert.match(page.elements.get("step-timing").textContent, /Last step time: 2s · Since last step:/);
+  assert.equal(page.eval("state.charts.filter(c => !c.section.hidden).every(c => !c.canvas.events.wheel)"), true);
+  assert.equal(page.eval("state.charts.filter(c => c.section.dataset.kind === 'rl').every(c => c.section.hidden)"), true);
+  await page.elements.get("tab-rl").events.click();
+  assert.equal(page.eval("chosen()[0].id"), rl.id);
+  assert.equal(page.eval("JSON.stringify(state.zoom)"), "[2,8]");
+  assert.equal(page.eval("state.charts.find(c => c.section.id === 'section-training').section.open"), false);
+  assert.equal(page.elements.get("recent-head").children.length, 9);
+  assert.equal(page.elements.get("recent").children[0].children[1].textContent, "Training");
+  assert.equal(page.storage.get("rl-selected-runs"), JSON.stringify([rl.id]));
+});
+
+test("a newly discovered SFT run defaults before validation without altering RL", async () => {
+  const rl = run("11111111", "rl");
+  const catalog = [rl];
+  const page = await dashboard(catalog);
+  await page.elements.get("tab-sft").events.click();
+  assert.equal(page.eval("chosen().length"), 0);
+  const sft = run("22222222", "sft");
+  sft.latest_eval = null;
+  sft.series = [{phase: "train", task: "all", points: [sft.latest_train]}];
+  catalog.unshift(sft);
+  await page.eval("refresh()");
+  assert.equal(page.eval("chosen()[0].id"), sft.id);
+  assert.match(page.elements.get("step-timing").textContent, /Not running/);
+  page.eval("state.selected.clear(); saveSelection()");
+  await page.eval("refresh()");
+  assert.equal(page.eval("chosen().length"), 0, "explicit deselection must persist");
+  assert.equal(page.storage.get("sft-selected-runs"), "[]");
+  await page.elements.get("tab-rl").events.click();
+  assert.equal(page.eval("chosen()[0].id"), rl.id);
+});
+
+test("SFT loss plots use log-log coordinates, positive gaps and logarithmic interaction", async () => {
+  const sft = run("22222222", "sft", true);
+  const page = await dashboard([sft]);
+  await page.elements.get("tab-sft").events.click();
+  assert.equal(page.eval("JSON.stringify(sftSections[0].metrics.map(metric => metric.key))"),
+    '["loss","action_loss","box_loss"]');
+  assert.equal(page.eval("sftSections[0].metrics.every(metric => metric.logLog)"), true);
+  assert.equal(page.eval("sections.flatMap(section => section.metrics).some(metric => metric.logLog)"), false);
+  assert.equal(page.eval("sftSections.slice(1).flatMap(section => section.metrics).some(metric => metric.logLog)"), false);
+  page.eval(`
+    globalThis.devicePixelRatio = 1;
+    globalThis.innerWidth = 1000;
+    globalThis.innerHeight = 700;
+    state.smoothing = 0;
+    state.zoom = null;
+    const chart = state.charts.find(chart => chart.metric.key === "loss");
+    const coordinates = [];
+    chart.canvas.getBoundingClientRect = () => ({width: 700, height: 260, left: 0});
+    chart.canvas.getContext = () => ({
+      scale() {}, setLineDash() {}, beginPath() {}, stroke() {},
+      save() {}, clip() {}, restore() {}, fill() {}, fillText() {},
+      moveTo(...args) { coordinates.push(...args); },
+      lineTo(...args) { coordinates.push(...args); },
+      rect(...args) { coordinates.push(...args); },
+      arc(...args) { coordinates.push(...args); },
+    });
+    chart.canvas.setPointerCapture = () => {};
+    const series = state.runs.get("22222222").series.find(series => series.phase === "train");
+    series.points = [
+      {step: 0, loss: 100}, {step: 1, loss: 10}, {step: 5, loss: 0},
+      {step: 10, loss: 1}, {step: 50, loss: -1}, {step: 100, loss: .1},
+      {step: 1000, loss: .01},
+    ];
+    chart.update();
+  `);
+  assert.equal(page.eval("Math.abs((chart.x(10) - chart.x(1)) - (chart.x(100) - chart.x(10))) < 1e-9"), true);
+  assert.equal(page.eval("Math.abs((chart.y(.1) - chart.y(1)) - (chart.y(1) - chart.y(10))) < 1e-9"), true);
+  assert.equal(page.eval("Math.abs(chart.inverseX(chart.x(100)) - 100) < 1e-9"), true);
+  assert.equal(page.eval("coordinates.every(Number.isFinite)"), true);
+  assert.equal(page.eval("JSON.stringify(chart.series[0].values.filter(p => chart.plottable(p)).map(p => p.step))"), "[1,10,100,1000]");
+  const tooltip = page.elements.get("tooltip");
+  tooltip.offsetWidth = 120;
+  tooltip.offsetHeight = 80;
+  page.eval("chart.hover({clientX: chart.x(100), clientY: 100})");
+  assert.match(tooltip.textContent, /step 100: 0\.10/);
+  page.eval(`
+    chart.drag = {x: 0, zoom: [1, 1000]};
+    chart.hover({clientX: (chart.area.right - chart.area.left) / 3});
+  `);
+  assert.equal(page.eval("Math.abs(state.zoom[0] - .1) < 1e-9 && Math.abs(state.zoom[1] - 100) < 1e-9"), true);
+  page.eval("chart.drag = null; state.zoom = null; state.smoothing = .5; chart.update()");
+  assert.equal(page.eval("chart.series[0].values.find(p => p.step === 5).value"), null);
+  assert.equal(page.eval("chart.series[0].values.find(p => p.step === 10).value"), 1);
+  page.eval("state.runs.get('22222222').series.find(s => s.phase === 'train').points = [{step: 1, loss: 0}]; chart.update()");
+  assert.equal(page.eval("chart.domain"), null);
+  assert.doesNotThrow(() => page.eval("chart.canvas.events.pointerdown({clientX: 0, pointerId: 1})"));
+});

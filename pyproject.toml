@@ -1,0 +1,47 @@
+[project]
+name = "so101-workspace"
+version = "0.1.0"
+description = "LeRobot environment for an SO-101 robot"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "github-copilot-sdk==1.0.26",
+    "lerobot[core_scripts,feetech]==0.6.1",
+    "matplotlib>=3.11.2",
+    "torch>=2.11,<2.12",
+    "torchvision>=0.26,<0.27",
+]
+
+[project.optional-dependencies]
+simulation = ["mujoco>=3.3,<4"]
+training = ["lerobot[smolvla]==0.6.1"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/so101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = true
+# The Linux ARM64 TorchCodec wheel requires CUDA even from the CPU index.
+# LeRobot automatically uses PyAV when TorchCodec is absent.
+override-dependencies = [
+    "torchcodec>=0.11,<0.12; sys_platform != 'linux' or (platform_machine != 'aarch64' and platform_machine != 'arm64')",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchcodec = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]

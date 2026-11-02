@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-base-path="">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SO-101 Data Browser</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <link rel="stylesheet" href="/data.css">
+  <script src="/data.js" defer></script>
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">SO-101 / DATA</span><h1>Data browser<span class="accent">.</span></h1></div>
+    <a href="/">Training dashboard</a>
+  </header>
+  <main class="data-main">
+    <div id="error" role="alert" hidden></div>
+    <div class="data-filters">
+      <label>Run<select id="data-run" aria-label="Training run"></select></label>
+      <label>Browse<select id="view"><option value="examples">Source examples</option><option value="rollouts">Recent policy trajectories</option><option value="solved">Easy / solved bucket</option></select></label>
+      <label>Category<select id="task"><option value="all">All tasks</option><option>grasp</option><option>view</option><option>push</option><option>place</option></select></label>
+      <label>Scene difficulty<select id="difficulty"><option value="all">All difficulties</option><option value="0">0 - Easy</option><option value="1">1 - Standard</option><option value="2">2 - Hard</option><option value="3">3 - Challenge</option><option value="unrated">Unrated legacy</option></select></label>
+      <label>Usage<select id="usage"><option value="all">All examples</option><option value="used">Sampled in training</option><option value="unused">Not sampled in training</option><option value="validation">Frozen validation membership</option></select></label>
+      <label>Policy outcomes<select id="outcome"><option value="all">All outcomes</option><option value="passed">Has a policy pass</option><option value="failed">Has a policy failure</option></select></label>
+      <label>Bucket<select id="bucket"><option value="all">Any bucket</option><option value="solved">In easy / solved bucket</option></select></label>
+      <label>Search<input id="data-search" type="search" placeholder="Target, seed or source"></label>
+    </div>
+    <p class="hint">Scene difficulty is distinct from expert assistance. Legacy sources are unrated, not retroactively called easy. Newly generated scenes have not been added to the paused training run. SO-101 has a fixed base: search means wrist-camera motion, not mobile navigation.</p>
+    <p id="mode-note" class="context"></p>
+    <div class="section-title"><h2 id="data-count">Loading examples</h2><button id="refresh-data">Refresh</button></div>
+    <div id="data-grid" class="data-grid"></div>
+    <div class="data-pagination"><button id="previous">Previous</button><span id="page-status"></span><button id="next">Next</button></div>
+  </main>
+  <dialog id="detail">
+    <div class="section-title"><h2 id="detail-title"></h2><button id="close-detail" aria-label="Close details">Close</button></div>
+    <p id="detail-kind" class="context"></p>
+    <nav class="trajectory-navigation" aria-label="Recorded trajectory navigation">
+      <button id="previous-trajectory" aria-label="Previous training trajectory">&larr; Previous</button>
+      <button id="source-expert">Source expert</button>
+      <span id="trajectory-position" aria-live="polite"></span>
+      <button id="next-trajectory" aria-label="Next training trajectory">Next &rarr;</button>
+    </nav>
+    <button id="play-movie">Play side-by-side movie</button>
+    <p id="movie-status" class="hint" role="status"></p>
+    <video id="detail-movie" controls playsinline preload="none" aria-label="Synchronized overview and wrist movie" hidden></video>
+    <img id="detail-image" alt="Selected recorded wrist frame">
+    <label id="frame-label">Frame <input id="frame" type="range" min="0" max="0" value="0"><output id="frame-value"></output></label>
+    <p id="trace-note" class="hint"></p>
+    <svg id="action-plot" viewBox="0 0 800 180" role="img" aria-label="Five arm joint commanded positions over time"></svg>
+    <pre id="detail-summary"></pre>
+    <details><summary>Recent source training groups (up to 100)</summary><pre id="detail-history"></pre></details>
+    <details><summary>Full source scene metadata</summary><pre id="detail-metadata"></pre></details>
+  </dialog>
+</body>
+</html>

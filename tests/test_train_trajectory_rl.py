@@ -1,0 +1,768 @@
+from argparse import Namespace
+from copy import deepcopy
+import json
+import random
+from types import SimpleNamespace
+
+import numpy as np
+import torch
+
+import pytest
+
+from so101.train_trajectory_rl import (
+    DecisionSample,
+    Trajectory,
+    curriculum_key,
+    curriculum_maximum,
+    CorpusEpisode,
+    initialize_mastery_curriculum,
+    mastery_assistance,
+    record_mastery_group,
+    resolve_mastery_check,
+    recover_zero_success_group,
+    replay_gold_prefix,
+    assign_group_rewards,
+    group_advantages,
+    initialize_solved_problems,
+    record_solved_problem,
+    sample_solved_problem,
+    policy_optimizer_step,
+    restore_resume_state,
+    save_resume_state,
+    trajectory_backward,
+    trajectory_metrics,
+    train,
+)
+from so101.control_model.flow_rl import (
+    FlowTransition,
+    clipped_policy_loss,
+    gaussian_log_prob,
+    reparameterize_flow_path,
+    sample_flow_path,
+    transition_distribution,
+)
+from lerobot.policies.common.flow_matching import euler_integrate
+from transformers.cache_utils import DynamicCache
+from so101.control_model.modeling_entity_smolvla import (
+    EntityModelConfig, EntityVLAFlowMatching, load_entity_checkpoint,
+    save_entity_checkpoint,
+)
+
+
+def test_denoising_backward_does_not_reuse_cropped_suffix_graph() -> None:
+    parameter = torch.nn.Parameter(torch.tensor(.4))
+    cache = DynamicCache()
+    prefix = torch.ones(1, 1, 1, 1)
+
+    def prefix_forward(**kwargs):
+        cache.update(prefix, prefix, 0)
+        return None, cache
+
+    def denoise(pad, past, latent, timestep):
+        suffix = (latent * parameter).reshape(1, 1, 1, 1)
+        keys, _ = past.update(suffix, suffix, 0)
+        result = keys.square().sum().expand_as(latent)
+        past.crop(1)
+        return result
+
+    model = SimpleNamespace(
+        _prefix_with_entities=lambda: (
+            prefix, torch.ones(1, 1, dtype=torch.bool),
+            torch.zeros(1, 1, dtype=torch.bool), None,
+        ),
+        vlm_with_expert=SimpleNamespace(forward=prefix_forward),
+        config=SimpleNamespace(use_cache=True),
+        _denoise_step_entity=denoise,
+    )
+    velocity = EntityVLAFlowMatching._rl_velocity_function(model, ())
+    for _ in range(3):
+        velocity(torch.ones(1, 1, 1), torch.ones(1)).sum().backward()
+    torch.testing.assert_close(parameter.grad, torch.tensor(2.4))
+    assert not cache.layers[0].keys.requires_grad
+    _, path = sample_flow_path(velocity, torch.ones(1, 1, 1), 10, .1, record_noise=True)
+    parameter.grad = None
+    reparameterize_flow_path(velocity, path, torch.device("cpu"), checkpoint_velocity=False).sum().backward()
+    expected = parameter.grad.clone()
+    parameter.grad = None
+    reparameterize_flow_path(velocity, path, torch.device("cpu")).sum().backward()
+    torch.testing.assert_close(parameter.grad, expected)
+    assert cache.get_seq_length() == 1
+    assert not cache.layers[0].keys.requires_grad
+
+
+def args() -> Namespace:
+    return Namespace(
+        curriculum_decrement=.05,
+        curriculum_mastery_groups=3,
+        curriculum_min=0.,
+        obstacle_curriculum_max=.8,
+        push_curriculum_max=.95,
+        place_curriculum_max=.9,
+        grasp_curriculum_max=.95,
+        view_curriculum_max=.95,
+    )
+
+
+def test_curriculum_selects_task_and_obstacle_levels() -> None:
+    config = args()
+    assert curriculum_key("push", False) == "push"
+    assert curriculum_key("grasp", True) == "obstacle_grasp"
+    assert curriculum_maximum("push", False, config) == .95
+    assert curriculum_maximum("place", False, config) == .9
+    assert curriculum_maximum("grasp", False, config) == .95
+    assert curriculum_maximum("view", False, config) == .95
+    assert curriculum_maximum("grasp", True, config) == .8
+
+
+def test_assistance_only_decreases_after_perfect_mastery_window() -> None:
+    state = initialize_mastery_curriculum({}, args())
+    assert mastery_assistance(state, "push", .95) == .95
+    assert not record_mastery_group(state, "push", 8, 8)
+    assert not record_mastery_group(state, "push", 7, 8)
+    assert not record_mastery_group(state, "push", 8, 8)
+    assert not record_mastery_group(state, "push", 8, 8)
+    assert record_mastery_group(state, "push", 8, 8)
+    event = resolve_mastery_check(state, "push", 10, 10, 3, 8)
+    assert event == {
+        "step": 3,
+        "task": "push",
+        "previous": .95,
+        "current": .9,
+        "mastery_groups": 3,
+        "mastery_rollouts": 24,
+    }
+    assert mastery_assistance(state, "push", .95) == .9
+
+
+def test_curriculum_state_is_resume_safe() -> None:
+    log = {}
+    state = initialize_mastery_curriculum(log, args())
+    mastery_assistance(state, "place", .9)
+    record_mastery_group(state, "place", 8, 8)
+    resumed = initialize_mastery_curriculum(log, args())
+    assert resumed["tasks"]["place"]["perfect_group_streak"] == 1
+
+    changed = args()
+    changed.curriculum_decrement = .1
+    with pytest.raises(ValueError, match="decrement"):
+        initialize_mastery_curriculum(log, changed)
+
+
+def test_failed_task_wide_check_does_not_reduce_assistance() -> None:
+    state = initialize_mastery_curriculum({}, args())
+    mastery_assistance(state, "push", .95)
+    for _ in range(3):
+        ready = record_mastery_group(state, "push", 8, 8)
+    assert ready
+    assert resolve_mastery_check(state, "push", 9, 10, 2, 8) is None
+    assert mastery_assistance(state, "push", .95) == .95
+    assert state["tasks"]["push"]["perfect_group_streak"] == 0
+
+
+def test_zero_success_recovery_is_bounded_and_resets_stale_mastery():
+    state = initialize_mastery_curriculum({}, args())
+    mastery_assistance(state, "view", .95)
+    state["tasks"]["view"].update(level=.93, perfect_group_streak=2)
+    event = recover_zero_success_group(state, "view", 0, .95, 8)
+    assert event["previous"] == .93 and event["current"] == .95
+    assert event["kind"] == "zero_success_recovery"
+    assert state["tasks"]["view"]["perfect_group_streak"] == 0
+    assert recover_zero_success_group(state, "view", 0, .95, 9) is None
+    assert mastery_assistance(state, "view", .95) == .95
+
+
+def test_recovery_does_not_change_groups_with_task_reward_signal():
+    state = initialize_mastery_curriculum({}, args())
+    mastery_assistance(state, "view", .95)
+    state["tasks"]["view"]["level"] = 0.
+    assert recover_zero_success_group(state, "view", 1, .95, 8) is None
+    assert mastery_assistance(state, "view", .95) == 0.
+    event = recover_zero_success_group(state, "view", 0, .95, 8)
+    assert event["current"] == .05
+
+
+@pytest.mark.parametrize("task", ["grasp", "view", "push", "place"])
+def test_gold_prefix_assists_all_tasks(tmp_path, task):
+    rows = [{"action": [index]} for index in range(10)]
+    (tmp_path / "frames.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+    executed = []
+    sim = Namespace(
+        position=lambda target: [0, 0, len(executed) * .01],
+        bounded_policy_action=lambda action: (action, None),
+        step=lambda goal, phase: executed.append(goal),
+    )
+    episode = CorpusEpisode(tmp_path, {"task": task})
+    steps, lift = replay_gold_prefix(sim, episode, "target", .5)
+    assert steps == 5
+    assert executed == [[0], [1], [2], [3], [4]]
+    assert lift == pytest.approx(.05)
+    assert replay_gold_prefix(sim, episode, "target", 0) == (0, 0.)
+    assert len(executed) == 5
+
+
+def test_atomic_resume_state_restores_model_optimizer_log_and_rng(tmp_path):
+    model = torch.nn.Linear(2, 1)
+    controller = Namespace(policy=model, device="cpu")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    model(torch.ones(1, 2)).sum().backward()
+    optimizer.step()
+    rng = np.random.default_rng(42)
+    log = {"steps": [{"step": 7}], "assistance_curriculum": {"tasks": {"grasp": {"level": .9}}}}
+    save_resume_state(tmp_path, controller, optimizer, rng, log)
+    expected = (rng.random(), random.random(), np.random.random(), torch.rand(1))
+    expected_parameters = [parameter.clone() for parameter in model.parameters()]
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
+    state = torch.load(tmp_path / "latest_state.pt", weights_only=False)
+    restored = restore_resume_state(state, controller, optimizer, rng, 2e-4)
+    assert restored == log
+    for parameter, saved in zip(model.parameters(), expected_parameters, strict=True):
+        torch.testing.assert_close(parameter, saved)
+    assert optimizer.param_groups[0]["lr"] == 2e-4
+    assert optimizer.state[next(model.parameters())]["step"] == 1
+    assert rng.random() == expected[0]
+    assert random.random() == expected[1]
+    assert np.random.random() == expected[2]
+    torch.testing.assert_close(torch.rand(1), expected[3])
+    assert not (tmp_path / "latest_state.pt.tmp").exists()
+    state["step"] = 6
+    with pytest.raises(ValueError, match="steps do not match"):
+        restore_resume_state(state, controller, optimizer, rng, 1e-4)
+
+
+def test_zero_noise_flow_path_matches_existing_ode_sampler():
+    torch.manual_seed(12)
+    initial = torch.randn(2, 5, 6)
+    velocity = lambda value, time: value * .2 + time[:, None, None]
+    actions, path = sample_flow_path(velocity, initial, 10, 0.)
+    torch.testing.assert_close(
+        actions, euler_integrate(velocity, initial, 10), rtol=0, atol=0
+    )
+    assert path == []
+
+
+def test_recorded_path_has_exact_joint_gaussian_likelihoods():
+    torch.manual_seed(13)
+    velocity = lambda value, time: value * .3
+    _, path = sample_flow_path(velocity, torch.randn(2, 4, 6), 10, .1)
+    assert len(path) == 10
+    for transition in path:
+        mean, std = transition_distribution(
+            transition.latent, velocity(transition.latent, None),
+            transition.time, transition.step_size, transition.noise_scale,
+        )
+        expected = torch.distributions.Normal(mean, std).log_prob(
+            transition.next_latent
+        ).flatten(start_dim=1).sum(dim=1)
+        torch.testing.assert_close(transition.old_log_prob, expected)
+        assert std > 0
+        assert not transition.next_latent.requires_grad
+
+
+def test_reverse_sde_preserves_gaussian_rectified_flow_marginal():
+    torch.manual_seed(14)
+    initial = torch.randn(32768, 1)
+
+    def velocity(value, time):
+        variance = (1 - time).square() + time.square()
+        return ((2 * time - 1) / variance)[:, None] * value
+
+    actions, _ = sample_flow_path(velocity, initial, 100, .7)
+    assert abs(float(actions.mean())) < .03
+    assert abs(float(actions.var()) - 1.) < .07
+
+
+def test_likelihood_gradient_matches_expected_squared_jerk_gradient():
+    torch.manual_seed(15)
+    mean = torch.tensor([[0., .1, .4, .6]], requires_grad=True)
+    third_difference = torch.tensor([-1., 3., -3., 1.])
+    samples = mean.detach() + .4 * torch.randn(262144, 4)
+    reward = -(samples @ third_difference).square()
+    baseline = -(
+        (mean.detach() @ third_difference).square()
+        + .4 ** 2 * third_difference.square().sum()
+    )
+    loss = -(
+        (reward - baseline).detach()
+        * gaussian_log_prob(samples, mean, .4)
+    ).mean()
+    loss.backward()
+    expected = 2 * (mean.detach() @ third_difference)[:, None] * third_difference
+    torch.testing.assert_close(mean.grad, expected, rtol=.08, atol=.04)
+    updated = mean.detach() - .01 * mean.grad
+    assert (updated @ third_difference).square() < (
+        mean.detach() @ third_difference
+    ).square()
+
+
+@pytest.mark.parametrize("ratio,advantage", [(1.5, 1.), (.5, -1.)])
+def test_policy_clipping_blocks_outward_updates(ratio, advantage):
+    log_prob = torch.tensor(np.log(ratio), requires_grad=True)
+    loss = clipped_policy_loss(log_prob, torch.tensor(0.), advantage, .2)
+    loss.backward()
+    assert log_prob.grad == 0
+
+
+def test_recorded_policy_gradient_sums_decisions_including_invalid_proposals():
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mean = torch.nn.Parameter(torch.zeros(1, 1))
+
+        def denoising_log_probs_entity(self, inputs, path):
+            for transition in path:
+                yield gaussian_log_prob(transition.next_latent, self.mean, 1.)
+
+    policy = torch.nn.Module()
+    policy.model = Model()
+    transition = FlowTransition(
+        torch.zeros(1, 1), torch.ones(1, 1),
+        gaussian_log_prob(torch.ones(1, 1), torch.zeros(1, 1), 1.),
+        1., .1, .1,
+    )
+    decision = DecisionSample(
+        (torch.zeros(1),), torch.zeros(1, 6), 0, [transition]
+    )
+    trajectory = Trajectory("view", False, False, 0, 0., 0., 0., 0., [decision, decision])
+    trajectory_backward(Namespace(policy=policy, device="cpu"), trajectory, .5)
+    torch.testing.assert_close(policy.model.mean.grad, torch.tensor([[-1.]]))
+
+
+def test_final_transition_marginalizes_only_unused_output_noise():
+    torch.manual_seed(19)
+    initial = torch.randn(1, 4, 6)
+    torch.manual_seed(20)
+    full_actions, full_path = sample_flow_path(
+        lambda value, time: .2 * value, initial, 3, .1,
+    )
+    torch.manual_seed(20)
+    actions, path = sample_flow_path(
+        lambda value, time: .2 * value, initial, 3, .1,
+        final_action_shape=(2, 3),
+    )
+    torch.testing.assert_close(actions, full_actions, rtol=0, atol=0)
+    for full, masked in zip(full_path, path, strict=True):
+        torch.testing.assert_close(full.next_latent, masked.next_latent, rtol=0, atol=0)
+    assert [item.active_shape for item in path] == [None, None, (2, 3)]
+    for tr in path:
+        old_mean, std = transition_distribution(
+            tr.latent, .2 * tr.latent, tr.time, tr.step_size, tr.noise_scale
+        )
+        mean = old_mean.detach().clone().requires_grad_()
+        log_prob = gaussian_log_prob(tr.next_latent, mean, .1, tr.active_shape)
+        log_prob.sum().backward()
+        if tr.active_shape is not None:
+            assert mean.grad[:, 2:].count_nonzero() == 0
+            assert mean.grad[:, :, 3:].count_nonzero() == 0
+            assert mean.grad[:, :2, :3].count_nonzero() > 0
+        else:
+            assert mean.grad[:, 2:, 3:].count_nonzero() > 0
+        torch.testing.assert_close(
+            tr.old_log_prob,
+            gaussian_log_prob(tr.next_latent, old_mean, std, tr.active_shape),
+        )
+
+
+def test_policy_scale_is_outside_joint_probability_ratio():
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mean = torch.nn.Parameter(torch.zeros(1, 1, 2))
+
+        def denoising_log_probs_entity(self, inputs, path):
+            for tr in path:
+                yield gaussian_log_prob(tr.next_latent, self.mean, 1.)
+
+    policy = torch.nn.Module()
+    policy.model = Model()
+    sample = torch.ones(1, 1, 2)
+    tr = FlowTransition(
+        torch.zeros_like(sample), sample,
+        gaussian_log_prob(sample, torch.zeros_like(sample), 1.), 1., .1, .1,
+    )
+    decision = DecisionSample((torch.zeros(1),), sample[0], 1, [tr, tr])
+    trajectory = Trajectory("view", True, False, 1, 0., 0., 0., 0., [decision])
+    trajectory_backward(Namespace(policy=policy, device="cpu"), trajectory, 1.)
+    torch.testing.assert_close(policy.model.mean.grad, torch.full_like(sample, -.5))
+    joint = torch.tensor([.15, .15], requires_grad=True)
+    clipped_policy_loss(joint.sum(), torch.tensor(0.), 1., .2).backward()
+    assert joint.grad.count_nonzero() == 0
+
+
+def test_checkpoint_preserves_expert_precision_before_loading_weights(tmp_path, monkeypatch):
+    def policy(dtype):
+        result = torch.nn.Module()
+        result.model = torch.nn.Module()
+        result.model.vlm_with_expert = torch.nn.Module()
+        result.model.vlm_with_expert.lm_expert = torch.nn.Linear(1, 1, dtype=dtype)
+        return result
+
+    original = policy(torch.float32)
+    with torch.no_grad():
+        original.model.vlm_with_expert.lm_expert.weight.fill_(1.003123)
+    path = tmp_path / "checkpoint"
+    save_entity_checkpoint(path, original, EntityModelConfig(), "fake", {})
+    monkeypatch.setattr(
+        'so101.control_model.modeling_entity_smolvla.SmolVLAPolicy.from_pretrained',
+        lambda source: policy(torch.bfloat16),
+    )
+    monkeypatch.setattr(
+        'so101.control_model.modeling_entity_smolvla.attach_entity_modules',
+        lambda model, config: None,
+    )
+    restored, _, _ = load_entity_checkpoint(path, "cpu")
+    expert = restored.model.vlm_with_expert.lm_expert
+    assert expert.weight.dtype == torch.float32
+    torch.testing.assert_close(
+        expert.weight, original.model.vlm_with_expert.lm_expert.weight, rtol=0, atol=0
+    )
+    metadata = json.loads((path / "metadata.json").read_text())
+    del metadata["action_expert_dtype"]
+    (path / "metadata.json").write_text(json.dumps(metadata))
+    legacy, _, _ = load_entity_checkpoint(path, "cpu")
+    assert legacy.model.vlm_with_expert.lm_expert.weight.dtype == torch.bfloat16
+
+
+def test_reward_only_update_averages_policy_gradient_without_imitation():
+    parameter = torch.nn.Parameter(torch.tensor([1., 2.]))
+    before = parameter.detach().clone()
+    optimizer = torch.optim.AdamW([parameter], lr=.1, weight_decay=.01)
+    parameter.grad = torch.tensor([6., 8.])
+    metrics = policy_optimizer_step(
+        optimizer, [parameter], 2, 1.,
+    )
+    assert metrics["gradient_norm"] == pytest.approx(5.)
+    assert metrics["policy_gradient_norm"] == pytest.approx(5.)
+    assert metrics["replay_gradient_norm"] == 0
+    assert metrics["optimizer_update_applied"]
+    reference = torch.nn.Parameter(before.clone())
+    other = torch.optim.AdamW(
+        [reference], lr=.1, weight_decay=.01
+    )
+    reference.grad = torch.tensor([.6, .8])
+    other.step()
+    torch.testing.assert_close(parameter, reference)
+    assert optimizer.state[parameter]["step"] == 1
+
+
+def test_reward_only_all_failure_batch_does_not_apply_adam_momentum():
+    parameter = torch.nn.Parameter(torch.tensor(1.))
+    optimizer = torch.optim.AdamW([parameter], lr=.1, weight_decay=.01)
+    parameter.grad = torch.tensor(.5)
+    optimizer.step()
+    before = parameter.detach().clone()
+    state = deepcopy(optimizer.state_dict())
+    parameter.grad = torch.zeros_like(parameter)
+
+    metrics = policy_optimizer_step(
+        optimizer, [parameter], 0, 1.,
+    )
+    assert not metrics["optimizer_update_applied"]
+    assert metrics["optimizer_skip_reason"] == "no_accepted_groups"
+    torch.testing.assert_close(parameter, before, rtol=0, atol=0)
+    for key, value in optimizer.state_dict()["state"][0].items():
+        torch.testing.assert_close(value, state["state"][0][key], rtol=0, atol=0)
+
+
+def test_absolute_jerk_score_survives_group_assignment_and_drives_advantage():
+    def trajectory(jerk):
+        actions = [np.full(5, value) for value in (0., 0., 0., jerk)]
+        measured, completion, smoothness = trajectory_metrics(
+            "view", True, 4, actions, {"optimal_steps": 2., "jerk_p10": 1.},
+        )
+        return Trajectory(
+            "view", True, False, 4, measured, completion, smoothness, 0., [],
+        )
+
+    trajectories = [trajectory(jerk) for jerk in (2., 4., 8.)]
+    assign_group_rewards(trajectories)
+    np.testing.assert_allclose([t.smoothness for t in trajectories], [.5, .25, .125])
+    np.testing.assert_allclose([t.reward for t in trajectories], [1.75, 1.5, 1.375])
+    advantage, components = group_advantages(trajectories, 1., .5, 1.)
+    expected = (np.array([.5, .25, .125]) - np.mean([.5, .25, .125])) / (
+        np.std([.5, .25, .125]) + 1e-6
+    )
+    np.testing.assert_allclose(components["smoothness"], expected, atol=1e-6)
+    np.testing.assert_allclose(advantage, expected, atol=1e-6)
+    assert not components["success"].any()
+    assert not components["completion"].any()
+    assign_group_rewards([trajectories[1]], 1., .5, 2.)
+    assert trajectories[1].smoothness == .25
+    assert trajectories[1].reward == 1.75
+    failure = Trajectory("view", False, False, 4, 8., 0., 0., 0., [])
+    _, mixed = group_advantages([*trajectories, failure], 1., .5, 1.)
+    assert mixed["success"][-1] < 0
+    assert all(value > 0 for value in mixed["success"][:-1])
+    assert mixed["smoothness"][-1] == 0
+
+
+def test_validation_retains_matched_problem_noise_and_failure_summaries(tmp_path, monkeypatch):
+    import so101.train_trajectory_rl as trainer
+
+    episodes = [CorpusEpisode(tmp_path / task, {"task": task}) for task in trainer.TASKS]
+    def rollout(sim, controller, episode, seed, *args, **kwargs):
+        result = Trajectory(episode.task, episode.task != "view", False, 10, 2., .5, .1, 0., [])
+        if episode.task == "view":
+            result.invalid_action_error = "Policy target exceeds a joint boundary by 6 units"
+        return result
+    monkeypatch.setattr(trainer, "rollout", rollout)
+    result = trainer.validation_metrics(None, None, episodes, {task: {} for task in trainer.TASKS},
+                                        61000, 300, 16, .1)
+    for index, (episode, row) in enumerate(zip(episodes, result["rollouts"], strict=True)):
+        assert (row["task"], row["source"], row["seed"]) == (episode.task, str(episode.source), 61000 + index)
+    view = next(row for row in result["rollouts"] if row["task"] == "view")
+    assert not view["success"] and view["invalid_action_error"]
+    assert result["by_task"]["view"]["success_rate"] == 0
+
+
+def test_solved_bucket_tracks_exact_assistance_and_only_samples_prior_steps(tmp_path):
+    episode = CorpusEpisode(tmp_path, {"task": "push"})
+    bucket = {}
+    record_solved_problem(bucket, episode, .65, 7, 8, 1)
+    assert sample_solved_problem(bucket, np.random.default_rng(1), 2) is None
+    record_solved_problem(bucket, episode, .65, 8, 8, 2)
+    record_solved_problem(bucket, episode, .65, 8, 8, 3)
+    record_solved_problem(bucket, episode, .60, 8, 8, 3)
+    assert len(bucket) == 2
+    assert sample_solved_problem(bucket, np.random.default_rng(1), 2) is None
+    sampled = sample_solved_problem(bucket, np.random.default_rng(1), 3)
+    assert sampled == {
+        "source": str(tmp_path), "task": "push",
+        "start_proximity": .65, "solved_at_step": 2,
+    }
+
+
+def test_historical_solved_bucket_excludes_validation_and_partial_success(tmp_path):
+    episode = CorpusEpisode(tmp_path / "training", {"task": "grasp"})
+    def group(source, successes):
+        return {
+            "source": str(source), "successes": successes,
+            "start_proximity": .8, "trajectories": [{}] * 8,
+        }
+    log = {"steps": [
+        {"step": 1, "groups": [
+            group(episode.source, 7), group(tmp_path / "validation", 8),
+        ]},
+        {"step": 2, "groups": [group(episode.source, 8)]},
+    ]}
+    bucket = initialize_solved_problems(log, {"grasp": [episode]})
+    assert len(bucket) == 1
+    assert next(iter(bucket.values()))["solved_at_step"] == 2
+    assert initialize_solved_problems(log, {"grasp": [episode]}) is bucket
+
+
+def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monkeypatch):
+    import so101.train_trajectory_rl as trainer
+
+    training = {
+        task: [CorpusEpisode(tmp_path / task, {"task": task, "target": "wide"})]
+        for task in trainer.TASKS
+    }
+    policy = torch.nn.Linear(1, 1)
+    controller = Namespace(policy=policy, device="cpu")
+    monkeypatch.setattr(trainer, "load_corpus", lambda collection: training)
+    monkeypatch.setattr(trainer, "split_corpus", lambda *args: (training, []))
+    monkeypatch.setattr(trainer, "expert_bounds", lambda episodes: {
+        task: {"optimal_steps": 10., "jerk_p10": 1.} for task in trainer.TASKS
+    })
+    monkeypatch.setattr(trainer, "EntityPolicy", lambda *args: controller)
+    monkeypatch.setattr(trainer, "trainable_parameters", lambda value: list(policy.parameters()))
+    monkeypatch.setattr(trainer, "BeamSimulation", lambda *args, **kwargs: Namespace(close=lambda: None))
+    monkeypatch.setattr(trainer, "validation_metrics", lambda *args: {})
+    calls = []
+    captures = []
+
+    def rollout(sim, controller, episode, seed, horizon, action_steps, bounds,
+                store_decisions, start_proximity, noise, capture_path=None):
+        calls.append((episode.source, start_proximity, seed))
+        if capture_path is not None:
+            captures.append(capture_path)
+        return Trajectory(
+            episode.task, True, False, 10, 2. + seed % 8,
+            .2 + (seed % 8) * .1, 1. / (2. + seed % 8), 0., [],
+        )
+
+    def backward(controller, trajectory, coefficient, policy_clip):
+        (policy(torch.ones(1, 1)).sum() * coefficient).backward()
+        return coefficient
+
+    monkeypatch.setattr(trainer, "rollout", rollout)
+    monkeypatch.setattr(trainer, "trajectory_backward", backward)
+    config = Namespace(
+        checkpoint=tmp_path / "base", collection=tmp_path / "corpus",
+        output=tmp_path / "run", resume=False, refresh_corpus=False,
+        steps=2, group_size=8, groups_per_task=2, max_group_attempts_per_task=8,
+        horizon=300, action_steps=16, validation_per_task=1, validation_interval=10,
+        rl_estimator="flow-mse", denoising_noise_scale=.1, policy_clip=.2,
+        success_advantage_weight=1., completion_advantage_weight=.5,
+        smoothness_advantage_weight=1., learning_rate=1e-4, gradient_clip=1.,
+        seed=61000, device="cpu", model_root=tmp_path, save_final_checkpoint=False,
+        curriculum_start_step=0, curriculum_mode="mastery", curriculum_end_step=0,
+        curriculum_decrement=.05, curriculum_mastery_groups=100,
+        curriculum_min=0., push_curriculum_max=.95, place_curriculum_max=.95,
+        grasp_curriculum_max=.95, view_curriculum_max=.95, obstacle_curriculum_max=.95,
+        record_rollouts=True, rollout_retention_steps=20,
+    )
+    train(config)
+    state = torch.load(config.output / "latest_state.pt", weights_only=False)
+    first, second = state["log"]["steps"]
+    assert first["accepted_groups"] == 8
+    assert not any(g["sampling_bucket"] == "solved" for g in first["groups"])
+    assert second["accepted_groups"] == 9
+    solved = [g for g in second["groups"] if g["sampling_bucket"] == "solved"]
+    assert len(solved) == 1
+    assert solved[0]["start_proximity"] == .95
+    assert not np.any(solved[0]["advantage_components"]["success"])
+    assert np.any(solved[0]["advantage_components"]["smoothness"])
+    assert len(calls) == (8 + 9) * 8
+    assert len(captures) == 8 + 9
+    assert len(set(captures)) == len(captures)
+    assert len({seed for _, _, seed in calls}) == len(calls)
+    assert len(state["log"]["solved_problems"]) == 4
+    assert all(
+        task["groups_at_level"] == 4
+        for task in state["log"]["assistance_curriculum"]["tasks"].values()
+    )
+    assert state["log"]["reward_definition"]["weights"]["smoothness"] == 1.
+    # Resume with the saved RNG and bucket; no extra model is loaded.
+    config.resume = True
+    config.steps = 3
+    train(config)
+    resumed = torch.load(config.output / "latest_state.pt", weights_only=False)
+    assert len(resumed["log"]["solved_problems"]) == 4
+    assert sum(
+        g["sampling_bucket"] == "solved"
+        for g in resumed["log"]["steps"][-1]["groups"]
+    ) == 1
+
+
+def test_new_scene_constraints_reject_collision_even_when_goal_is_reached(monkeypatch, tmp_path):
+    import so101.train_trajectory_rl as trainer
+    sim = Namespace(
+        fps=1, obstacle_contact_events=[],
+        position=lambda name: np.array([.2, 0., 0.]),
+        bounded_policy_action=lambda action: (action, 0.),
+        encode=lambda action: action,
+    )
+    sim.step = lambda goal, phase: sim.obstacle_contact_events.append({"body": "gripper"})
+    model = Namespace(sample_actions_entity=lambda *args: (torch.zeros(1, 1, 6),))
+    controller = Namespace(
+        reset=lambda *a, **k: None, command_inputs=lambda *a: (),
+        policy=Namespace(eval=lambda: None, model=model),
+        action_std=np.ones(6), action_mean=np.zeros(6), observe=lambda *a: None,
+    )
+    monkeypatch.setattr(trainer, "reset_from_episode", lambda *a: ("short", None, [("short", "object")]))
+    monkeypatch.setattr(trainer, "replay_gold_prefix", lambda *a: (0, 0.))
+    monkeypatch.setattr(trainer, "control_phase", lambda *a: "acquire")
+    monkeypatch.setattr(trainer, "wrong_object_lift", lambda *a: False)
+    monkeypatch.setattr(trainer, "successful_step", lambda *a: True)
+    episode = CorpusEpisode(tmp_path, {"task": "grasp", "constraints": {"avoid_obstacles": True}})
+    result = trainer.rollout(sim, controller, episode, 1, 3, 1,
+                             {"optimal_steps": 1., "jerk_p10": .1}, False)
+    assert result.constraint_violation and not result.success and result.steps == 1
+
+
+@pytest.mark.parametrize("store", [False, True])
+def test_rejected_policy_action_reports_reason_without_relaxing_limits(monkeypatch, tmp_path, capsys, store):
+    import so101.train_trajectory_rl as trainer
+
+    def reject(action):
+        raise ValueError("Policy target exceeds a joint boundary by 6 units")
+
+    sim = Namespace(fps=1, obstacle_contact_events=[],
+                    position=lambda name: np.array([.2, 0., 0.]),
+                    bounded_policy_action=reject)
+    controller = Namespace(
+        reset=lambda *a, **k: None, command_inputs=lambda *a: (),
+        policy=Namespace(eval=lambda: None, config=Namespace(chunk_size=1), model=Namespace(
+            sample_actions_entity_sde=lambda *a, **k: (torch.zeros(1, 1, 6), []))),
+        action_std=np.ones(6), action_mean=np.zeros(6),
+    )
+    monkeypatch.setattr(trainer, "reset_from_episode", lambda *a: ("short", None, []))
+    monkeypatch.setattr(trainer, "replay_gold_prefix", lambda *a: (0, 0.))
+    monkeypatch.setattr(trainer, "control_phase", lambda *a: "acquire")
+    episode = CorpusEpisode(tmp_path, {"task": "view"})
+    result = trainer.rollout(sim, controller, episode, 1, 300, 1,
+                             {"optimal_steps": 1., "jerk_p10": .1}, store,
+                             denoising_noise_scale=.1, record_path_noise=store)
+    assert not result.success and result.steps == 0
+    assert "boundary by 6" in trainer.serialized_trajectory(result)["invalid_action_error"]
+    assert json.loads(capsys.readouterr().out)["event"] == "policy_action_rejected"
+    if store:
+        assert len(result.decisions) == 1
+        assert result.decisions[0].executed_steps == 0
+        assert result.decisions[0].attempted_steps == 1
+
+
+def test_new_scene_destination_precision_is_enforced():
+    from so101.train_trajectory_rl import successful_step
+    positions = {"short": np.array([.2, 0., 0.]), "goal_right": np.array([.23, 0., 0.])}
+    sim = Namespace(position=positions.__getitem__, contacts=lambda name: set(),
+                    episode_constraints={"destination_tolerance_m": .025})
+    assert not successful_step(sim, "place", "short", "goal_right", positions, True, 40)
+    sim.episode_constraints = {}
+    assert successful_step(sim, "place", "short", "goal_right", positions, True, 40)
+
+
+def test_difficulty_scene_restores_exact_poses_perception_and_constraints(monkeypatch):
+    from so101.robot_sim import BeamSimulation
+    from so101.collect_difficulty_sim import configure_scene
+    from so101.train_trajectory_rl import reset_from_episode
+    from pathlib import Path
+    sim = BeamSimulation(render=False)
+    try:
+        monkeypatch.setattr(sim, "target_oriented_box", lambda *args: [0.] * 6)
+        monkeypatch.setattr(sim, "entity_mask", lambda *args: np.zeros((2, 2), dtype=np.uint8))
+        config = configure_scene(sim, "place", 2, 122000)
+        config["perception"]["hide_unseen_centers"] = True
+        initial = deepcopy(sim.initial)
+        expected = sim.state().copy()
+        metadata = {**config, "task": "place", "initial": initial, "color_targets": True}
+        sim.reset(20)
+        target, destination, entities = reset_from_episode(sim, CorpusEpisode(Path("unused"), metadata))
+        np.testing.assert_allclose(sim.state(), expected, atol=1e-5)
+        for name, position in initial["objects"].items():
+            np.testing.assert_allclose(sim.position(name), position)
+        np.testing.assert_allclose(sim.position("goal_right"), initial["appearance"]["destinations"]["goal_right"])
+        assert target == "short" and destination == "goal_right"
+        assert sim.hide_unseen_centers
+        assert sim.episode_constraints["destination_tolerance_m"] == .03
+        assert entities == [("short", "object"), ("goal_right", "destination")]
+    finally:
+        sim.close()
+
+
+def test_search_scenes_do_not_leak_hidden_target_coordinates(monkeypatch):
+    from so101.robot_sim import BeamSimulation
+    sim = BeamSimulation(render=False)
+    try:
+        sim.reset(90000)
+        monkeypatch.setattr(sim, "entity_mask", lambda *args: np.zeros((2, 2), dtype=np.uint8))
+        assert sim.entity_camera_depth("short")[1]
+        sim.hide_unseen_centers = True
+        assert sim.projected_entity_center("short") == ([0., 0.], False)
+        assert sim.entity_camera_depth("short") == (0., False)
+        assert sim.target_oriented_box("short")[:2] == [0., 0.]
+    finally:
+        sim.close()
+
+
+def test_difficulty_collection_reports_missing_cases_and_resumes_without_overwriting(tmp_path, monkeypatch):
+    import so101.collect_difficulty_sim as collector
+    monkeypatch.setattr(collector, "BeamSimulation", lambda *args: Namespace(close=lambda: None))
+    def invalid(*args):
+        raise ValueError("No feasible camera pose")
+    monkeypatch.setattr(collector, "configure_scene", invalid)
+    root = tmp_path / "scenes"
+    first = collector.collect(root, 1, 90000, attempts_per_case=1)
+    assert len(first["missing_cases"]) == 16 and len(first["attempts"]) == 16
+    assert all(row["outcome"] == "invalid_scene" and row["error"] for row in first["attempts"])
+    second = collector.collect(root, 1, 90000, attempts_per_case=1, resume=True)
+    assert second["attempts"] == first["attempts"]
+    with pytest.raises(ValueError, match="original seed"):
+        collector.collect(root, 1, 90001, resume=True)
+    with pytest.raises(ValueError, match="non-overlapping seed"):
+        collector.collect(tmp_path / "invalid", 101, 90000)

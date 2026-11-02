@@ -1,0 +1,12 @@
+{
+  "dashboard_service": "so101-web.service",
+  "dashboard_health_url": "http://127.0.0.1:8765/lego-robot/api/runs",
+  "gpu_enabled": false,
+  "clients": [
+    {
+      "id": "replace-with-session-id",
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "actions": ["dashboard.status", "dashboard.restart"]
+    }
+  ]
+}
