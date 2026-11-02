@@ -37,16 +37,34 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_state(state: dict) -> None:
+def validate_state(state: dict, *, allow_untrained: bool = False) -> None:
     import torch
 
     required = {"step", "model", "optimizer", "log", "rng"}
     if not required <= state.keys():
         raise ValueError(f"Incomplete resume state: missing {required - state.keys()}")
-    if state["step"] != state["log"]["steps"][-1]["step"]:
-        raise ValueError("Resume model and log steps do not match")
-    if not state["model"] or not state["optimizer"].get("state"):
-        raise ValueError("Missing trained model or Adam state")
+    if type(state["step"]) is not int or state["step"] < 0:
+        raise ValueError("Resume step must be a nonnegative integer")
+    if (not isinstance(state["model"], dict) or not state["model"]
+            or not isinstance(state["optimizer"], dict)
+            or not isinstance(state["log"], dict)
+            or not isinstance(state["log"].get("steps"), list)):
+        raise ValueError("Invalid resume model, optimizer, or training log")
+    history = state["log"]["steps"]
+    if allow_untrained and state["step"] == 0:
+        if (history or state["optimizer"].get("state") != {}
+                or not isinstance(state["optimizer"].get("param_groups"), list)
+                or not state["optimizer"]["param_groups"]
+                or any(not isinstance(group, dict)
+                       or not isinstance(group.get("params"), list)
+                       or not group["params"] for group in state["optimizer"]["param_groups"])):
+            raise ValueError("Untrained resume state requires empty history/Adam state and valid parameter groups")
+    else:
+        if (not history or not isinstance(history[-1], dict)
+                or state["step"] != history[-1].get("step")):
+            raise ValueError("Resume model and log steps do not match")
+        if not state["optimizer"].get("state"):
+            raise ValueError("Missing trained model or Adam state")
 
     def finite(value: Any) -> None:
         if isinstance(value, torch.Tensor):

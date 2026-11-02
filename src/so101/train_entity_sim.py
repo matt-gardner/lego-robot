@@ -439,7 +439,7 @@ def train(
     resume_state = (torch.load(training_state, map_location="cpu", weights_only=False)
                     if training_state is not None and training_state.exists() else None)
     if resume_state is not None:
-        validate_state(resume_state)
+        validate_state(resume_state, allow_untrained=True)
     device_rng_plan = (plan_device_rng(
         resume_state, device, allow_device_rng_migration, device_rng_seed,
     ) if resume_state is not None else None)

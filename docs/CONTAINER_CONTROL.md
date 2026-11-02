@@ -289,6 +289,9 @@ sampling RNG, model/Adam state and optimizer/sample history, seeds only the
 target device RNG, and records `device_rng_migrations` with `bit_exact=false`.
 Only the device field may change under this opt-in; unrelated recipe changes
 remain rejected. New SFT saves record the RNG backend explicitly.
+SFT also accepts its valid pre-first-update checkpoint (step zero, empty update
+history and Adam state, initialized parameter groups); trained-state validation
+remains the default for other callers. Both paths reject non-finite tensors.
 
 This source support does not load or modify the stopped update-304 checkpoint,
 clear STOP, authorize training, or qualify CUDA/full-state recovery on a real

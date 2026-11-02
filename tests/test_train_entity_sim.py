@@ -78,7 +78,8 @@ def test_sft_full_state_migration_preserves_model_adam_sampling_and_cpu_rng(tmp_
     assert torch.load(path, map_location="cpu", weights_only=False)["log"]["run_config"]["device"] == "cpu"
 
 
-def test_sft_same_backend_recovery_reproduces_next_optimizer_update(tmp_path):
+@pytest.mark.parametrize("initial_updates", [0, 1])
+def test_sft_same_backend_recovery_reproduces_next_optimizer_update(tmp_path, initial_updates):
     random.seed(17)
     np.random.seed(18)
     torch.manual_seed(19)
@@ -95,16 +96,23 @@ def test_sft_same_backend_recovery_reproduces_next_optimizer_update(tmp_path):
         adam.step()
         return loss.detach()
 
-    update(model, optimizer, sampling)
+    if initial_updates:
+        update(model, optimizer, sampling)
     path = tmp_path / "training_state.pt"
-    trainer.save_training_state(path, model, optimizer, 1, sampling, {
-        "run_config": config, "steps": [{"step": 1, "samples_seen": 64}],
+    history = [{"step": 1, "samples_seen": 64}] if initial_updates else []
+    trainer.save_training_state(path, model, optimizer, initial_updates, sampling, {
+        "run_config": config, "steps": history,
     })
     expected_loss = update(model, optimizer, sampling)
     target = torch.nn.Linear(2, 1)
     target_adam = torch.optim.AdamW(target.parameters(), lr=1e-3)
     target_rng = np.random.default_rng(999)
     state = torch.load(path, map_location="cpu", weights_only=False)
+    trainer.validate_state(state, allow_untrained=True)
+    if not initial_updates:
+        assert state["optimizer"]["state"] == {}
+        with pytest.raises(ValueError):
+            trainer.validate_state(state)
     log = trainer.restore_training_state(
         state, target, target_adam, target_rng, config, plan_device_rng(state, "cpu"),
     )
@@ -115,8 +123,40 @@ def test_sft_same_backend_recovery_reproduces_next_optimizer_update(tmp_path):
     for actual, expected in zip(target_adam.state.values(), optimizer.state.values(), strict=True):
         for key in expected:
             torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
-    assert log["steps"] == [{"step": 1, "samples_seen": 64}]
+    assert log["steps"] == history
     assert "device_rng_migrations" not in log
+
+
+@pytest.mark.parametrize("invalid", [
+    "nonfinite_model", "nonfinite_optimizer", "mismatched_history",
+    "nonzero_without_history", "initialized_adam", "missing_groups", "invalid_group", "invalid_step",
+])
+def test_sft_initial_checkpoint_validation_rejects_malformed_state(tmp_path, invalid):
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    path = tmp_path / "training_state.pt"
+    trainer.save_training_state(path, model, optimizer, 0, np.random.default_rng(42), {
+        "run_config": {"device": "cpu"}, "steps": [],
+    })
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    if invalid == "nonfinite_model":
+        state["model"]["weight"][0, 0] = float("nan")
+    elif invalid == "nonfinite_optimizer":
+        state["optimizer"]["param_groups"][0]["invalid"] = torch.tensor(float("nan"))
+    elif invalid == "mismatched_history":
+        state["log"]["steps"] = [{"step": 1}]
+    elif invalid == "nonzero_without_history":
+        state["step"] = 1
+    elif invalid == "initialized_adam":
+        state["optimizer"]["state"] = {0: {"step": torch.tensor(1)}}
+    elif invalid == "missing_groups":
+        state["optimizer"]["param_groups"] = []
+    elif invalid == "invalid_group":
+        state["optimizer"]["param_groups"] = [{}]
+    else:
+        state["step"] = False
+    with pytest.raises(ValueError):
+        trainer.validate_state(state, allow_untrained=True)
 
 
 @pytest.mark.parametrize("warmup", [0, 1, float("nan")])
