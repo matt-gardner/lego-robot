@@ -192,6 +192,45 @@ prove checkpoint training-state completeness, implement S3 retention/recovery
 selection, handle Spot notices, authorize a trainer start, or qualify CUDA.
 Original dataset/checkpoint/STOP paths remain untouched.
 
+### Offline versioned checkpoint publication primitive
+
+`so101.aws_checkpoint.CheckpointPublisher` is a source-only library for stable,
+opaque checkpoint publication. It is not connected to a trainer, SSM document,
+Spot handler, or installed worker. A trusted caller must validate full training
+state, actual step/spec identity, runtime authorization, lease, and conservative
+compute/noncompute reservations **before** invoking it. No paid/upload action
+is authorized by the presence of this library.
+
+The caller supplies a private task-owned publication root, separate from
+original outputs. A new job/step directory is created exclusively; existing
+steps cannot be replayed automatically. The source is opened read-only without
+following a final symlink, must be a regular file, and is copied into a synced
+snapshot under an explicit byte ceiling. Size/mtime/ctime changes during the
+copy fail before any AWS request. Normal trainer checkpoint writes must still
+use atomic replacement, not in-place mutation.
+
+The library persists an intent before upload, uses content-addressed keys under
+`runs/lego-robot/.../<job-id>/step_<step>/`, and requires conditional
+`PutObject(IfNoneMatch="*")`, explicit bucket owner, SHA256 checksum, AES256
+encryption, and non-null version IDs. Each put is confirmed by an exact-version
+HEAD with matching size/checksum. Only after the checkpoint version verifies is
+a versioned manifest published; it binds job/step/spec to the immutable
+checkpoint reference. A local `published.json` receipt appears only after both
+versions confirm. The returned manifest reference can be verified using the
+existing exact-version staging library; recovery selection and trainer resume
+remain separate, unfinished integration.
+Only single-part PUTs are implemented; the caller must preflight the applicable
+S3 object-size limit. Multipart publication is not supported.
+
+Upload errors/timeouts/checksum mismatches propagate. Partial publication
+retains intent/snapshot and possibly a remote uncommitted checkpoint version;
+there is no retry, overwrite, deletion, or success-shaped fallback. The operator
+must reconcile exact keys/versions and retain cost reservations after ambiguous
+outcomes before considering another attempt. The byte ceiling is not a storage,
+request, network, retention, or account-cost cap. Full-state validation,
+noncompute budget enforcement/retention decisions, interruption uploads, and
+real S3 recovery qualification remain prerequisites for operational use.
+
 ### Root-manifest-bound idle staging entrypoint
 
 `python3 -I -m so101.aws_worker_bootstrap` adds a **source-only** staging

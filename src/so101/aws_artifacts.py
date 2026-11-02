@@ -12,6 +12,22 @@ from urllib.parse import urlsplit
 from so101.cloud_checkpoint import atomic_json, fsync_directory, sha256
 
 
+def worker_request(args: list[str], run=subprocess.run) -> dict:
+    result = run(
+        args, check=True, capture_output=True, text=True, timeout=3600,
+        env={
+            "PATH": "/usr/bin:/bin", "HOME": "/var/lib/so101-worker",
+            "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+            "AWS_EC2_METADATA_DISABLED": "false", "AWS_MAX_ATTEMPTS": "1",
+            "AWS_METADATA_SERVICE_TIMEOUT": "2", "AWS_METADATA_SERVICE_NUM_ATTEMPTS": "1",
+        },
+    )
+    response = json.loads(result.stdout)
+    if not isinstance(response, dict):
+        raise ValueError("Worker AWS request must return a JSON object")
+    return response
+
+
 @dataclass(frozen=True)
 class Artifact:
     uri: str
@@ -80,16 +96,7 @@ class ArtifactStore:
         if target is not None:
             args.append(str(target))
         # Worker instance-role credentials only; never inherit controller/user keys.
-        result = self.run(
-            args, check=True, capture_output=True, text=True, timeout=3600,
-            env={
-                "PATH": "/usr/bin:/bin", "HOME": "/var/lib/so101-worker",
-                "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
-                "AWS_EC2_METADATA_DISABLED": "false", "AWS_MAX_ATTEMPTS": "1",
-                "AWS_METADATA_SERVICE_TIMEOUT": "2", "AWS_METADATA_SERVICE_NUM_ATTEMPTS": "1",
-            },
-        )
-        response = json.loads(result.stdout)
+        response = worker_request(args, self.run)
         if (not isinstance(response, dict) or response.get("VersionId") != artifact.version
                 or type(response.get("ContentLength")) is not int
                 or response["ContentLength"] != artifact.size):
