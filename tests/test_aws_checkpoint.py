@@ -167,6 +167,7 @@ class CheckpointPublisherTests(unittest.TestCase):
             self.publish()
         job.unlink()
         job.mkdir(mode=0o755)
+        job.chmod(0o755)
         with self.assertRaises(ValueError):
             self.publish()
         self.assertEqual(self.calls, [])
