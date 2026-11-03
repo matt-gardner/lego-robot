@@ -27,7 +27,7 @@ def wheel_lock(directory: Path) -> str:
             raise ValueError(f"Not a Linux amd64 or portable wheel: {path.name}")
         with zipfile.ZipFile(path) as archive:
             metadata = [name for name in archive.namelist()
-                        if name.endswith(".dist-info/METADATA")]
+                        if name.count("/") == 1 and name.endswith(".dist-info/METADATA")]
             if len(metadata) != 1:
                 raise ValueError(f"Wheel must have exactly one package metadata record: {path.name}")
             record = BytesParser().parsebytes(archive.read(metadata[0]))

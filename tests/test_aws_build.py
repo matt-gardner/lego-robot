@@ -29,6 +29,26 @@ def test_wheel_lock_hashes_every_exact_package(tmp_path):
     assert len(result.splitlines()) == 3
 
 
+def test_vendored_metadata_is_not_the_wheel_package_identity(tmp_path):
+    cuda_wheels(tmp_path)
+    path = wheel(tmp_path, "setuptools", "81.0.0", "py3-none-any")
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr("setuptools/_vendor/example-1.0.dist-info/METADATA",
+                         "Name: example\nVersion: 1.0\n")
+    lock = wheel_lock(tmp_path)
+    assert "setuptools==81.0.0 --hash=sha256:" in lock
+    assert "example==" not in lock
+
+
+def test_multiple_top_level_metadata_records_are_rejected(tmp_path):
+    cuda_wheels(tmp_path)
+    path = wheel(tmp_path, "example", "1.0", "py3-none-any")
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr("other-2.0.dist-info/METADATA", "Name: other\nVersion: 2.0\n")
+    with pytest.raises(ValueError, match="exactly one"):
+        wheel_lock(tmp_path)
+
+
 @pytest.mark.parametrize("tag", ["cp313-cp313-linux_x86_64", "cp312-cp312-win_amd64",
                                 "cp312-cp312-manylinux_2_28_aarch64",
                                 "cp313-abi3-linux_x86_64", "cp311-cp311-linux_x86_64",
