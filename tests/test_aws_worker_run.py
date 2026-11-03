@@ -1,11 +1,13 @@
 import hashlib
+import base64
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from so101.aws_worker_run import checkpoint_stop, launch, relative_output
+from so101.aws_worker_run import checkpoint_stop, launch, publish_stopped, relative_output
 from so101.control_broker import canonical
 
 
@@ -98,10 +100,14 @@ def test_ssm_documents_use_only_validated_environment_parameters():
     for action in ("start", "checkpoint-stop"):
         document = json.loads(Path(f"scripts/so101-worker-{action}.ssm.json").read_text())
         assert document["schemaVersion"] == "2.2"
-        assert set(document["parameters"]) == {"JobId", "SpecSHA256"}
-        for parameter in document["parameters"].values():
+        expected = {"JobId", "SpecSHA256"}
+        if action == "checkpoint-stop":
+            expected.add("StopDeadline")
+        assert set(document["parameters"]) == expected
+        for name, parameter in document["parameters"].items():
             assert parameter["interpolationType"] == "ENV_VAR"
-            assert parameter["allowedPattern"].startswith("^[0-9a-f]")
+            assert parameter["allowedPattern"].startswith(
+                "^[1-9]" if name == "StopDeadline" else "^[0-9a-f]")
         commands = document["mainSteps"][0]["inputs"]["runCommand"]
         assert commands[0] == "set -eu"
         assert f"so101.aws_worker_run {action}" in commands[1]
@@ -134,3 +140,72 @@ def test_stop_only_new_output_and_distinguishes_failed_exit(tmp_path, monkeypatc
         assert not (attempts / kwargs["job_id"] / "checkpoint-stop.json").exists()
     assert (staged / "STOP").read_bytes() == b"original STOP unchanged"
     assert (attempts / kwargs["job_id"] / "output/STOP").is_file()
+
+
+def test_stopped_checkpoint_validates_snapshot_and_confirms_versions_before_success(tmp_path, monkeypatch):
+    import so101.aws_worker_run as module
+    kwargs, calls, staged, attempts = setup_launch(tmp_path, monkeypatch)
+    launch(**kwargs)
+    monkeypatch.setattr(module.os, "geteuid", lambda: (attempts.stat().st_uid))
+    job, digest = kwargs["job_id"], kwargs["spec_sha256"]
+    manifest = module.load_manifest(None, None)
+    manifest.update(account_id="133961745003", aws_cli="/opt/aws/bin/aws", max_bytes=1000)
+    manifest["spec"]["output_uri"] = "s3://approved/runs/lego-robot/"
+    stage_root = tmp_path / "stage-root"
+    (stage_root / job).mkdir(parents=True)
+    (stage_root / job / "training_state.pt").write_bytes((staged / "training_state.pt").read_bytes())
+    (attempts / job / "checkpoint-stop.json").write_text(json.dumps({
+        "phase": "exited-awaiting-validation", "job_id": job, "spec_sha256": digest,
+    }))
+    monkeypatch.setattr(module, "trusted_json", lambda path: json.loads(path.read_text()))
+    cli = tmp_path / "docker"
+    cli.write_text("fake CLI")
+    manifest["runtime"]["docker_cli"] = str(cli)
+    objects, operations = {}, []
+    def run(args, **options):
+        if args[0] == str(cli):
+            operations.append("validate")
+            path = next(item.split(",")[1].removeprefix("src=") for item in args
+                        if item.startswith("type=bind,src="))
+            data = Path(path).read_bytes()
+            result = {"step": 1, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        else:
+            operation = args[2]
+            operations.append(operation)
+            assert options["timeout"] == 120
+            key = next(item.removeprefix("--key=") for item in args if item.startswith("--key="))
+            if operation == "put-object":
+                assert "--if-none-match" in args and key not in objects
+                data = Path(args[args.index("--body") + 1]).read_bytes()
+                objects[key] = {"VersionId": f"version-{len(objects)}", "ContentLength": len(data),
+                                "ChecksumSHA256": base64.b64encode(hashlib.sha256(data).digest()).decode()}
+            result = objects[key]
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(result))
+    config = {"manifest": "rootmanifest", "manifest_sha256": "b" * 64,
+              "attempts_root": str(attempts), "staging_root": str(stage_root)}
+    result = publish_stopped(config, job_id=job, spec_sha256=digest, run=run)
+    assert operations == ["validate", "validate", "put-object", "head-object", "put-object", "head-object"]
+    assert result["phase"] == "versioned-checkpoint-published" and len(objects) == 2
+    assert json.loads((attempts / job / "recovery.json").read_text()) == result
+
+
+def test_cli_caps_stop_work_by_controller_deadline_including_dispatch_delay(monkeypatch):
+    import so101.aws_worker_run as module
+    config = {key: "unused" for key in (
+        "manifest", "manifest_sha256", "plan", "plan_sha256", "staging_root",
+        "attempts_root", "docker_cli", "qualification")}
+    config["grace_seconds"] = 300
+    monkeypatch.setattr(module, "trusted_json", lambda path: config)
+    monkeypatch.setattr(module.time, "time", lambda: 1000)
+    monkeypatch.setattr(module.time, "monotonic", lambda: 1)
+    monkeypatch.setattr(sys, "argv", ["worker", "checkpoint-stop", "--job-id", "1" * 32,
+                                    "--spec-sha256", "a" * 64, "--stop-deadline", "1010"])
+    observed = []
+    def run(command, **options):
+        observed.append(options["timeout"])
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module, "checkpoint_stop",
+                        lambda *args, **options: options["run"](["wait"], timeout=300))
+    monkeypatch.setattr(module, "publish_stopped", lambda *args, **options: {"phase": "published"})
+    module.main()
+    assert observed == [10]

@@ -226,12 +226,31 @@ no network, a read-only root, no Linux capabilities, no privilege escalation,
 and only GPU device0. Ambiguous starts cannot automatically replay. This is not
 yet a complete controller/worker recovery state machine.
 
-Checkpoint-stop writes STOP only in that new output, then waits at most300
-seconds for the exact committed container to exit. Nonzero exit/timeouts fail
-explicitly; only clean exit produces `exited-awaiting-validation`, NOT an upload
-or validated recovery receipt. Full-state publication, Spot interruption
-monitoring, log transport, archive preparation, and live verification remain
-unfinished. Independent lease termination remains necessary on stop failure.
+Checkpoint-stop writes STOP only in that new output and waits for the exact
+committed container to exit. Nonzero exit/timeouts fail explicitly. Clean exit
+first produces `exited-awaiting-validation`; the root CLI then validates full
+state inside the pinned image on CPU, including original recipe/history,
+finite model/Adam state, CPU/sampling RNG and CUDA RNG metadata. It revalidates
+the stable snapshot before uploading, confirms both checkpoint and manifest
+S3 versions/checksums, and writes a root `recovery.json` before SSM success.
+The snapshot validator checks bytes/metadata, not actual CUDA restore capability.
+
+`grace_seconds` now bounds the entire CLI stop/validate/upload operation (at
+most300 seconds), not each subprocess independently. It must be shorter than
+the broker's remaining termination grace/lease. Per-operation upload/validation
+timeouts are further capped by remaining grace and
+the absolute `StopDeadline` transmitted by the controller before SSM dispatch,
+so dispatch delay cannot reset the stop window. This new parameter requires
+coordinated controller and immutable stop-document version activation.
+Ambiguous failures preserve
+intent and reservations; there is no automatic replay or upload reconciliation.
+Actual throughput/recovery qualification under the stop window is still required.
+Worker `s3:PutObject` rights for the exact new run namespace are required; no
+credentials are supplied to training or validation containers.
+
+Spot interruption monitoring, log transport, archive preparation, controller
+recovery-manifest retrieval, and live verification remain unfinished.
+Independent lease termination remains necessary on stop failure.
 
 Broker submission now scans EC2 instances in the approved Oregon region
 before reservation, without ownership-tag filters. Pending, running, stopping,

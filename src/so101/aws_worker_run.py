@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import subprocess
 import time
 
 from so101.aws_worker_bootstrap import load_manifest, require_guard
+from so101.aws_checkpoint import CheckpointPublisher
 from so101.cloud_checkpoint import atomic_json, fsync_directory, sha256
 from so101.control_broker import canonical, trusted_json, trusted_path
 
@@ -156,11 +158,71 @@ def checkpoint_stop(attempts: Path, *, job_id: str, spec_sha256: str,
     })
 
 
+def publish_stopped(config: dict, *, job_id: str, spec_sha256: str,
+                    run=subprocess.run) -> dict:
+    manifest = load_manifest(Path(config["manifest"]), config["manifest_sha256"])
+    if manifest["spec_sha256"] != spec_sha256:
+        raise ValueError("Checkpoint publication differs from root specification")
+    attempt = trusted_path(Path(config["attempts_root"])) / job_id
+    stopped = trusted_json(attempt / "checkpoint-stop.json")
+    if (stopped.get("phase") != "exited-awaiting-validation"
+            or stopped.get("job_id") != job_id or stopped.get("spec_sha256") != spec_sha256):
+        raise ValueError("Checkpoint publication requires a clean exact worker stop")
+    original = trusted_path(Path(config["staging_root"]) / job_id / "training_state.pt")
+    if sha256(original) != manifest["spec"]["checkpoint"]["sha256"]:
+        raise ValueError("Original recovery checkpoint changed before publication")
+    cli = str(trusted_path(Path(manifest["runtime"]["docker_cli"])))
+    def validate(path: Path) -> dict:
+        if "," in str(path) or "," in str(original):
+            raise ValueError("Invalid checkpoint bind path")
+        result = run([
+            cli, "--host=unix:///var/run/docker.sock", "run", "--rm",
+            "--network=none", "--read-only", "--cap-drop=ALL",
+            "--security-opt=no-new-privileges", "--user=0:0",
+            "--mount", f"type=bind,src={path},dst=/check/state.pt,readonly",
+            "--mount", f"type=bind,src={original},dst=/check/original.pt,readonly",
+            manifest["runtime"]["image"], "python", "-m", "so101.aws_state_check",
+            "--state", "/check/state.pt", "--original", "/check/original.pt",
+        ], check=True, capture_output=True, text=True, timeout=120)
+        receipt = json.loads(result.stdout)
+        if (not isinstance(receipt, dict) or set(receipt) != {"step", "size", "sha256"}
+                or type(receipt["step"]) is not int or receipt["step"] < 0
+                or type(receipt["size"]) is not int or receipt["size"] != path.stat().st_size
+                or receipt["sha256"] != sha256(path)):
+            raise ValueError("Runtime returned invalid checkpoint validation identity")
+        return receipt
+    source = attempt / "output/training_state.pt"
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Stopped worker checkpoint must be a regular file")
+    validated = validate(source)
+    root = attempt / "publication"
+    root.mkdir(mode=0o700)
+    publisher = CheckpointPublisher(
+        owner=manifest["account_id"], aws_cli=manifest["aws_cli"],
+        output_prefix=manifest["spec"]["output_uri"], run=run,
+        request_timeout=120,
+    )
+    def validate_snapshot(path: Path) -> None:
+        if validate(path) != validated:
+            raise ValueError("Stable snapshot differs from validated stopped checkpoint")
+    artifact = publisher.publish(
+        source, root, job_id=job_id, spec_sha256=spec_sha256,
+        step=validated["step"], max_bytes=manifest["max_bytes"],
+        validate_snapshot=validate_snapshot,
+    )
+    receipt = {"job_id": job_id, "spec_sha256": spec_sha256,
+               "phase": "versioned-checkpoint-published", "step": validated["step"],
+               "manifest": asdict(artifact), "checkpoint_sha256": validated["sha256"]}
+    atomic_json(attempt / "recovery.json", receipt)
+    return receipt
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("start", "checkpoint-stop"))
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--spec-sha256", required=True)
+    parser.add_argument("--stop-deadline", type=int)
     args = parser.parse_args()
     config = trusted_json(Path("/etc/so101-worker/execution.json"))
     fields = {"manifest", "manifest_sha256", "plan", "plan_sha256", "staging_root",
@@ -180,10 +242,33 @@ def main() -> None:
             job_id=args.job_id, spec_sha256=args.spec_sha256,
         ))
     else:
+        grace = config["grace_seconds"]
+        if type(grace) is not int or not 1 <= grace <= 300:
+            raise ValueError("Whole checkpoint-stop operation needs a bounded total grace")
+        if args.stop_deadline is None:
+            raise ValueError("Checkpoint stop requires the controller's absolute termination deadline")
+        remaining = min(grace, args.stop_deadline - time.time())
+        if remaining <= 0:
+            raise TimeoutError("Controller stop deadline already expired")
+        end = time.monotonic() + remaining
+        def bounded_run(command, **options):
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, grace)
+            options["timeout"] = min(options["timeout"], remaining)
+            return subprocess.run(command, **options)
         checkpoint_stop(
             attempts, job_id=args.job_id, spec_sha256=args.spec_sha256,
             docker_cli=config["docker_cli"], grace_seconds=config["grace_seconds"],
+            run=bounded_run,
         )
+        recovery = publish_stopped(
+            config, job_id=args.job_id, spec_sha256=args.spec_sha256,
+            run=bounded_run,
+        )
+        if time.monotonic() >= end:
+            raise TimeoutError("Checkpoint publication exceeded total stop grace")
+        print(json.dumps(recovery))
 
 
 if __name__ == "__main__":

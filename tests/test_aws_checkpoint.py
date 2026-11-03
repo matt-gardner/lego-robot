@@ -60,6 +60,25 @@ class CheckpointPublisherTests(unittest.TestCase):
     def directory(self):
         return self.root / self.job / "step_000000304"
 
+    def test_snapshot_validation_failure_never_uploads(self):
+        def reject(path):
+            raise ValueError("invalid full state")
+        with self.assertRaisesRegex(ValueError, "invalid full state"):
+            self.publisher.publish(
+                self.source, self.root, job_id=self.job, step=304,
+                spec_sha256="b" * 64, max_bytes=1000, validate_snapshot=reject,
+            )
+        self.assertFalse(self.calls)
+
+    def test_validation_cannot_mutate_the_snapshot_before_upload(self):
+        with self.assertRaisesRegex(ValueError, "changed during validation"):
+            self.publisher.publish(
+                self.source, self.root, job_id=self.job, step=304,
+                spec_sha256="b" * 64, max_bytes=1000,
+                validate_snapshot=lambda path: path.write_bytes(b"changed"),
+            )
+        self.assertFalse(self.calls)
+
     def test_checkpoint_version_then_manifest_version_commit_without_original_changes(self):
         result = self.publish()
         self.assertEqual([args[2] for args in self.calls],

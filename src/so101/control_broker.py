@@ -490,12 +490,14 @@ class Broker:
                 return self.job(job_id, owner)
             self.owned_instance(job)
             spec = json.loads(job["spec"])
+            stop_deadline = min(job["deadline"], time.time() + self.policy["checkpoint_grace_seconds"])
             try:
                 command = self.aws(
                     "ssm", "send-command", "--document-name", spec["stop_document"],
                     "--document-version", spec["stop_document_version"],
                     "--instance-ids", job["instance"], "--parameters",
-                    json.dumps({"JobId": [job_id], "SpecSHA256": [job["digest"]]}),
+                    json.dumps({"JobId": [job_id], "SpecSHA256": [job["digest"]],
+                                "StopDeadline": [str(int(stop_deadline))]}),
                 )["Command"]["CommandId"]
             except (subprocess.SubprocessError, OSError, KeyError):
                 LOG.exception("Checkpoint request failed for %s; requesting termination", job_id)
@@ -503,7 +505,7 @@ class Broker:
                 raise
             self.update(
                 job_id, status="stopping", stop_command=command,
-                stop_deadline=min(job["deadline"], time.time() + self.policy["checkpoint_grace_seconds"]),
+                stop_deadline=stop_deadline,
             )
             return self.job(job_id, owner)
 

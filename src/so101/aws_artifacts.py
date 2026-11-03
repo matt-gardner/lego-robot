@@ -12,9 +12,11 @@ from urllib.parse import urlsplit
 from so101.cloud_checkpoint import atomic_json, fsync_directory, sha256
 
 
-def worker_request(args: list[str], run=subprocess.run) -> dict:
+def worker_request(args: list[str], run=subprocess.run, *, timeout: int = 3600) -> dict:
+    if type(timeout) is not int or not 1 <= timeout <= 3600:
+        raise ValueError("Worker request timeout must be bounded")
     result = run(
-        args, check=True, capture_output=True, text=True, timeout=3600,
+        args, check=True, capture_output=True, text=True, timeout=timeout,
         env={
             "PATH": "/usr/bin:/bin", "HOME": "/var/lib/so101-worker",
             "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",

@@ -9,23 +9,28 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+from typing import Callable
 
 from so101.aws_artifacts import Artifact, split_uri, worker_request
 from so101.cloud_checkpoint import atomic_json, fsync_directory, sha256
 
 
 class CheckpointPublisher:
-    def __init__(self, *, owner: str, aws_cli: str, output_prefix: str, run=subprocess.run):
+    def __init__(self, *, owner: str, aws_cli: str, output_prefix: str, run=subprocess.run,
+                 request_timeout: int = 3600):
         if not isinstance(owner, str) or not re.fullmatch(r"[0-9]{12}", owner):
             raise ValueError("Checkpoint publication requires the exact bucket owner")
         if not isinstance(aws_cli, str) or not Path(aws_cli).is_absolute():
             raise ValueError("Checkpoint publication requires an absolute installed AWS CLI")
+        if type(request_timeout) is not int or not 1 <= request_timeout <= 3600:
+            raise ValueError("Checkpoint request timeout must be bounded")
         if not isinstance(output_prefix, str) or not output_prefix.endswith("/"):
             raise ValueError("Checkpoint output prefix must end in /")
         _, key = split_uri(output_prefix[:-1])
         if key != "runs/lego-robot" and not key.startswith("runs/lego-robot/"):
             raise ValueError("Checkpoints must stay in the approved runs/lego-robot namespace")
         self.owner, self.aws_cli, self.output_prefix, self.run = owner, aws_cli, output_prefix, run
+        self.request_timeout = request_timeout
 
     def request(self, operation: str, uri: str, *options: str) -> dict:
         if operation not in {"put-object", "head-object"} or not uri.startswith(self.output_prefix):
@@ -35,7 +40,7 @@ class CheckpointPublisher:
             self.aws_cli, "s3api", operation, "--bucket", bucket, "--key=" + key,
             "--expected-bucket-owner", self.owner, "--region", "us-west-2",
             "--output", "json", "--no-cli-pager", *options,
-        ], self.run)
+        ], self.run, timeout=self.request_timeout)
 
     def put(self, path: Path, uri: str) -> Artifact:
         digest = sha256(path)
@@ -59,7 +64,8 @@ class CheckpointPublisher:
         return artifact
 
     def publish(self, source: Path, root: Path, *, job_id: str, step: int,
-                spec_sha256: str, max_bytes: int) -> Artifact:
+                spec_sha256: str, max_bytes: int,
+                validate_snapshot: Callable[[Path], None] | None = None) -> Artifact:
         if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
             raise ValueError("An exact broker job ID is required")
         if type(step) is not int or step < 0:
@@ -109,6 +115,10 @@ class CheckpointPublisher:
             "schema": 1, "job_id": job_id, "step": step, "spec_sha256": spec_sha256,
             "checkpoint_uri": uri, "sha256": digest.hexdigest(), "size": size,
         })
+        if validate_snapshot is not None:
+            validate_snapshot(snapshot)
+            if snapshot.stat().st_size != size or sha256(snapshot) != digest.hexdigest():
+                raise ValueError("Checkpoint snapshot changed during validation")
         artifact = self.put(snapshot, uri)
         manifest_path = directory / "manifest.json"
         atomic_json(manifest_path, {
