@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import fcntl
 import hashlib
 import json
 import os
@@ -310,6 +311,46 @@ def qualify_worker(config: dict, *, job_id: str, spec_sha256: str,
     return receipt
 
 
+def stop_and_publish(config: dict, *, job_id: str, spec_sha256: str, stop_deadline: int,
+                     run=subprocess.run, wall=time.time, monotonic=time.monotonic) -> dict:
+    if (not re.fullmatch(r"[0-9a-f]{32}", job_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", spec_sha256) or type(stop_deadline) is not int):
+        raise ValueError("Bounded stop requires exact job/specification/deadline")
+    grace = config["grace_seconds"]
+    if type(grace) is not int or not 1 <= grace <= 300:
+        raise ValueError("Whole checkpoint-stop operation needs a bounded total grace")
+    remaining = min(grace, stop_deadline - wall())
+    if remaining <= 0:
+        raise TimeoutError("Stop deadline already expired")
+    end = monotonic() + remaining
+    attempt = trusted_path(Path(config["attempts_root"]) / job_id)
+    descriptor = os.open(attempt / "stop.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "rb") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        def bounded_run(command, **options):
+            remaining = min(end - monotonic(), stop_deadline - wall())
+            override = attempt / "stop-deadline.json"
+            if override.exists():
+                deadline = trusted_json(override)
+                if (deadline.get("job_id") != job_id or deadline.get("spec_sha256") != spec_sha256
+                        or type(deadline.get("deadline")) is not int):
+                    raise ValueError("Invalid independent interruption stop deadline")
+                remaining = min(remaining, deadline["deadline"] - wall())
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, grace)
+            options["timeout"] = min(options["timeout"], 120, remaining)
+            return run(command, **options)
+        checkpoint_stop(
+            Path(config["attempts_root"]), job_id=job_id, spec_sha256=spec_sha256,
+            docker_cli=config["docker_cli"], grace_seconds=grace, run=bounded_run,
+        )
+        recovery = publish_stopped(config, job_id=job_id, spec_sha256=spec_sha256,
+                                   run=bounded_run)
+        if monotonic() >= end or wall() >= stop_deadline:
+            raise TimeoutError("Checkpoint publication exceeded total stop grace")
+        return recovery
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("start", "qualify", "checkpoint-stop"))
@@ -338,33 +379,13 @@ def main() -> None:
         print(json.dumps(qualify_worker(config, job_id=args.job_id,
                                        spec_sha256=args.spec_sha256)))
     else:
-        grace = config["grace_seconds"]
-        if type(grace) is not int or not 1 <= grace <= 300:
-            raise ValueError("Whole checkpoint-stop operation needs a bounded total grace")
         if args.stop_deadline is None:
             raise ValueError("Checkpoint stop requires the controller's absolute termination deadline")
-        remaining = min(grace, args.stop_deadline - time.time())
-        if remaining <= 0:
-            raise TimeoutError("Controller stop deadline already expired")
-        end = time.monotonic() + remaining
-        def bounded_run(command, **options):
-            remaining = end - time.monotonic()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(command, grace)
-            options["timeout"] = min(options["timeout"], remaining)
-            return subprocess.run(command, **options)
-        checkpoint_stop(
-            attempts, job_id=args.job_id, spec_sha256=args.spec_sha256,
-            docker_cli=config["docker_cli"], grace_seconds=config["grace_seconds"],
-            run=bounded_run,
-        )
-        recovery = publish_stopped(
+        print(json.dumps(stop_and_publish(
             config, job_id=args.job_id, spec_sha256=args.spec_sha256,
-            run=bounded_run,
-        )
-        if time.monotonic() >= end:
-            raise TimeoutError("Checkpoint publication exceeded total stop grace")
-        print(json.dumps(recovery))
+            stop_deadline=args.stop_deadline, run=subprocess.run,
+            wall=time.time, monotonic=time.monotonic,
+        )))
 
 
 if __name__ == "__main__":

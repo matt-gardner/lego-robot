@@ -1,0 +1,11 @@
+[Unit]
+Description=Lego robot GPU worker Spot checkpoint interruption check
+After=network-online.target lego-robot-worker-guard.service
+Requires=lego-robot-worker-guard.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/so101-worker/bin/python -I -m so101.aws_spot
+TimeoutStartSec=150
+NoNewPrivileges=true

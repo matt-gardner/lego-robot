@@ -270,7 +270,23 @@ Actual throughput/recovery qualification under the stop window is still required
 Worker `s3:PutObject` rights for the exact new run namespace are required; no
 credentials are supplied to training or validation containers.
 
-Spot interruption monitoring, log transport, archive preparation, controller
+`so101.aws_spot` and the source `so101-worker-spot.service`/`.timer` perform
+one-shot IMDSv2 checks. HTTP404 is the explicit no-notice case; other metadata
+errors propagate. Account/AMI/type and exact job/spec/broker tags must match the
+root GPU manifest before interruption action. Notices never extend the earliest
+observed deadline and are capped at120 seconds and the original lease.
+
+The monitor persists interruption intent and a shorter shared stop deadline,
+then uses the same validated publication path. A root advisory lock prevents
+SSM and Spot from publishing concurrently; each subprocess rechecks the
+independent deadline and is individually bounded to120 seconds. An already
+active stop retains ownership rather than being interrupted by another stop.
+Successful publication precedes fixed OS poweroff; failures log and request
+poweroff without automatic upload replay. Idle workers terminate without
+touching original data. The service/timer are GPU-worker-only source assets,
+not installed on the existing CPU host.
+
+Real Spot notice/throughput/termination qualification, log transport, archive preparation, controller
 recovery-manifest retrieval, and live verification remain unfinished.
 Independent lease termination remains necessary on stop failure.
 

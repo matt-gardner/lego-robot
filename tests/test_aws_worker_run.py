@@ -195,13 +195,16 @@ def test_stopped_checkpoint_validates_snapshot_and_confirms_versions_before_succ
     assert json.loads((attempts / job / "recovery.json").read_text()) == result
 
 
-def test_cli_caps_stop_work_by_controller_deadline_including_dispatch_delay(monkeypatch):
+def test_cli_caps_stop_work_by_controller_deadline_including_dispatch_delay(tmp_path, monkeypatch):
     import so101.aws_worker_run as module
     config = {key: "unused" for key in (
         "manifest", "manifest_sha256", "plan", "plan_sha256", "staging_root",
         "attempts_root", "docker_cli", "qualification")}
     config["grace_seconds"] = 300
+    config["attempts_root"] = str(tmp_path)
+    (tmp_path / ("1" * 32)).mkdir()
     monkeypatch.setattr(module, "trusted_json", lambda path: config)
+    monkeypatch.setattr(module, "trusted_path", lambda path: path.resolve(strict=True))
     monkeypatch.setattr(module.time, "time", lambda: 1000)
     monkeypatch.setattr(module.time, "monotonic", lambda: 1)
     monkeypatch.setattr(sys, "argv", ["worker", "checkpoint-stop", "--job-id", "1" * 32,

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Lego robot worker Spot interruption metadata
+
+[Timer]
+OnBootSec=10
+OnUnitInactiveSec=5
+AccuracySec=1
+Unit=so101-worker-spot.service
+
+[Install]
+WantedBy=timers.target
