@@ -300,8 +300,28 @@ that registered group. Command output uses SSM-managed stream names; training
 logs use the exact job stream exposed by `gpu.logs`. Real upload/flush/failure
 qualification remains required. Guard/Spot systemd journals are still local.
 
-Real Spot notice/throughput/termination qualification, archive preparation, controller
-recovery-manifest retrieval, and live verification remain unfinished.
+Controller `gpu.recover` now discovers content-addressed manifests in only the
+owned job's registered output prefix, without relying on SSM stdout (which Spot
+poweroff can lose). It pins current manifest VersionId with HEAD, then downloads
+that exact version and checks filename SHA256/body identity, job/spec/update,
+and checkpoint namespace/version/size/server SHA256. A higher checkpoint-only
+object is not a committed manifest and does not hide the prior recovery.
+Malformed complete manifests, ambiguous latest manifests, or incomplete
+listings fail explicitly rather than silently selecting an older attempt.
+
+Verified metadata is persisted privately beside controller state. SSM-success
+stop handling verifies recovery before termination; `gpu.recover` also works
+after independent/Spot termination. Parent resume specifications must match
+the verified checkpoint URI/version/SHA while preserving the frozen code/image,
+dataset/split, and recipe. Required controller read-only rights: scoped
+ListBucket, GetObject (unversioned HEAD to pin VersionId), and GetObjectVersion
+for the exact project run objects. No S3 writes/deletes are added.
+This verifies published references/server checksum, not a fresh local full-state
+download/export; local durable export is still necessary before temporary cloud
+copies can be cleaned up.
+
+Real Spot notice/throughput/termination qualification, archive preparation,
+root host bootstrap, and live verification remain unfinished.
 Independent lease termination remains necessary on stop failure.
 
 Broker submission now scans EC2 instances in the approved Oregon region

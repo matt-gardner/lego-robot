@@ -53,6 +53,7 @@ class BrokerTests(unittest.TestCase):
             "log_group": "/lego-robot/jobs",
         }
         self.calls = []
+        self.recovery_objects = {}
         self.profile = patch("so101.control_broker.validate_controller_profile")
         self.profile.start()
         self.broker = Broker(self.policy, self.root / "state.sqlite", self.root, self.command)
@@ -98,6 +99,30 @@ class BrokerTests(unittest.TestCase):
                 data = {"Reservations": [{"Instances": [{
                     "InstanceId": "i-123abc", "State": {"Name": "running"},
                 }]}]}
+        elif "list-objects-v2" in args:
+            prefix = args[args.index("--prefix") + 1]
+            job_id = prefix.rstrip("/").split("/")[-1]
+            job = self.broker.job(job_id, "session")
+            checkpoint = b"new full state"
+            checksum = hashlib.sha256(checkpoint).hexdigest()
+            checkpoint_key = prefix + "step_000000304/" + checksum + ".pt"
+            body = canonical({
+                "schema": 1, "job_id": job_id, "spec_sha256": job["digest"], "step": 304,
+                "checkpoint": {"uri": "s3://approved/" + checkpoint_key, "version": "checkpoint-v1",
+                               "sha256": checksum, "size": len(checkpoint)},
+            })
+            manifest_key = prefix + "step_000000304/" + hashlib.sha256(body).hexdigest() + ".json"
+            self.recovery_objects = {
+                manifest_key: (body, "manifest-v1"), checkpoint_key: (checkpoint, "checkpoint-v1"),
+            }
+            data = {"Contents": [{"Key": key} for key in self.recovery_objects], "IsTruncated": False}
+        elif "head-object" in args or "get-object" in args:
+            key = next(item.removeprefix("--key=") for item in args if item.startswith("--key="))
+            body, version = self.recovery_objects[key]
+            if "get-object" in args:
+                Path(next(item for item in args if item.endswith(".part"))).write_bytes(body)
+            data = {"VersionId": version, "ContentLength": len(body),
+                    "ChecksumSHA256": base64.b64encode(hashlib.sha256(body).digest()).decode()}
         elif "send-command" in args:
             data = {"Command": {"CommandId": "command-1"}}
         elif "get-command-invocation" in args:
@@ -349,6 +374,28 @@ class BrokerTests(unittest.TestCase):
         self.spec["recipe"] = {"batch": 128}
         with self.assertRaisesRegex(ValueError, "preserve"):
             self.broker.reserve("session", "approved", self.digest(), job["id"])
+
+    def test_resume_only_accepts_the_independently_verified_published_checkpoint(self):
+        previous = self.reserve()
+        self.broker.update(previous["id"], status="stopped")
+        recovery = self.broker.recover("session", previous["id"])
+        self.spec["checkpoint"] = {key: recovery["checkpoint"][key]
+                                   for key in ("uri", "version", "sha256")}
+        wrong = {**self.spec["checkpoint"], "version": "unverified-version"}
+        self.spec["checkpoint"] = wrong
+        with self.assertRaisesRegex(ValueError, "independently verified"):
+            self.broker.reserve("session", "approved", self.digest(), previous["id"])
+        self.spec["checkpoint"] = {key: recovery["checkpoint"][key]
+                                   for key in ("uri", "version", "sha256")}
+        resumed = self.broker.reserve("session", "approved", self.digest(), previous["id"])
+        self.assertEqual(resumed["parent"], previous["id"])
+
+    def test_recovery_cannot_read_another_capability_owners_job(self):
+        job = self.reserve()
+        count = len(self.calls)
+        with self.assertRaises(PermissionError):
+            self.broker.recover("another", job["id"])
+        self.assertEqual(len(self.calls), count)
 
     def test_restart_is_exact_allowlisted_service(self):
         with patch("so101.control_broker.urlopen") as response:

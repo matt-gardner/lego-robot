@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 import uuid
 
 from so101.aws_inventory import require_no_gpu
+from so101.aws_recovery import recover as recover_checkpoint
 
 
 LOG = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ def validate_policy(policy: dict) -> None:
     allowed = {
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
         "gpu.start", "gpu.status", "gpu.logs", "gpu.stop",
+        "gpu.recover",
     }
     identifiers = set()
     hashes = set()
@@ -243,6 +245,7 @@ class Broker:
     def __init__(self, policy: dict, state: Path, specs: Path, run=subprocess.run):
         validate_policy(policy)
         self.policy, self.specs, self.run = policy, specs, run
+        self.recovery_root = state.parent / "recovery"
         if policy["gpu_enabled"]:
             verify_controller(policy, run)
         self.lock = threading.RLock()
@@ -322,6 +325,10 @@ class Broker:
                 "commit", "image", "dataset_sha256", "split_sha256", "recipe",
             )):
                 raise ValueError("Resume must preserve code, runtime, dataset, split, and recipe")
+            recovery = self.recover(owner, parent)
+            if any(spec["checkpoint"][key] != recovery["checkpoint"][key]
+                   for key in ("uri", "version", "sha256")):
+                raise ValueError("Resume checkpoint must match independently verified published recovery")
         cost = spec["max_hours"] * spec["max_usd_per_hour"]
         now = time.time()
         with self.db:
@@ -449,6 +456,8 @@ class Broker:
                     )
                     state = invocation["Status"]
                     terminate = state in {"Success", "Cancelled", "TimedOut", "Failed"}
+                    if state == "Success":
+                        self.recover(owner, job_id)
                     if terminate and state != "Success":
                         self.update(job_id, error="Checkpoint-stop command ended with " + state)
                 if terminate:
@@ -540,6 +549,15 @@ class Broker:
             "--log-stream-name", job_id, "--limit", "100",
         )
 
+    def recover(self, owner: str, job_id: str) -> dict:
+        job = self.job(job_id, owner)
+        spec = json.loads(job["spec"])
+        return recover_checkpoint(
+            self.aws, self.recovery_root,
+            owner=self.policy["controller_role_arn"].split(":")[4],
+            prefix=spec["output_uri"], job_id=job_id, spec_sha256=job["digest"],
+        )
+
     def dashboard(self, restart: bool) -> dict:
         service = self.policy["dashboard_service"]
         if service != "so101-web.service":
@@ -562,6 +580,7 @@ class Broker:
             "gpu.resume": {"spec_id", "spec_sha256", "parent"},
             "gpu.status": {"job_id"}, "gpu.logs": {"job_id"}, "gpu.stop": {"job_id"},
             "gpu.start": {"job_id"},
+            "gpu.recover": {"job_id"},
         }
         if action not in fields or set(body) != fields[action]:
             raise ValueError("Unknown action or unexpected request fields")
@@ -633,7 +652,7 @@ def main() -> None:
     call = sub.add_parser("call")
     call.add_argument("action", choices=[
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
-        "gpu.status", "gpu.logs", "gpu.stop", "gpu.start",
+        "gpu.status", "gpu.logs", "gpu.stop", "gpu.start", "gpu.recover",
     ])
     call.add_argument("--url", required=True)
     call.add_argument("--token-file", type=Path, required=True)
