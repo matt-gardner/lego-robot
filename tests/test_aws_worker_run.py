@@ -39,7 +39,7 @@ def setup_launch(tmp_path, monkeypatch):
     (staged / "data").mkdir()
     job, digest = "1" * 32, "a" * 64
     plan = {"schema": 1, "spec_sha256": digest, "argv": arguments(),
-            "readonly_mounts": {"/opt/so101/data/collection": "data"}}
+            "readonly_mounts": {"/opt/so101/data/collection": "data"}, "archives": {}}
     binding = {"phase": "staged-idle", "job_id": job, "spec_sha256": digest,
                "manifest_sha256": "b" * 64, "deadline": 100,
                "staging_receipt_sha256": hashlib.sha256(b"{}").hexdigest()}
@@ -247,7 +247,7 @@ def qualification_setup(tmp_path, monkeypatch):
     argv = arguments() + ["--allow-device-rng-migration", "--device-rng-seed", "61000"]
     manifest["spec"]["recipe"]["argv"] = argv
     plan = {"schema": 1, "spec_sha256": kwargs["spec_sha256"], "argv": argv,
-            "readonly_mounts": {"/opt/so101/data/collection": "data"}}
+            "readonly_mounts": {"/opt/so101/data/collection": "data"}, "archives": {}}
     monkeypatch.setattr(module, "trusted_json", lambda path: {
         "phase": "staged-idle", "job_id": job, "spec_sha256": kwargs["spec_sha256"],
         "manifest_sha256": "b" * 64, "deadline": 100,

@@ -50,7 +50,7 @@ def launch(manifest_path: Path, manifest_sha256: str, plan_path: Path, plan_sha2
     plan = trusted_json(plan_path)
     if hashlib.sha256(canonical(plan)).hexdigest() != plan_sha256:
         raise ValueError("Launch plan differs from its root-pinned digest")
-    if set(plan) != {"schema", "spec_sha256", "argv", "readonly_mounts"} or plan["schema"] != 1:
+    if set(plan) != {"schema", "spec_sha256", "argv", "readonly_mounts", "archives"} or plan["schema"] != 1:
         raise ValueError("Unsupported launch plan")
     if (plan["spec_sha256"] != spec_sha256 or spec_sha256 != manifest["spec_sha256"]
             or plan["argv"] != manifest["spec"]["recipe"].get("argv")):

@@ -232,12 +232,27 @@ throughput and complete worker safety qualification remain necessary before
 the operator can install the aggregate `qualification` PASS receipt. Offline
 tests and mocked GPU responses are not evidence of these runtime checks passing.
 
-The separately pinned plan has `schema=1`, `spec_sha256`, `argv`, and
-`readonly_mounts`. `argv` must exactly match `spec.recipe.argv` and contains only
+The separately pinned plan has `schema=1`, `spec_sha256`, `argv`,
+`readonly_mounts`, and `archives`. `argv` must exactly match `spec.recipe.argv` and contains only
 trainer arguments after the fixed `python -u -m so101.train_entity_sim` command.
 The saved relative output/training-state paths are preserved, not rewritten in
 the checkpoint. Input mounts are root-trusted prepared paths within staged
-artifacts; extraction of data/model archives remains a separate prerequisite.
+artifacts.
+
+`so101.aws_worker_prepare.prepare` binds the plan to the committed staging
+receipt and verified archives. `archives` maps each staged artifact name to
+`destination`, `max_bytes`, and `max_members`. Each destination is a new,
+nonoverlapping staged directory. `so101.aws_extract` streams extraction,
+rejecting traversal/absolute paths, symlinks/hardlinks, sparse files, devices,
+and FIFOs; byte/member bounds are exact. It fsyncs file hashes/receipt and makes
+only the new copied files root-owned/readable, not writable, for UID1001 mounts.
+Failure leaves explicit partial task-owned staging, never modifies original
+trees, and does not automatically retry or delete.
+
+Model cache producers must flatten only internal approved data links into
+regular files, rejecting resolved paths outside that input root. Package only
+needed model-cache `hub` data, never HF_HOME token/stored_tokens, host home,
+SSH keys or credentials. Existing original caches/datasets remain unchanged.
 Collection/split/model mounts are read-only. A new UID1001-owned output receives
 only a copy of the checksummed recovery state; original output and STOP are
 never mounted writable or cleared. Missing model/data assets fail offline.
@@ -320,7 +335,7 @@ This verifies published references/server checksum, not a fresh local full-state
 download/export; local durable export is still necessary before temporary cloud
 copies can be cleaned up.
 
-Real Spot notice/throughput/termination qualification, archive preparation,
+Real Spot notice/throughput/termination qualification,
 root host bootstrap, and live verification remain unfinished.
 Independent lease termination remains necessary on stop failure.
 
