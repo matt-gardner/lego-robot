@@ -1,18 +1,19 @@
 {
   "schemaVersion": "2.2",
-  "description": "Start only an exact root-qualified staged SFT attempt; no arbitrary command input",
+  "description": "Bounded pre-PASS qualification or exact root-qualified SFT start; no arbitrary command input",
   "parameters": {
     "JobId": {"type": "String", "allowedPattern": "^[0-9a-f]{32}$", "interpolationType": "ENV_VAR"},
-    "SpecSHA256": {"type": "String", "allowedPattern": "^[0-9a-f]{64}$", "interpolationType": "ENV_VAR"}
+    "SpecSHA256": {"type": "String", "allowedPattern": "^[0-9a-f]{64}$", "interpolationType": "ENV_VAR"},
+    "Mode": {"type": "String", "default": "start", "allowedPattern": "^(start|qualify)$", "interpolationType": "ENV_VAR"}
   },
   "mainSteps": [{
     "action": "aws:runShellScript",
     "name": "StartQualifiedWorker",
     "inputs": {
-      "timeoutSeconds": "120",
+      "timeoutSeconds": "360",
       "runCommand": [
         "set -eu",
-        "/opt/so101-worker/bin/python -I -m so101.aws_worker_run start --job-id \"$SSM_JobId\" --spec-sha256 \"$SSM_SpecSHA256\""
+        "/opt/so101-worker/bin/python -I -m so101.aws_worker_run \"$SSM_Mode\" --job-id \"$SSM_JobId\" --spec-sha256 \"$SSM_SpecSHA256\""
       ]
     }
   }]

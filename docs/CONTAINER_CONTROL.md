@@ -210,6 +210,28 @@ root JSON receipt with `status=PASS` and the exact `spec_sha256`; it must reflec
 actual runtime qualification, not fabricated source-test results. The root
 Python package must be installed in `/opt/so101-worker/bin/python`'s environment.
 
+The start document accepts only `Mode=start` (default) or `Mode=qualify`.
+Qualification does **not** require an existing PASS, so the workflow is not
+circular. It uses the exact root plan and explicit migration seed, idle receipt,
+active guard and remaining lease, and refuses to overlap a started training
+attempt. The pinned already-local image runs with only GPU0, offline read-only
+checkpoint/model-cache mounts, and at most300 seconds. A timeout verifies the
+container's specification label before removing that exact container ID.
+
+`so101.aws_qualify` exercises actual CUDA13/BF16 gradients, EGL RGB rendering,
+and tiny-model full-state recovery reproducing the next model/Adam update. It
+also reconstructs the original SmolVLA trainable model/Adam state on CUDA from
+the untouched checkpoint, using the explicit device migration seed. It does
+not advance the original trial or change its file. Missing cached base-model
+assets fail offline.
+
+Successful checks produce `RUNTIME_PASS` in the separate task-owned
+`<job>-qualification/runtime-qualification.json`, NOT the aggregate training
+PASS file. Actual shutdown/independent termination, bounded Spot recovery
+throughput and complete worker safety qualification remain necessary before
+the operator can install the aggregate `qualification` PASS receipt. Offline
+tests and mocked GPU responses are not evidence of these runtime checks passing.
+
 The separately pinned plan has `schema=1`, `spec_sha256`, `argv`, and
 `readonly_mounts`. `argv` must exactly match `spec.recipe.argv` and contains only
 trainer arguments after the fixed `python -u -m so101.train_entity_sim` command.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from so101.aws_worker_run import checkpoint_stop, launch, publish_stopped, relative_output
+from so101.aws_worker_run import checkpoint_stop, launch, publish_stopped, qualify_worker, relative_output
 from so101.control_broker import canonical
 
 
@@ -103,14 +103,20 @@ def test_ssm_documents_use_only_validated_environment_parameters():
         expected = {"JobId", "SpecSHA256"}
         if action == "checkpoint-stop":
             expected.add("StopDeadline")
+        else:
+            expected.add("Mode")
         assert set(document["parameters"]) == expected
         for name, parameter in document["parameters"].items():
             assert parameter["interpolationType"] == "ENV_VAR"
-            assert parameter["allowedPattern"].startswith(
-                "^[1-9]" if name == "StopDeadline" else "^[0-9a-f]")
+            if name != "Mode":
+                assert parameter["allowedPattern"].startswith(
+                    "^[1-9]" if name == "StopDeadline" else "^[0-9a-f]")
+            else:
+                assert parameter["allowedPattern"] == "^(start|qualify)$"
         commands = document["mainSteps"][0]["inputs"]["runCommand"]
         assert commands[0] == "set -eu"
-        assert f"so101.aws_worker_run {action}" in commands[1]
+        assert ("so101.aws_worker_run checkpoint-stop" if action == "checkpoint-stop"
+                else 'so101.aws_worker_run "$SSM_Mode"') in commands[1]
         assert "{{" not in commands[1]
 
 
@@ -209,3 +215,68 @@ def test_cli_caps_stop_work_by_controller_deadline_including_dispatch_delay(monk
     monkeypatch.setattr(module, "publish_stopped", lambda *args, **options: {"phase": "published"})
     module.main()
     assert observed == [10]
+
+
+def qualification_setup(tmp_path, monkeypatch):
+    import so101.aws_worker_run as module
+    kwargs, calls, staged, attempts = setup_launch(tmp_path, monkeypatch)
+    job = kwargs["job_id"]
+    destination = tmp_path / job
+    staged.rename(destination)
+    manifest = module.load_manifest(None, None)
+    manifest["runtime"].update(commit="a" * 40, source_sha256="c" * 64)
+    argv = arguments() + ["--allow-device-rng-migration", "--device-rng-seed", "61000"]
+    manifest["spec"]["recipe"]["argv"] = argv
+    plan = {"schema": 1, "spec_sha256": kwargs["spec_sha256"], "argv": argv,
+            "readonly_mounts": {"/opt/so101/data/collection": "data"}}
+    monkeypatch.setattr(module, "trusted_json", lambda path: {
+        "phase": "staged-idle", "job_id": job, "spec_sha256": kwargs["spec_sha256"],
+        "manifest_sha256": "b" * 64, "deadline": 100,
+        "staging_receipt_sha256": hashlib.sha256(b"{}").hexdigest(),
+    } if path.name == ".bootstrap.json" else plan)
+    monkeypatch.setattr(module.RuntimeImage, "verify", lambda *args, **options: {})
+    config = {"manifest": "rootmanifest", "manifest_sha256": "b" * 64,
+              "plan": "rootplan", "plan_sha256": hashlib.sha256(canonical(plan)).hexdigest(),
+              "staging_root": str(tmp_path), "attempts_root": str(attempts),
+              "qualification": str(tmp_path / "qualification.json")}
+    return config, kwargs
+
+
+def test_pre_pass_qualification_does_not_require_pass_or_launch_training(tmp_path, monkeypatch):
+    config, kwargs = qualification_setup(tmp_path, monkeypatch)
+    def run(command, **options):
+        assert "so101.aws_qualify" in command and "so101.train_entity_sim" not in command
+        assert options["timeout"] == 99
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({
+            "status": "RUNTIME_PASS", "cuda": "13.0", "original_step": 304,
+            "original_sha256": hashlib.sha256(b"opaque verified checkpoint").hexdigest(),
+            "migration_seed": 61000, "original_trial_advanced": False,
+            "bf16": True, "egl": True, "tiny_next_update_exact": True,
+            "original_state_restored": True,
+        }))
+    result = qualify_worker(config, job_id=kwargs["job_id"],
+                            spec_sha256=kwargs["spec_sha256"], run=run, wall=lambda: 1)
+    assert result["status"] == "RUNTIME_PASS"
+    assert not (Path(config["attempts_root"]) / kwargs["job_id"]).exists()
+    assert not Path(config["qualification"]).exists()
+    assert (Path(config["attempts_root"]) / (kwargs["job_id"] + "-qualification")
+            / "runtime-qualification.json").is_file()
+
+
+def test_timed_out_qualification_removes_only_verified_owned_container(tmp_path, monkeypatch):
+    config, kwargs = qualification_setup(tmp_path, monkeypatch)
+    calls = []
+    def run(command, **options):
+        calls.append(command)
+        if "so101.aws_qualify" in command:
+            raise subprocess.TimeoutExpired(command, 99)
+        if "inspect" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps([{
+                "Id": "d" * 64, "Config": {"Labels": {"so101-spec": kwargs["spec_sha256"]}},
+            }]))
+        assert command[-3:] == ["rm", "--force", "d" * 64]
+        return subprocess.CompletedProcess(command, 0, stdout="")
+    with pytest.raises(subprocess.TimeoutExpired):
+        qualify_worker(config, job_id=kwargs["job_id"], spec_sha256=kwargs["spec_sha256"],
+                       run=run, wall=lambda: 1)
+    assert not Path(config["qualification"]).exists() and len(calls) == 3

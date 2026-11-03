@@ -15,6 +15,7 @@ import time
 
 from so101.aws_worker_bootstrap import load_manifest, require_guard
 from so101.aws_checkpoint import CheckpointPublisher
+from so101.aws_runtime import RuntimeImage
 from so101.cloud_checkpoint import atomic_json, fsync_directory, sha256
 from so101.control_broker import canonical, trusted_json, trusted_path
 
@@ -217,9 +218,101 @@ def publish_stopped(config: dict, *, job_id: str, spec_sha256: str,
     return receipt
 
 
+def qualify_worker(config: dict, *, job_id: str, spec_sha256: str,
+                   run=subprocess.run, wall=time.time) -> dict:
+    if os.geteuid() != 0 or not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise PermissionError("Qualification requires root and an exact broker job")
+    manifest = load_manifest(Path(config["manifest"]), config["manifest_sha256"])
+    plan = trusted_json(Path(config["plan"]))
+    if (manifest["spec_sha256"] != spec_sha256 or plan.get("spec_sha256") != spec_sha256
+            or hashlib.sha256(canonical(plan)).hexdigest() != config["plan_sha256"]
+            or plan.get("argv") != manifest["spec"]["recipe"].get("argv")):
+        raise ValueError("Qualification must bind the exact approved root plan/specification")
+    argv = plan["argv"]
+    relative_output(argv)
+    if argv.count("--device-rng-seed") != 1 or "--allow-device-rng-migration" not in argv:
+        raise ValueError("Qualification requires the explicit approved device migration seed")
+    seed = int(argv[argv.index("--device-rng-seed") + 1])
+    if not 0 <= seed < 2**64:
+        raise ValueError("Invalid qualification migration seed")
+    staged = trusted_path(Path(config["staging_root"]) / job_id)
+    binding = trusted_json(staged / ".bootstrap.json")
+    if (binding.get("phase") != "staged-idle" or binding.get("job_id") != job_id
+            or binding.get("spec_sha256") != spec_sha256
+            or binding.get("manifest_sha256") != config["manifest_sha256"]
+            or sha256(staged / ".staged.json") != binding.get("staging_receipt_sha256")):
+        raise ValueError("Qualification requires an exact idle staging binding")
+    remaining = binding["deadline"] - wall()
+    if not 0 < remaining:
+        raise ValueError("Qualification lease is expired or invalid")
+    timeout = min(300, remaining)
+    require_guard(run)
+    original = trusted_path(staged / "training_state.pt")
+    digest = manifest["spec"]["checkpoint"]["sha256"]
+    if sha256(original) != digest:
+        raise ValueError("Original state differs from the approved recovery checkpoint")
+    runtime = manifest["runtime"]
+    cli = runtime["docker_cli"]
+    RuntimeImage(runtime["image"], runtime["commit"], runtime["source_sha256"]).verify(cli, run=run)
+    attempts = trusted_path(Path(config["attempts_root"]))
+    if (attempts / job_id).exists():
+        raise ValueError("Qualification cannot run alongside a started training attempt")
+    intent = attempts / (job_id + "-qualification")
+    intent.mkdir(mode=0o700)
+    atomic_json(intent / "intent.json", {"job_id": job_id, "spec_sha256": spec_sha256})
+    name = "so101-qual-" + job_id
+    command = [
+        cli, "--host=unix:///var/run/docker.sock", "run", "--rm", "--name", name,
+        "--label", "so101-spec=" + spec_sha256, "--network=none", "--read-only",
+        "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=0:0",
+        "--gpus=device=0", "--tmpfs=/tmp:rw,nosuid,nodev,size=1g",
+        "--env=CUBLAS_WORKSPACE_CONFIG=:4096:8",
+        "--mount", f"type=bind,src={original},dst=/check/original.pt,readonly",
+    ]
+    for destination, source in plan["readonly_mounts"].items():
+        if (not isinstance(destination, str) or ".." in PurePosixPath(destination).parts
+                or "," in destination):
+            raise ValueError("Invalid qualification input mount")
+        if destination.startswith(("/opt/so101/data/", "/opt/so101/outputs/")):
+            continue
+        if not destination.startswith("/work/cache/") or not isinstance(source, str):
+            raise ValueError("Qualification only mounts the explicit staged model cache")
+        path = trusted_path(staged / source)
+        if not path.is_relative_to(staged) or "," in str(path):
+            raise ValueError("Qualification cache must stay inside staged artifacts")
+        command.extend(["--mount", f"type=bind,src={path},dst={destination},readonly"])
+    command.extend([runtime["image"], "python", "-m", "so101.aws_qualify",
+                    "--original", "/check/original.pt", "--migration-seed", str(seed)])
+    try:
+        result = run(command, check=True, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        inspected = run([cli, "--host=unix:///var/run/docker.sock", "inspect", name],
+                        check=True, capture_output=True, text=True, timeout=10)
+        container = json.loads(inspected.stdout)[0]
+        if container["Config"]["Labels"].get("so101-spec") != spec_sha256:
+            raise ValueError("Cannot verify timed-out qualification container ownership")
+        run([cli, "--host=unix:///var/run/docker.sock", "rm", "--force", container["Id"]],
+            check=True, capture_output=True, text=True, timeout=30)
+        raise
+    receipt = json.loads(result.stdout)
+    if (not isinstance(receipt, dict) or receipt.get("status") != "RUNTIME_PASS"
+            or receipt.get("cuda") != "13.0"
+            or type(receipt.get("original_step")) is not int or receipt["original_step"] < 0
+            or receipt.get("original_sha256") != digest
+            or receipt.get("migration_seed") != seed
+            or receipt.get("original_trial_advanced") is not False
+            or any(receipt.get(key) is not True for key in (
+                "bf16", "egl", "tiny_next_update_exact", "original_state_restored"))
+            or not wall() < binding["deadline"]):
+        raise ValueError("Qualification did not return a complete exact unexpired PASS")
+    receipt.update(job_id=job_id, spec_sha256=spec_sha256, image=runtime["image"])
+    atomic_json(intent / "runtime-qualification.json", receipt)
+    return receipt
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("start", "checkpoint-stop"))
+    parser.add_argument("action", choices=("start", "qualify", "checkpoint-stop"))
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--spec-sha256", required=True)
     parser.add_argument("--stop-deadline", type=int)
@@ -241,6 +334,9 @@ def main() -> None:
             Path(config["staging_root"]) / args.job_id, attempts,
             job_id=args.job_id, spec_sha256=args.spec_sha256,
         ))
+    elif args.action == "qualify":
+        print(json.dumps(qualify_worker(config, job_id=args.job_id,
+                                       spec_sha256=args.spec_sha256)))
     else:
         grace = config["grace_seconds"]
         if type(grace) is not int or not 1 <= grace <= 300:
