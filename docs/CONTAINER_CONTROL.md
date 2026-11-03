@@ -246,6 +246,21 @@ nonoverlapping staged directory. `so101.aws_extract` streams extraction,
 rejecting traversal/absolute paths, symlinks/hardlinks, sparse files, devices,
 and FIFOs; byte/member bounds are exact. It fsyncs file hashes/receipt and makes
 only the new copied files root-owned/readable, not writable, for UID1001 mounts.
+
+Produce inputs with `python -m so101.aws_archive --root APPROVED_DATA_ROOT
+--include RELATIVE_TREE --max-bytes N --max-members N`. Without `--destination`
+this inventories only; with a new destination outside the source root it emits
+a regular-file tar and SHA256/file inventory on stdout. Data selections must
+name explicit approved robot-data paths, not `.` or a home/repository root.
+For HF_HOME use `--hf-cache --include hub/models--ORG--REPO` (repeat per approved
+model). Only `refs`, `snapshots`, and `blobs` are selected. Internal regular-file
+links are flattened; external/directory links and private/auth paths are rejected.
+Root `token`, `stored_tokens`, `xet`, and unrelated caches are never selected.
+The inventory counts every flattened copy, including repeated snapshot blobs,
+not `du`'s unique-inode size. Sources are rechecked by inode, size, mtime, ctime,
+and SHA256 during production. A failed command's partial output is not an artifact;
+publish only a successful receipt's exact archive SHA/size/version. Large production
+packing requires the operator's separate capacity-provisioned builder disk.
 Failure leaves explicit partial task-owned staging, never modifies original
 trees, and does not automatically retry or delete.
 
