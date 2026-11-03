@@ -20,7 +20,8 @@ def wheel_lock(directory: Path) -> str:
     packages = {}
     for path in wheels:
         if not re.fullmatch(
-            r".+-(?:cp312|cp3[2-9]|py3|py2\.py3)-(?:cp312|abi3|none)-"
+            r".+-(?:cp312-cp312|(?:cp3[2-9]|cp31[0-2])-abi3|"
+            r"(?:py3|py312|py2\.py3)-none)-"
             r"(?:any|manylinux[^/]*x86_64|linux_x86_64)\.whl", path.name,
         ):
             raise ValueError(f"Not a Linux amd64 or portable wheel: {path.name}")

@@ -30,12 +30,27 @@ def test_wheel_lock_hashes_every_exact_package(tmp_path):
 
 
 @pytest.mark.parametrize("tag", ["cp313-cp313-linux_x86_64", "cp312-cp312-win_amd64",
-                                "cp312-cp312-manylinux_2_28_aarch64"])
+                                "cp312-cp312-manylinux_2_28_aarch64",
+                                "cp313-abi3-linux_x86_64", "cp311-cp311-linux_x86_64",
+                                "py3-cp312-linux_x86_64"])
 def test_wrong_python_or_platform_is_rejected(tmp_path, tag):
     cuda_wheels(tmp_path)
     wheel(tmp_path, "example", "1.2", tag)
     with pytest.raises(ValueError):
         wheel_lock(tmp_path)
+
+
+@pytest.mark.parametrize("tag", [
+    "cp310-abi3-manylinux_2_17_x86_64",
+    "cp311-abi3-manylinux_2_28_x86_64",
+    "cp312-abi3-linux_x86_64",
+    "cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64",
+    "py2.py3-none-any",
+])
+def test_compatible_abi3_and_portable_wheels_are_accepted(tmp_path, tag):
+    cuda_wheels(tmp_path)
+    wheel(tmp_path, "example", "1.2", tag)
+    assert "example==1.2 --hash=sha256:" in wheel_lock(tmp_path)
 
 
 def test_missing_cuda_and_duplicate_packages_are_rejected(tmp_path):

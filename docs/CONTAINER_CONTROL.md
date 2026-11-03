@@ -292,6 +292,8 @@ nonaccelerator version matches `uv.lock`. That comparison remains a build gate.
 and `uv.lock`; it never exports the mutable checkout, datasets, model caches,
 checkpoints, STOP, or credentials. It copies and hashes every wheel and rejects
 duplicate packages, wrong-platform wheels, and non-cu130 Torch/Torchvision pins.
+Older CPython ABI3 wheels through cp312 are accepted for Python3.12; older
+version-specific CPython ABIs and cp313 wheels are rejected.
 The generated requirements use exact versions and SHA256 hashes. Package
 installation in the Dockerfile is network-free with dependency checking.
 
