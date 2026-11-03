@@ -475,6 +475,9 @@ class Broker:
                 "--document-version", spec["start_document_version"],
                 "--instance-ids", job["instance"], "--parameters",
                 json.dumps({"JobId": [job_id], "SpecSHA256": [job["digest"]]}),
+                "--cloud-watch-output-config", json.dumps({
+                    "CloudWatchOutputEnabled": True, "CloudWatchLogGroupName": spec["log_group"],
+                }),
             )
             return self.job(job_id, owner)
 
@@ -498,6 +501,9 @@ class Broker:
                     "--instance-ids", job["instance"], "--parameters",
                     json.dumps({"JobId": [job_id], "SpecSHA256": [job["digest"]],
                                 "StopDeadline": [str(int(stop_deadline))]}),
+                    "--cloud-watch-output-config", json.dumps({
+                        "CloudWatchOutputEnabled": True, "CloudWatchLogGroupName": spec["log_group"],
+                    }),
                 )["Command"]["CommandId"]
             except (subprocess.SubprocessError, OSError, KeyError):
                 LOG.exception("Checkpoint request failed for %s; requesting termination", job_id)

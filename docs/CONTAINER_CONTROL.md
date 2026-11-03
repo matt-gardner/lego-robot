@@ -286,7 +286,21 @@ poweroff without automatic upload replay. Idle workers terminate without
 touching original data. The service/timer are GPU-worker-only source assets,
 not installed on the existing CPU host.
 
-Real Spot notice/throughput/termination qualification, log transport, archive preparation, controller
+Training containers now use Docker's native `awslogs` driver with the exact
+registered CloudWatch group and job-ID stream in Oregon. Blocking mode and
+one-second flush are explicit; driver startup/permission failures fail container
+launch rather than silently falling back to local-only logs. The GPU worker
+daemon uses its instance role; no AWS credentials or network are supplied to the
+training container. Worker images/daemon configuration must not contain static
+credentials or unrelated profiles. Required rights are scoped CreateLogStream
+and PutLogEvents on the existing approved group, not CreateLogGroup.
+
+Controller start/stop SSM dispatch also enables CloudWatch command output in
+that registered group. Command output uses SSM-managed stream names; training
+logs use the exact job stream exposed by `gpu.logs`. Real upload/flush/failure
+qualification remains required. Guard/Spot systemd journals are still local.
+
+Real Spot notice/throughput/termination qualification, archive preparation, controller
 recovery-manifest retrieval, and live verification remain unfinished.
 Independent lease termination remains necessary on stop failure.
 

@@ -44,7 +44,7 @@ def setup_launch(tmp_path, monkeypatch):
                "manifest_sha256": "b" * 64, "deadline": 100,
                "staging_receipt_sha256": hashlib.sha256(b"{}").hexdigest()}
     manifest = {"spec_sha256": digest,
-                "spec": {"recipe": {"argv": arguments()}, "checkpoint": {
+                "spec": {"log_group": "/so101/worker", "recipe": {"argv": arguments()}, "checkpoint": {
                     "sha256": hashlib.sha256((staged / "training_state.pt").read_bytes()).hexdigest()}},
                 "runtime": {"docker_cli": "/usr/bin/docker", "image": "worker@sha256:" + "c" * 64}}
     monkeypatch.setattr(module.os, "geteuid", lambda: 0)
@@ -72,6 +72,10 @@ def test_launch_copies_state_to_new_output_and_disallows_replay(tmp_path, monkey
     assert launch(**kwargs) == "d" * 64
     args = calls[0]
     assert "--network=none" in args and "--read-only" in args and "--gpus=device=0" in args
+    assert "--log-driver=awslogs" in args
+    assert "--log-opt=awslogs-group=/so101/worker" in args
+    assert "--log-opt=awslogs-stream=" + kwargs["job_id"] in args
+    assert "--log-opt=mode=blocking" in args
     assert args[-len(arguments()):] == arguments()
     assert (attempts / kwargs["job_id"] / "output/training_state.pt").read_bytes() == original
     assert (staged / "training_state.pt").read_bytes() == original
@@ -94,6 +98,18 @@ def test_changed_checkpoint_never_calls_docker(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="changed"):
         launch(**kwargs)
     assert not calls
+
+
+def test_log_driver_initialization_failure_is_not_a_successful_launch(tmp_path, monkeypatch):
+    kwargs, calls, staged, attempts = setup_launch(tmp_path, monkeypatch)
+    def failed(command, **options):
+        raise subprocess.CalledProcessError(1, command, stderr="awslogs permission denied")
+    kwargs["run"] = failed
+    with pytest.raises(subprocess.CalledProcessError):
+        launch(**kwargs)
+    attempt = attempts / kwargs["job_id"]
+    assert (attempt / "launch-intent.json").is_file()
+    assert not (attempt / "launched.json").exists()
 
 
 def test_ssm_documents_use_only_validated_environment_parameters():

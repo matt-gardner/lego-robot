@@ -314,6 +314,10 @@ class BrokerTests(unittest.TestCase):
         self.policy["training_authorized_specs"] = [job["digest"]]
         result = self.broker.start("session", job["id"])
         self.assertEqual(result["status"], "start-requested")
+        command = next(args for args in self.calls if "send-command" in args)
+        self.assertEqual(json.loads(command[command.index("--cloud-watch-output-config") + 1]), {
+            "CloudWatchOutputEnabled": True, "CloudWatchLogGroupName": self.spec["log_group"],
+        })
         with self.assertRaises(ValueError):
             self.broker.start("session", job["id"])
 
@@ -321,6 +325,10 @@ class BrokerTests(unittest.TestCase):
         job = self.broker.submit("session", "approved", self.digest())
         result = self.broker.stop("session", job["id"])
         self.assertEqual(result["status"], "stopping")
+        command = next(args for args in self.calls if "send-command" in args)
+        self.assertIn("--cloud-watch-output-config", command)
+        self.assertEqual(json.loads(command[command.index("--parameters") + 1])["StopDeadline"],
+                         [str(int(result["stop_deadline"]))])
         self.assertFalse(any("terminate-instances" in args for args in self.calls))
         self.broker.status("session", job["id"])
         self.assertTrue(any("terminate-instances" in args for args in self.calls))

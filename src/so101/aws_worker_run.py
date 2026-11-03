@@ -73,12 +73,19 @@ def launch(manifest_path: Path, manifest_sha256: str, plan_path: Path, plan_sha2
     mounts = plan["readonly_mounts"]
     if not isinstance(mounts, dict) or not mounts:
         raise ValueError("Explicit staged read-only data/model mounts are required")
+    log_group = manifest["spec"].get("log_group")
+    if not isinstance(log_group, str) or not re.fullmatch(r"/so101/[A-Za-z0-9_./-]+", log_group):
+        raise ValueError("Training logs must use the exact approved so101 CloudWatch group")
     args = [
         manifest["runtime"]["docker_cli"], "--host=unix:///var/run/docker.sock",
         "run", "--detach", "--name", "so101-" + job_id, "--restart=no",
         "--label", "so101-spec=" + spec_sha256, "--read-only", "--network=none",
         "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=1001:1001",
         "--gpus=device=0", "--shm-size=1g", "--tmpfs=/tmp:rw,nosuid,nodev,size=1g",
+        "--log-driver=awslogs", "--log-opt=awslogs-region=us-west-2",
+        "--log-opt=awslogs-group=" + log_group, "--log-opt=awslogs-stream=" + job_id,
+        "--log-opt=awslogs-create-stream=true", "--log-opt=mode=blocking",
+        "--log-opt=awslogs-force-flush-interval-seconds=1",
     ]
     for destination, source in mounts.items():
         if (not isinstance(destination, str)
