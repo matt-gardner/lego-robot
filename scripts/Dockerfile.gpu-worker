@@ -1,0 +1,28 @@
+FROM nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:121b25126d81cddeae4c048aa46e94050514ca6b8609a124027b38073e7ef4b6
+
+# System-package collection is online; the operator must record this layer's digest.
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    python3 python3-venv ca-certificates ffmpeg libegl1 libgl1 libglvnd0 \
+    libglfw3 libosmesa6 libglib2.0-0t64 && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv
+COPY wheelhouse/ /opt/wheelhouse/
+COPY requirements.wheels.txt /opt/requirements.wheels.txt
+RUN --network=none /opt/venv/bin/python -m pip install --no-index --no-deps \
+    --require-hashes --find-links=/opt/wheelhouse -r /opt/requirements.wheels.txt \
+    && /opt/venv/bin/python -m pip check \
+    && rm -rf /opt/wheelhouse
+COPY source.tar /opt/source.tar
+ARG SOURCE_SHA256
+ARG SOURCE_COMMIT
+RUN --network=none test -n "$SOURCE_SHA256" && test -n "$SOURCE_COMMIT" \
+    && echo "$SOURCE_SHA256  /opt/source.tar" | sha256sum -c - \
+    && mkdir /opt/so101 && tar -xf /opt/source.tar -C /opt/so101 \
+    && rm /opt/source.tar
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+    io.so101.source-sha256="${SOURCE_SHA256}"
+ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/opt/so101/src" \
+    MUJOCO_GL=egl PYOPENGL_PLATFORM=egl HF_HOME=/work/cache/huggingface \
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1
+WORKDIR /opt/so101
+USER 1001:1001
+CMD ["python", "-c", "raise SystemExit('Idle image: only the qualified worker launcher may start training')"]

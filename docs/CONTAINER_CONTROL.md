@@ -194,6 +194,41 @@ Original dataset/checkpoint/STOP paths remain untouched.
 
 ### Offline versioned checkpoint publication primitive
 
+### Operator-only CUDA runtime build inputs
+
+`scripts/Dockerfile.gpu-worker` pins the Linux amd64 CUDA 13.0.2 runtime base
+by digest. It does not install a host driver, launch training, download models,
+or prove GPU qualification. The existing host must later supply NVIDIA driver
+580 or newer and NVIDIA Container Toolkit. Building on the existing CPU host
+does not itself require a GPU.
+
+The operator must collect a complete Python 3.12 Linux amd64 wheelhouse using
+the locked training/simulation export and `cloud_requirements.cuda_requirements`,
+with explicit cu130 resolution. The Linux CPU lock is not directly installable
+into this image. Collection must include CUDA-specific transitive dependencies;
+the wheel inventory helper does not resolve them or certify that every
+nonaccelerator version matches `uv.lock`. That comparison remains a build gate.
+
+`python3 -m so101.aws_build --repo REPO --commit FULL_SHA --wheelhouse WHEELS
+--destination NEW_CONTEXT` exports only committed runtime source, `pyproject.toml`,
+and `uv.lock`; it never exports the mutable checkout, datasets, model caches,
+checkpoints, STOP, or credentials. It copies and hashes every wheel and rejects
+duplicate packages, wrong-platform wheels, and non-cu130 Torch/Torchvision pins.
+The generated requirements use exact versions and SHA256 hashes. Package
+installation in the Dockerfile is network-free with dependency checking.
+
+On the trusted operator host, pass the manifest's `commit` and `source_sha256`
+as `SOURCE_COMMIT` and `SOURCE_SHA256` build arguments. No Docker daemon access
+or registry credential belongs in the source engineering container. System apt
+packages are not snapshot-pinned: record the resulting image digest and package
+inventory; this recipe is not a claim of bit-for-bit reproducible apt layers.
+Wheel copies remain in earlier image layers even after removal, so include
+their bytes in disk/registry cost estimates. The idle image defaults to UID1001
+and offline model access; narrowly owned `/work` and separately staged model
+assets are required before a future qualified launcher can use it.
+
+No final wheelhouse, image digest, AMI, or build qualification exists yet.
+
 `so101.aws_checkpoint.CheckpointPublisher` is a source-only library for stable,
 opaque checkpoint publication. It is not connected to a trainer, SSM document,
 Spot handler, or installed worker. A trusted caller must validate full training
