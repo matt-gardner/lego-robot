@@ -196,6 +196,47 @@ Original dataset/checkpoint/STOP paths remain untouched.
 
 ### Operator-only CUDA runtime build inputs
 
+Broker submission now scans EC2 instances in the approved Oregon region
+before reservation, without ownership-tag filters. Pending, running, stopping,
+and shutting-down instances are classified through `DescribeInstanceTypes`
+GPU metadata, not just approved L4/A10G names. Any GPU or inaccessible/malformed
+inventory denies admission. Launches remain Oregon-only. Required reads:
+`ec2:DescribeInstances` and `ec2:DescribeInstanceTypes` in Oregon.
+
+This supplements, rather than replaces, the broker's serialized one-attempt
+ledger. Inventory is a snapshot, not an AWS atomic cross-principal lock. Other
+principals, open Spot requests/fleets, or stopped machines started concurrently
+can invalidate it. Operator-controlled exclusive GPU launch/start authority and
+verification of those external launch sources remain necessary. Quota alone is
+not proof of one machine. Unrelated other-region workloads are not inventoried,
+so this is not an account-wide guarantee. This source change is not installed
+or live-qualified.
+
+`so101.aws_budget.Reservations` is an offline integer-microdollar accounting
+primitive. It serializes cumulative reservations with SQLite `BEGIN IMMEDIATE`,
+persists them before external operations, retains reservations after ambiguous
+failure, and rejects changed contracts for reused IDs. Its ceiling is $5 across
+the single ledger, not $5 per worker. Byte-hour storage and both transfer
+directions round upward; request and fixed exposure must also be declared.
+
+It is **not wired to the broker, publisher, or worker**, does not authenticate
+the policy digest, and does not query prices, enforce deletion, or cap AWS bills.
+An operator-owned trusted ledger and authenticated rate/horizon policy are
+mandatory before wiring it. Include ALL newly incurred exposure: temporary
+artifact versions, manifests, requests, transfer/recovery, logs, image registry,
+and worker disks; costs omitted from the contract remain unbounded.
+
+Proposed policy for review, not deletion authorization: bounded temporary NEW
+cloud copies, with independently verified durable local export of new full-state
+checkpoints before cloud expiry. Original datasets/checkpoints/STOP are never
+deleted or changed. Retention after the accounting horizon requires a separate
+reservation before that horizon expires. Because retention enforcement and
+export recovery are not implemented, no finite-horizon estimate yet establishes
+the approved lifetime noncompute bound. Missing policy/rates/export/expiry
+verification prevents using this primitive as evidence of a lifetime spending
+cap. It is not an additional worker activation prerequisite and is not wired
+into admission.
+
 `scripts/Dockerfile.gpu-worker` pins the Linux amd64 CUDA 13.0.2 runtime base
 by digest. It does not install a host driver, launch training, download models,
 or prove GPU qualification. The existing host must later supply NVIDIA driver

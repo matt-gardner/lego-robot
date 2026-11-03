@@ -74,6 +74,10 @@ class BrokerTests(unittest.TestCase):
         if "get-caller-identity" in args:
             data = {"Account": "123456789012",
                     "Arn": "arn:aws:sts::123456789012:assumed-role/so101-controller/test"}
+        elif "describe-regions" in args:
+            data = {"Regions": [{"RegionName": "us-west-2"}]}
+        elif "describe-instance-types" in args:
+            data = {"InstanceTypes": [{"InstanceType": "t3.small"}]}
         elif "describe-launch-template-versions" in args:
             data = {"LaunchTemplateVersions": [{"LaunchTemplateData": {
                 "ImageId": "ami-123abc", "InstanceType": "g6.2xlarge",
@@ -88,9 +92,12 @@ class BrokerTests(unittest.TestCase):
         elif "run-instances" in args:
             data = {"Instances": [{"InstanceId": "i-123abc"}]}
         elif "describe-instances" in args:
-            data = {"Reservations": [{"Instances": [{
-                "InstanceId": "i-123abc", "State": {"Name": "running"},
-            }]}]}
+            if "Name=instance-state-name,Values=pending,running,stopping,shutting-down" in args:
+                data = {"Reservations": [{"Instances": [{"InstanceType": "t3.small"}]}]}
+            else:
+                data = {"Reservations": [{"Instances": [{
+                    "InstanceId": "i-123abc", "State": {"Name": "running"},
+                }]}]}
         elif "send-command" in args:
             data = {"Command": {"CommandId": "command-1"}}
         elif "get-command-invocation" in args:
@@ -101,6 +108,19 @@ class BrokerTests(unittest.TestCase):
 
     def reserve(self):
         return self.broker.reserve("session", "approved", self.digest(), None)
+
+    def test_account_gpu_inventory_blocks_submit_before_reserving_or_launching(self):
+        def command(args, **kwargs):
+            if "describe-instance-types" in args:
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
+                    "InstanceTypes": [{"InstanceType": "t3.small", "GpuInfo": {}}],
+                }))
+            return self.command(args, **kwargs)
+        self.broker.run = command
+        with self.assertRaisesRegex(ValueError, "Existing GPU"):
+            self.broker.submit("session", "approved", self.digest())
+        self.assertEqual(self.broker.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
+        self.assertFalse(any("run-instances" in call for call in self.calls))
 
     def test_strict_spec(self):
         validate_spec(self.spec, self.policy)

@@ -24,6 +24,8 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import uuid
 
+from so101.aws_inventory import require_no_gpu
+
 
 LOG = logging.getLogger(__name__)
 IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
@@ -357,6 +359,7 @@ class Broker:
 
     def submit(self, owner: str, spec_id: str, digest: str, parent: str | None = None) -> dict:
         with self.lock:
+            require_no_gpu(lambda region, *args: self.aws(*args))
             job = self.reserve(owner, spec_id, digest, parent)
             spec = json.loads(job["spec"])
             try:
