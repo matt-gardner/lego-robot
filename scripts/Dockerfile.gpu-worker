@@ -5,12 +5,11 @@ RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no
     python3 python3-venv ca-certificates ffmpeg libegl1 libgl1 libglvnd0 \
     libglfw3 libosmesa6 libglib2.0-0t64 && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv
-COPY wheelhouse/ /opt/wheelhouse/
 COPY requirements.wheels.txt /opt/requirements.wheels.txt
-RUN --network=none /opt/venv/bin/python -m pip install --no-index --no-deps \
+RUN --network=none --mount=type=bind,source=wheelhouse,target=/opt/wheelhouse \
+    /opt/venv/bin/python -m pip install --no-index --no-deps \
     --require-hashes --find-links=/opt/wheelhouse -r /opt/requirements.wheels.txt \
-    && /opt/venv/bin/python -m pip check \
-    && rm -rf /opt/wheelhouse
+    && /opt/venv/bin/python -m pip check
 COPY source.tar /opt/source.tar
 ARG SOURCE_SHA256
 ARG SOURCE_COMMIT

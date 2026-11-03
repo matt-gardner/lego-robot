@@ -196,6 +196,43 @@ Original dataset/checkpoint/STOP paths remain untouched.
 
 ### Operator-only CUDA runtime build inputs
 
+`so101.aws_worker_run` now provides the root execution entrypoint and source SSM
+documents in `scripts/so101-worker-{start,checkpoint-stop}.ssm.json`. They are
+not registered/installed documents yet. Numeric SSM versions and hashes must be
+frozen after qualification. The SSM agent must support `ENV_VAR` interpolation;
+an older agent fails the fixed command rather than falling back to shell
+substitution.
+
+Root-only `/etc/so101-worker/execution.json` must declare `manifest`,
+`manifest_sha256`, `plan`, `plan_sha256`, `staging_root`, `attempts_root`,
+`docker_cli`, `grace_seconds`, and `qualification`. Qualification is a trusted
+root JSON receipt with `status=PASS` and the exact `spec_sha256`; it must reflect
+actual runtime qualification, not fabricated source-test results. The root
+Python package must be installed in `/opt/so101-worker/bin/python`'s environment.
+
+The separately pinned plan has `schema=1`, `spec_sha256`, `argv`, and
+`readonly_mounts`. `argv` must exactly match `spec.recipe.argv` and contains only
+trainer arguments after the fixed `python -u -m so101.train_entity_sim` command.
+The saved relative output/training-state paths are preserved, not rewritten in
+the checkpoint. Input mounts are root-trusted prepared paths within staged
+artifacts; extraction of data/model archives remains a separate prerequisite.
+Collection/split/model mounts are read-only. A new UID1001-owned output receives
+only a copy of the checksummed recovery state; original output and STOP are
+never mounted writable or cleared. Missing model/data assets fail offline.
+
+Launch requires the matching idle receipt and unexpired lease/active guard,
+persists exclusive attempt intent before Docker, and runs the pinned image with
+no network, a read-only root, no Linux capabilities, no privilege escalation,
+and only GPU device0. Ambiguous starts cannot automatically replay. This is not
+yet a complete controller/worker recovery state machine.
+
+Checkpoint-stop writes STOP only in that new output, then waits at most300
+seconds for the exact committed container to exit. Nonzero exit/timeouts fail
+explicitly; only clean exit produces `exited-awaiting-validation`, NOT an upload
+or validated recovery receipt. Full-state publication, Spot interruption
+monitoring, log transport, archive preparation, and live verification remain
+unfinished. Independent lease termination remains necessary on stop failure.
+
 Broker submission now scans EC2 instances in the approved Oregon region
 before reservation, without ownership-tag filters. Pending, running, stopping,
 and shutting-down instances are classified through `DescribeInstanceTypes`
@@ -263,8 +300,8 @@ as `SOURCE_COMMIT` and `SOURCE_SHA256` build arguments. No Docker daemon access
 or registry credential belongs in the source engineering container. System apt
 packages are not snapshot-pinned: record the resulting image digest and package
 inventory; this recipe is not a claim of bit-for-bit reproducible apt layers.
-Wheel copies remain in earlier image layers even after removal, so include
-their bytes in disk/registry cost estimates. The idle image defaults to UID1001
+BuildKit read-only bind mounts keep installer wheels out of final image layers;
+the host still needs room for the wheelhouse and build cache. The idle image defaults to UID1001
 and offline model access; narrowly owned `/work` and separately staged model
 assets are required before a future qualified launcher can use it.
 

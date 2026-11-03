@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Request STOP in the new attempt only; clean exit still requires checkpoint validation/publication",
+  "parameters": {
+    "JobId": {"type": "String", "allowedPattern": "^[0-9a-f]{32}$", "interpolationType": "ENV_VAR"},
+    "SpecSHA256": {"type": "String", "allowedPattern": "^[0-9a-f]{64}$", "interpolationType": "ENV_VAR"}
+  },
+  "mainSteps": [{
+    "action": "aws:runShellScript",
+    "name": "CheckpointStopWorker",
+    "inputs": {
+      "timeoutSeconds": "360",
+      "runCommand": [
+        "set -eu",
+        "/opt/so101-worker/bin/python -I -m so101.aws_worker_run checkpoint-stop --job-id \"$SSM_JobId\" --spec-sha256 \"$SSM_SpecSHA256\""
+      ]
+    }
+  }]
+}
