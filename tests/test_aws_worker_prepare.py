@@ -19,7 +19,8 @@ def setup(tmp_path, monkeypatch):
     (tmp_path / ".staged.json").write_text("{}")
     manifest = {"spec_sha256": "a" * 64, "spec": {"recipe": {"argv": ["approved"]}},
                 "artifacts": {"collection.tar": {"sha256": digest}}}
-    plan = {"spec_sha256": "a" * 64, "argv": ["approved"], "archives": {
+    plan = {"spec_sha256": "a" * 64, "argv": ["approved"],
+            "readonly_mounts": {"/opt/so101/data/collection": "collection"}, "archives": {
         "collection.tar": {"destination": "collection", "max_bytes": 2, "max_members": 1},
     }}
     binding = {"manifest_sha256": "b" * 64, "spec_sha256": "a" * 64,
@@ -51,4 +52,19 @@ def test_preparation_cannot_escape_staged_root(tmp_path, monkeypatch):
     plan, kwargs = setup(tmp_path, monkeypatch)
     plan["archives"]["collection.tar"]["destination"] = "../outside"
     with pytest.raises(ValueError, match="new named"):
+        prepare(**kwargs, plan_sha256=hashlib.sha256(canonical(plan)).hexdigest())
+
+
+def test_plain_verified_copy_is_readable_under_restrictive_umask(tmp_path, monkeypatch):
+    plan, kwargs = setup(tmp_path, monkeypatch)
+    plan["readonly_mounts"]["/opt/so101/data/archive"] = "collection.tar"
+    (tmp_path / "collection.tar").chmod(0o600)
+    prepare(**kwargs, plan_sha256=hashlib.sha256(canonical(plan)).hexdigest())
+    assert (tmp_path / "collection.tar").stat().st_mode & 0o777 == 0o644
+
+
+def test_unknown_staging_metadata_cannot_be_mounted_as_input(tmp_path, monkeypatch):
+    plan, kwargs = setup(tmp_path, monkeypatch)
+    plan["readonly_mounts"] = {"/work/cache/private": ".staged.json"}
+    with pytest.raises(ValueError, match="artifact or extracted"):
         prepare(**kwargs, plan_sha256=hashlib.sha256(canonical(plan)).hexdigest())

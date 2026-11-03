@@ -246,6 +246,9 @@ nonoverlapping staged directory. `so101.aws_extract` streams extraction,
 rejecting traversal/absolute paths, symlinks/hardlinks, sparse files, devices,
 and FIFOs; byte/member bounds are exact. It fsyncs file hashes/receipt and makes
 only the new copied files root-owned/readable, not writable, for UID1001 mounts.
+Direct file mounts must name a verified staged artifact; preparation explicitly
+makes that new copy readable even under umask077. Other mounts must name
+extracted inputs, not private staging receipts or arbitrary root paths.
 
 Produce inputs with `python -m so101.aws_archive --root APPROVED_DATA_ROOT
 --include RELATIVE_TREE --max-bytes N --max-members N`. Without `--destination`
@@ -261,6 +264,56 @@ not `du`'s unique-inode size. Sources are rechecked by inode, size, mtime, ctime
 and SHA256 during production. A failed command's partial output is not an artifact;
 publish only a successful receipt's exact archive SHA/size/version. Large production
 packing requires the operator's separate capacity-provisioned builder disk.
+
+### Fresh GPU idle bootstrap (source asset, not live qualification)
+
+`aws_build.prepare` now includes the explicit guard/Spot units, fixed SSM
+documents, and `scripts/so101-worker-install.py` in the same immutable `source.tar`
+as the runtime code. Rebuild the final image from this exact bundle: its source
+SHA changes when these assets change. Record the separate launcher's raw SHA256
+from the same commit before using it as root.
+
+The trusted AMI must already provide Python >=3.12, AWS CLI v2, Docker, the NVIDIA
+driver and NVIDIA Container Toolkit with Docker's `nvidia` runtime configured.
+Bootstrap never installs mutable network packages, assumes a Docker socket is
+available only to root, and accepts only the project private ECR digest in the
+specified account/Oregon region.
+
+Provision root-owned, non-group/world-writable `/etc/so101-worker/manifest.json`,
+`plan.json`, and `execution.json` plus the exact-version source archive and
+independently SHA-verified launcher under a private root directory. Execution
+configuration has exactly `manifest`, `manifest_sha256`, `plan`, `plan_sha256`,
+`staging_root`, `attempts_root`, `docker_cli`, `grace_seconds`, `qualification`.
+Use the fixed paths `/etc/so101-worker/{manifest,plan,qualification}.json` and
+`/var/lib/so101-worker/{staged,attempts}`; Docker must match the manifest path.
+`grace_seconds` is an integer 1..300. Manifest, plan, and execution digests hash
+canonical JSON (sorted keys, compact separators, no NaN); source/launcher digests
+hash raw file bytes. The qualification path must remain absent at bootstrap.
+
+On the newly launched **GPU only**, with independent scheduled termination
+already armed and the exact job/spec/broker/deadline IMDS tags enabled:
+
+```bash
+/usr/bin/python3 -I /root/so101-worker-install.py \
+  --source-archive /root/source.tar --source-sha256 SOURCE_RAW_SHA256 \
+  --execution-sha256 EXECUTION_CANONICAL_SHA256
+```
+
+The launcher rejects existing `/opt/so101-worker`, verifies and bounds the
+code-only archive before importing it, and installs the private stdlib-only
+interpreter at `/opt/so101-worker/bin/python`. Before enabling any service,
+the installer verifies the account, Oregon region, approved GPU type, AMI,
+job/spec/broker tags, and unexpired lease. CPU/wrong-instance execution is an
+error, never a request to power off that host. It enables the standalone lease
+guard before creating the interpreter, pulling the image, or staging data.
+The Spot timer also starts before long operations. ECR credentials come only
+from the instance role and use an automatically removed private Docker config.
+Image pull/requests are lease-bounded; archive preparation remains protected
+by the active independent guard. Successful `/var/lib/so101-worker/installed.json`
+means **prepared-idle**, not training or aggregate PASS. No start is issued.
+Failed/ambiguous installation leaves an intent and cannot blindly replay or
+overwrite existing state; inspect that exact disposable worker before recovery.
+Never run this installer/guard on the CPU controller or coding-agent host.
 Failure leaves explicit partial task-owned staging, never modifies original
 trees, and does not automatically retry or delete.
 

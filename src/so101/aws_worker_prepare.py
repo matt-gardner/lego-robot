@@ -51,3 +51,24 @@ def prepare(manifest_path: Path, manifest_sha256: str, plan_path: Path, plan_sha
             raise ValueError("Staged archive changed before input preparation")
         extract(archive, staged / destination, max_bytes=settings["max_bytes"],
                 max_members=settings["max_members"])
+    mounts = plan.get("readonly_mounts")
+    if not isinstance(mounts, dict) or not mounts:
+        raise ValueError("Prepared inputs require explicit read-only mounts")
+    for source in mounts.values():
+        if not isinstance(source, str):
+            raise ValueError("Read-only input source must be a named staged path")
+        relative = PurePosixPath(source)
+        if (relative.is_absolute() or ".." in relative.parts or "\\" in source
+                or not relative.parts or str(relative) != source):
+            raise ValueError("Read-only inputs must stay in the new staged copies")
+        path = trusted_path(staged / source)
+        if not path.is_relative_to(staged):
+            raise ValueError("Read-only input escapes staged copies")
+        if source in manifest["artifacts"]:
+            if not path.is_file() or sha256(path) != manifest["artifacts"][source]["sha256"]:
+                raise ValueError("Read-only artifact changed before permission preparation")
+            # Only new verified copies; never chmod original data or parent namespaces.
+            path.chmod(0o644)
+        elif not any(relative == destination or destination in relative.parents
+                     for destination in destinations):
+            raise ValueError("Read-only mount must name an artifact or extracted input")

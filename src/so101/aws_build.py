@@ -12,6 +12,14 @@ import subprocess
 import zipfile
 
 
+WORKER_ASSETS = (
+    "scripts/lego-robot-worker-guard.service",
+    "scripts/so101-worker-spot.service", "scripts/so101-worker-spot.timer",
+    "scripts/so101-worker-start.ssm.json", "scripts/so101-worker-checkpoint-stop.ssm.json",
+    "scripts/so101-worker-install.py",
+)
+
+
 def wheel_lock(directory: Path) -> str:
     wheels = sorted(directory.iterdir())
     if not wheels or any(not path.is_file() or path.is_symlink()
@@ -61,7 +69,7 @@ def prepare(repo: Path, commit: str, destination: Path, wheelhouse: Path) -> dic
     # Export only tracked runtime inputs, never the mutable checkout or local data.
     source = subprocess.run(
         ["git", "-C", str(repo), "archive", "--format=tar", commit,
-         "src/so101", "pyproject.toml", "uv.lock"],
+         "src/so101", "pyproject.toml", "uv.lock", *WORKER_ASSETS],
         check=True, capture_output=True,
     ).stdout
     dockerfile = subprocess.run(

@@ -5,7 +5,7 @@ import zipfile
 
 import pytest
 
-from so101.aws_build import prepare, wheel_lock
+from so101.aws_build import WORKER_ASSETS, prepare, wheel_lock
 
 
 def wheel(root, name, version, tag="cp312-cp312-linux_x86_64"):
@@ -110,6 +110,8 @@ def test_prepare_exports_only_immutable_tracked_runtime_inputs(tmp_path):
     (repo / "src/so101/module.py").write_text("original = True\n")
     (repo / "scripts").mkdir()
     (repo / "scripts/Dockerfile.gpu-worker").write_text("FROM scratch\n")
+    for name in WORKER_ASSETS:
+        (repo / name).write_text("immutable worker asset\n")
     for name in ("uv.lock", "pyproject.toml"):
         (repo / name).write_text("# fixture\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
@@ -125,6 +127,7 @@ def test_prepare_exports_only_immutable_tracked_runtime_inputs(tmp_path):
     assert b"original = True" in (output / "source.tar").read_bytes()
     assert b"mutable = True" not in (output / "source.tar").read_bytes()
     assert b"not exported" not in (output / "source.tar").read_bytes()
+    assert b"immutable worker asset" in (output / "source.tar").read_bytes()
     assert wheel_lock(output / "wheelhouse") == wheel_lock(wheels)
     with pytest.raises(FileExistsError):
         prepare(repo, commit, output, wheels)
