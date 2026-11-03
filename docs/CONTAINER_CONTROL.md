@@ -293,8 +293,12 @@ verification prevents using this primitive as evidence of a lifetime spending
 cap. It is not an additional worker activation prerequisite and is not wired
 into admission.
 
-`scripts/Dockerfile.gpu-worker` pins the Linux amd64 CUDA 13.0.2 runtime base
-by digest. It does not install a host driver, launch training, download models,
+`scripts/Dockerfile.gpu-worker` pins the Linux amd64 Ubuntu24.04 base by digest.
+The exact cu130 wheelhouse supplies CUDA runtime libraries; using an additional
+NVIDIA CUDA runtime base would duplicate those libraries. Driver capabilities
+include compute, utility and graphics for EGL; `NVIDIA_REQUIRE_CUDA=cuda>=13.0`
+declares the driver requirement, not proof of a working GPU.
+It does not install a host driver, launch training, download models,
 or prove GPU qualification. The existing host must later supply NVIDIA driver
 580 or newer and NVIDIA Container Toolkit. Building on the existing CPU host
 does not itself require a GPU.

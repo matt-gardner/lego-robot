@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 import subprocess
 import zipfile
 
@@ -80,6 +81,16 @@ def test_missing_cuda_and_duplicate_packages_are_rejected(tmp_path):
     wheel(tmp_path, "torch", "2.11.0+cu130")
     with pytest.raises(ValueError, match="Duplicate"):
         wheel_lock(tmp_path)
+
+
+def test_runtime_base_does_not_duplicate_wheel_cuda_libraries():
+    dockerfile = Path("scripts/Dockerfile.gpu-worker").read_text()
+    assert dockerfile.startswith(
+        "FROM ubuntu:24.04@sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d\n")
+    assert "NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics" in dockerfile
+    assert 'NVIDIA_REQUIRE_CUDA="cuda>=13.0"' in dockerfile
+    assert "--mount=type=bind,source=wheelhouse" in dockerfile
+    assert "COPY wheelhouse" not in dockerfile
 
 
 def test_symlinks_are_rejected(tmp_path):

@@ -1,4 +1,4 @@
-FROM nvidia/cuda:13.0.2-runtime-ubuntu24.04@sha256:121b25126d81cddeae4c048aa46e94050514ca6b8609a124027b38073e7ef4b6
+FROM ubuntu:24.04@sha256:78d4744ead1f5b19b04d0df558ab182a5300903900755e515b2ca4d10eb2044d
 
 # System-package collection is online; the operator must record this layer's digest.
 RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -20,6 +20,8 @@ RUN --network=none test -n "$SOURCE_SHA256" && test -n "$SOURCE_COMMIT" \
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
     io.so101.source-sha256="${SOURCE_SHA256}"
 ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/opt/so101/src" \
+    NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
+    NVIDIA_REQUIRE_CUDA="cuda>=13.0" \
     MUJOCO_GL=egl PYOPENGL_PLATFORM=egl HF_HOME=/work/cache/huggingface \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /opt/so101
