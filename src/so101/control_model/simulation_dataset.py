@@ -14,6 +14,7 @@ from so101.control_model.command import (
     camera_point_from_projection,
     task_phase_prompt,
 )
+from so101.simulation_corpus import load_catalog
 
 
 class EntityTrajectoryDataset(Dataset):
@@ -30,7 +31,7 @@ class EntityTrajectoryDataset(Dataset):
     ):
         if horizon <= 0 or history_steps <= 0:
             raise ValueError("horizon and history_steps must be positive")
-        report = json.loads((collection / "collection.json").read_text())
+        report = load_catalog(collection)
         self.horizon = horizon
         self.history_steps = history_steps
         self.max_entities = max_entities
@@ -50,6 +51,8 @@ class EntityTrajectoryDataset(Dataset):
             if source.resolve() in excluded:
                 continue
             episode = json.loads((source / "episode.json").read_text())
+            if "scene_version" in report and episode["initial"].get("scene_version") != report["scene_version"]:
+                raise ValueError(f"{source}: mixed physics versions in entity collection")
             if tasks is not None and episode["task"] not in tasks:
                 continue
             rows = [

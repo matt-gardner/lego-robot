@@ -36,19 +36,7 @@ from so101.cloud_checkpoint import publish as publish_resume_checkpoint
 from so101.cloud_checkpoint import atomic_json
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
 from so101.resume_rng import plan_device_rng, restore_device_rng
-
-
-TASKS = ("grasp", "view", "push", "place")
-
-
-@dataclass(frozen=True)
-class CorpusEpisode:
-    source: Path
-    metadata: dict[str, Any]
-
-    @property
-    def task(self) -> str:
-        return str(self.metadata["task"])
+from so101.simulation_corpus import CorpusEpisode, TASKS, episode_actions, expert_bounds, load_corpus
 
 
 @dataclass
@@ -88,21 +76,6 @@ def cpu_copy(value: Any) -> Any:
     raise TypeError(f"Unsupported stored input type: {type(value)}")
 
 
-def load_corpus(collection: Path) -> dict[str, list[CorpusEpisode]]:
-    report = json.loads((collection / "collection.json").read_text())
-    episodes: dict[str, list[CorpusEpisode]] = defaultdict(list)
-    for source_name in report["successful_episodes"]:
-        source = Path(source_name)
-        metadata = json.loads((source / "episode.json").read_text())
-        task = metadata["task"]
-        if task in TASKS and metadata.get("outcome", "success") == "success":
-            episodes[task].append(CorpusEpisode(source, metadata))
-    missing = [task for task in TASKS if not episodes[task]]
-    if missing:
-        raise ValueError(f"Corpus has no episodes for: {missing}")
-    return dict(episodes)
-
-
 def split_corpus(
     episodes: dict[str, list[CorpusEpisode]],
     validation_per_task: int,
@@ -119,37 +92,6 @@ def split_corpus(
         validation.extend(values[:validation_per_task])
         training[task] = values[validation_per_task:]
     return training, validation
-
-
-def episode_actions(episode: CorpusEpisode) -> np.ndarray:
-    actions = []
-    with (episode.source / "frames.jsonl").open() as stream:
-        for line in stream:
-            actions.append(json.loads(line)["action"][:5])
-    return np.asarray(actions, dtype=np.float32)
-
-
-def expert_bounds(
-    episodes: dict[str, list[CorpusEpisode]],
-) -> dict[str, dict[str, float]]:
-    result = {}
-    for task, task_episodes in episodes.items():
-        lengths = []
-        jerks = []
-        for episode in task_episodes:
-            actions = episode_actions(episode)
-            lengths.append(len(actions))
-            jerk = np.diff(actions, n=3, axis=0)
-            jerks.append(
-                float(np.sqrt(np.mean(jerk ** 2)))
-                if jerk.size else 0.
-            )
-        result[task] = {
-            "optimal_steps": float(np.quantile(lengths, .1)),
-            "jerk_p10": float(np.quantile(jerks, .1)),
-            "jerk_p90": float(np.quantile(jerks, .9)),
-        }
-    return result
 
 
 def reset_from_episode(

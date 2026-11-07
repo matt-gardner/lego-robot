@@ -53,7 +53,7 @@ def test_physical_props_and_studs_generate_contacts_without_duplicate_mass():
                 for contact in environment.data.contact
             )
             environment.set_body_pose(name, [.45, 0., .03])
-            for _ in range(200):
+            for _ in range(round(.4 / environment.model.opt.timestep)):
                 mujoco.mj_step(environment.model, environment.data)
             assert environment.position(name)[2] == pytest.approx(
                 -.003 + DISTRACTOR_SIZES[name][2], abs=INITIAL_PENETRATION_TOLERANCE,
@@ -134,6 +134,23 @@ def test_corrected_scene_experts_with_valid_solid_starts(task, level):
     finally:
         environment.close()
 
+
+@pytest.mark.parametrize("version", [2, SCENE_VERSION])
+def test_dynamic_contact_guard_rejects_soft_table_but_new_physics_lifts_cleanly(version):
+    environment = BeamSimulation(render=False, scene_version=version)
+    try:
+        environment.reset(21000, varied_layout=True, real_scene=True, color_targets=True)
+        environment.contact_penetration_limit_m = .001
+        environment.table_penetration_limit_m = .0003
+        if version == 2:
+            with pytest.raises(RuntimeError, match="Physical contact penetration"):
+                environment.demonstrate("studded")
+        else:
+            assert environment.demonstrate("studded")["success"]
+            assert environment.maximum_contact_penetration_m <= .001
+            assert environment.maximum_table_penetration_m <= .0003
+    finally:
+        environment.close()
 
 def test_joint_units_and_gripper_mapping_round_trip(sim):
     for fraction in (0, .5, 1):
@@ -251,7 +268,7 @@ def test_recorded_frames_include_the_active_target_box(tmp_path):
         environment.close()
 
 
-def test_recorded_push_frames_include_object_and_destination_entities(tmp_path):
+def test_recorded_push_frames_include_object_and_destination_entities(tmp_path, monkeypatch):
     environment = BeamSimulation()
     try:
         environment.reset(12, varied_layout=True, real_scene=True, color_targets=True)
@@ -260,10 +277,21 @@ def test_recorded_push_frames_include_object_and_destination_entities(tmp_path):
         )
         (tmp_path / "wrist").mkdir()
         environment.episode_root = tmp_path
+        segmentation = environment._segmentation_image
+        segmentation_calls = 0
+
+        def counted_segmentation():
+            nonlocal segmentation_calls
+            segmentation_calls += 1
+            return segmentation()
+
+        monkeypatch.setattr(environment, "_segmentation_image", counted_segmentation)
         environment.step(
             environment.data.ctrl[environment.actuators].copy(), "hold"
         )
         row = environment.rows[0]
+        assert segmentation_calls == 1
+        assert environment._recording_segmentation is None
         assert row["command_entity_ids"] == ["short", "goal_left"]
         assert row["command_roles"] == ["object", "destination"]
         assert len(row["command_boxes"]) == len(row["command_depth_m"]) == 2

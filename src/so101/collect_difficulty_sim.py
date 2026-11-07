@@ -13,7 +13,7 @@ import numpy as np
 from so101.cloud_checkpoint import atomic_json
 from so101.robot_sim import (
     BeamSimulation, DISTRACTOR_SIZES, MODEL_ROOT, MODEL_COMMIT, OBJECT_NAMES,
-    SCENE_VERSION, TABLE_Z,
+    PHYSICAL_SCENE_VERSION, TABLE_Z,
 )
 
 
@@ -69,7 +69,7 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
         address = sim.model.joint(f"{name}_free").qposadr[0]
         position = (
             [.38, -.30 + index * .10, TABLE_Z + .0058]
-            if sim.scene_version == SCENE_VERSION else
+            if sim.scene_version >= PHYSICAL_SCENE_VERSION else
             [.30, -.21 + index * .035, TABLE_Z + .0058]
         )
         if name == target:
@@ -92,7 +92,7 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
             [.17, -.025], [.15, .02], [.15, -.08], [.15, -.12])
         goal = goals[level]
         sim.model.body_pos[sim.model.body(destination).id] = [
-            *goal, TABLE_Z + (.00002 if sim.scene_version == SCENE_VERSION else .001)
+            *goal, TABLE_Z + (.00002 if sim.scene_version >= PHYSICAL_SCENE_VERSION else .001)
         ]
     mujoco.mj_forward(sim.model, sim.data)
     position = sim.position(target).copy()
@@ -131,7 +131,7 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
             obstacle_id = sim.model.body("obstacle_box").id
             found = False
             camera_starts = [(-.06, .02), (-.08, .02), (-.05, -.02), (0., -.03)]
-            if sim.scene_version == SCENE_VERSION:
+            if sim.scene_version >= PHYSICAL_SCENE_VERSION:
                 camera_starts = [(0., -.20), (-.05, -.25), (0., -.25), (.05, -.20),
                                  (-.10, 0.), (0., -.10)] + camera_starts
             for dx, dy in camera_starts:
@@ -145,7 +145,7 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
                 if unoccluded < 12:
                     continue
                 camera = sim.data.cam_xpos[sim.model.camera("wrist_cam").id].copy()
-                fractions = (.25, .35, .45, .55, .65, .75) if sim.scene_version == SCENE_VERSION else (
+                fractions = (.25, .35, .45, .55, .65, .75) if sim.scene_version >= PHYSICAL_SCENE_VERSION else (
                     .45, .55, .65, .75
                 )
                 for fraction in fractions:
@@ -161,7 +161,7 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
                             contact.geom2 in obstacle_geoms and contact.geom1 in target_geoms
                         ) for contact in sim.data.contact
                     )
-                    if sim.scene_version == SCENE_VERSION:
+                    if sim.scene_version >= PHYSICAL_SCENE_VERSION:
                         interpenetrates = bool(sim.initial_penetrations())
                     if interpenetrates:
                         continue

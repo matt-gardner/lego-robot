@@ -13,7 +13,8 @@ import mujoco
 import numpy as np
 
 from so101.robot_sim import (
-    BeamSimulation, LEGACY_SCENE_VERSION, SCENE_VERSION, restore_episode, scene_xml,
+    BeamSimulation, LEGACY_SCENE_VERSION, PHYSICAL_SCENE_VERSION, SCENE_VERSION,
+    restore_episode, scene_xml,
 )
 
 
@@ -102,8 +103,8 @@ def render(source: Path, output: Path, model_root: Path, evidence: Path | None =
             sequence = range(len(rows))
             labels = ("Overview (recorded physics)" if snapshots else "Overview (legacy reconstruction)",
                       "Wrist (original recording)")
-        if version == SCENE_VERSION and not snapshots:
-            raise ValueError("Version 2 playback requires recorded physics states")
+        if version >= PHYSICAL_SCENE_VERSION and not snapshots:
+            raise ValueError("Physical-scene playback requires recorded physics states")
         if not actions:
             raise ValueError("No recorded actions available for playback")
         encoder = subprocess.Popen([
@@ -166,7 +167,8 @@ if __name__ == "__main__":
                         help="Validated compiled model for memory-limited playback")
     parser.add_argument("--prepare-model-cache", action="store_true",
                         help="Compile --model-cache outside the dashboard service")
-    parser.add_argument("--scene-version", type=int, choices=(LEGACY_SCENE_VERSION, SCENE_VERSION),
+    parser.add_argument("--scene-version", type=int,
+                        choices=(LEGACY_SCENE_VERSION, PHYSICAL_SCENE_VERSION, SCENE_VERSION),
                         default=LEGACY_SCENE_VERSION, help="Scene version to compile (legacy by default)")
     args = parser.parse_args()
     if args.prepare_model_cache:

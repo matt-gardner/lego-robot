@@ -36,7 +36,8 @@ OBJECT_NAMES = ("studded", "hollow", "short", "wide")
 DESTINATION_NAMES = ("goal_left", "goal_right")
 OBSTACLE_NAMES = ("obstacle_box",)
 LEGACY_SCENE_VERSION = 1
-SCENE_VERSION = 2
+PHYSICAL_SCENE_VERSION = 2
+SCENE_VERSION = 3
 INITIAL_PENETRATION_TOLERANCE = .0002
 DISTRACTOR_SIZES = {
     "green_plate_a": (.11, .045, .002),
@@ -100,7 +101,7 @@ def restore_episode(sim: BeamSimulation, metadata: dict) -> tuple[str, str | Non
         color = label.split()[0]
         if color in TARGET_COLORS:
             sim.model.geom_rgba[sim.beam_geoms[name], :3] = TARGET_COLORS[color]
-    if sim.scene_version == SCENE_VERSION:
+    if sim.scene_version >= PHYSICAL_SCENE_VERSION:
         pose = np.asarray(initial["qpos"], dtype=np.float64)
         velocity = np.asarray(initial["qvel"], dtype=np.float64)
         control = np.asarray(initial["ctrl"], dtype=np.float64)
@@ -149,7 +150,7 @@ def fetch_model(root: Path) -> None:
 
 
 def scene_xml(root: Path, scene_version: int = SCENE_VERSION) -> str:
-    if scene_version not in (LEGACY_SCENE_VERSION, SCENE_VERSION):
+    if scene_version not in (LEGACY_SCENE_VERSION, PHYSICAL_SCENE_VERSION, SCENE_VERSION):
         raise ValueError(f"Unsupported scene version: {scene_version}")
     revision = json.loads((root / "revision.json").read_text())
     if revision["commit"] != MODEL_COMMIT:
@@ -235,7 +236,7 @@ def scene_xml(root: Path, scene_version: int = SCENE_VERSION) -> str:
     )
     gripper = world.find(".//body[@name='gripper']")
     ET.SubElement(gripper, "site", name="grasp", pos="0 0 -.096", size=".002", group="3")
-    if scene_version == SCENE_VERSION:
+    if scene_version >= PHYSICAL_SCENE_VERSION:
         for name in DISTRACTOR_SIZES:
             body = world.find(f"body[@name='{name}']")
             body.set("pos", "0 0 0")
@@ -250,6 +251,17 @@ def scene_xml(root: Path, scene_version: int = SCENE_VERSION) -> str:
             geom.set("conaffinity", "1")
         for name in DESTINATION_NAMES:
             world.find(f"body[@name='{name}']/geom").set("size", ".027 .00001")
+    if scene_version == SCENE_VERSION:
+        xml.find("option").set("timestep", ".0005")
+        for geom in world.findall("geom") + [
+            geom for body in world.findall("body")
+            if body.get("name") in (*OBJECT_NAMES, *DISTRACTOR_SIZES, *OBSTACLE_NAMES)
+            for geom in body.findall("geom")
+        ]:
+            geom.set("solref", ".001 1")
+            geom.set("solimp", ".95 .99 .001")
+        for name in ("collision_gripper", "collision_gripper_mesh"):
+            xml.find(f"default/default/default[@class='{name}']/geom").set("solref", ".001 1")
     return ET.tostring(xml, encoding="unicode")
 
 
@@ -311,9 +323,14 @@ class BeamSimulation:
         }
         self.active_obstacles: list[str] = []
         self.obstacle_contact_events: list[dict[str, Any]] = []
+        self.contact_penetration_limit_m: float | None = None
+        self.table_penetration_limit_m: float | None = None
+        self.maximum_contact_penetration_m = 0.
+        self.maximum_table_penetration_m = 0.
+        self._recording_segmentation: np.ndarray | None = None
 
     def use_scene_version(self, version: int) -> None:
-        if version not in (LEGACY_SCENE_VERSION, SCENE_VERSION):
+        if version not in (LEGACY_SCENE_VERSION, PHYSICAL_SCENE_VERSION, SCENE_VERSION):
             raise ValueError(f"Unsupported scene version: {version}")
         if version != self.scene_version:
             render = self.renderer is not None
@@ -324,7 +341,7 @@ class BeamSimulation:
 
     def set_body_pose(self, name: str, position, quaternion=None) -> None:
         body = self.model.body(name).id
-        if self.scene_version == SCENE_VERSION and name in DISTRACTOR_SIZES:
+        if self.scene_version >= PHYSICAL_SCENE_VERSION and name in DISTRACTOR_SIZES:
             joint = self.model.joint(f"{name}_free")
             address = joint.qposadr[0]
             self.data.qpos[address:address + 7] = [
@@ -392,7 +409,7 @@ class BeamSimulation:
             objects={name: self.position(name).tolist() for name in OBJECT_NAMES},
             yaws=dict(self.yaws),
         )
-        if self.scene_version == SCENE_VERSION:
+        if self.scene_version >= PHYSICAL_SCENE_VERSION:
             self.initial.update(
                 scene_version=self.scene_version,
                 qpos=self.data.qpos.tolist(),
@@ -402,6 +419,31 @@ class BeamSimulation:
             self.initial["appearance"]["distractors"] = {
                 name: self.position(name).tolist() for name in self.distractors
             }
+
+    def _checked_contact_depths(self, phase: str, substep: int) -> tuple[float, float]:
+        table = self.model.geom("table").id
+        maximum, table_maximum = 0., 0.
+        for contact in self.data.contact:
+            depth = max(0., -float(contact.dist))
+            maximum = max(maximum, depth)
+            if table in (contact.geom1, contact.geom2):
+                table_maximum = max(table_maximum, depth)
+            if (
+                self.contact_penetration_limit_m is not None and depth > self.contact_penetration_limit_m
+            ) or (
+                self.table_penetration_limit_m is not None
+                and table in (contact.geom1, contact.geom2)
+                and depth > self.table_penetration_limit_m
+            ):
+                names = [
+                    self.model.geom(int(geom)).name or f"geom_{geom}"
+                    for geom in (contact.geom1, contact.geom2)
+                ]
+                raise RuntimeError(
+                    f"Physical contact penetration {depth:.6f}m between {names} "
+                    f"during {phase}, substep {substep}"
+                )
+        return maximum, table_maximum
 
     def close(self):
         if self.renderer is not None:
@@ -476,13 +518,43 @@ class BeamSimulation:
             geoms = self.obstacle_geoms.get(entity)
         if geoms is None:
             raise ValueError(f"Unknown entity: {entity}")
+        segmentation = self._recording_segmentation
+        if segmentation is None:
+            segmentation = self._segmentation_image()
+        return np.isin(segmentation[:, :, 0], geoms).astype(np.uint8)
+
+    def _segmentation_image(self) -> np.ndarray:
         self.renderer.update_scene(self.data, camera="wrist_cam")
         self.renderer.enable_segmentation_rendering()
         try:
-            segmentation = self.renderer.render().copy()
+            return self.renderer.render().copy()
         finally:
             self.renderer.disable_segmentation_rendering()
-        return np.isin(segmentation[:, :, 0], geoms).astype(np.uint8)
+
+    def _recording_command_labels(self) -> dict:
+        target = self.active_target
+        if target is None:
+            raise RuntimeError("Recorded command labels require an active target")
+        self._recording_segmentation = self._segmentation_image()
+        try:
+            command_boxes = [self.target_oriented_box(entity) for entity, _ in self.command_entities]
+            depth_and_valid = [self.entity_camera_depth(entity) for entity, _ in self.command_entities]
+            return {
+                "target_box": self.target_box(),
+                "target_oriented_box": self.target_oriented_box(),
+                "target_depth_m": self.entity_camera_depth(target)[0],
+                "command_boxes": [box[:5] for box in command_boxes],
+                "command_visibility": [box[5] for box in command_boxes],
+                "command_depth_m": [depth for depth, _ in depth_and_valid],
+                "command_depth_valid": [float(valid) for _, valid in depth_and_valid],
+                "command_center_valid": [
+                    float(self.projected_entity_center(entity)[1]) for entity, _ in self.command_entities
+                ],
+                "command_roles": [role for _, role in self.command_entities],
+                "command_entity_ids": [entity for entity, _ in self.command_entities],
+            }
+        finally:
+            self._recording_segmentation = None
 
     def target_mask(self, target: str) -> np.ndarray:
         return self.entity_mask(target)
@@ -623,6 +695,8 @@ class BeamSimulation:
         self.command_entities = []
         self.active_obstacles = []
         self.obstacle_contact_events = []
+        self.maximum_contact_penetration_m = 0.
+        self.maximum_table_penetration_m = 0.
         side = int(rng.choice([-1, 1])) if varied_layout else 1
         lateral_jitter = .012 if varied_layout else .008
         slots = [
@@ -710,7 +784,7 @@ class BeamSimulation:
         }
         for name, (x, y) in goal_positions.items():
             self.model.body_pos[self.model.body(name).id] = [
-                x, y, TABLE_Z + (.00002 if self.scene_version == SCENE_VERSION else .001)
+                x, y, TABLE_Z + (.00002 if self.scene_version >= PHYSICAL_SCENE_VERSION else .001)
             ]
         for name in OBSTACLE_NAMES:
             self.model.body_pos[self.model.body(name).id] = [0, 0, -1]
@@ -734,7 +808,7 @@ class BeamSimulation:
                 name: self.position(name).tolist() for name in OBSTACLE_NAMES
             },
         }
-        if self.scene_version == SCENE_VERSION:
+        if self.scene_version >= PHYSICAL_SCENE_VERSION:
             self.settle_initial_scene()
             self.snapshot_initial_physics()
             self.frame_start = self.data.time
@@ -885,6 +959,11 @@ class BeamSimulation:
             raise ValueError("Expected six finite simulated joint targets")
         if np.any(target < self.limits[:, 0] - 1e-6) or np.any(target > self.limits[:, 1] + 1e-6):
             raise ValueError("Target exceeds simulated joint limits")
+        if not np.isfinite(self.fps) or self.fps <= 0:
+            raise ValueError("Recording FPS must be finite and positive")
+        substeps = round(1 / self.fps / self.model.opt.timestep)
+        if substeps < 1:
+            raise ValueError("Recording FPS exceeds physics timestep resolution")
         target = np.clip(target, self.limits[:, 0], self.limits[:, 1])
         if self.episode_root is not None:
             row = {
@@ -897,48 +976,20 @@ class BeamSimulation:
             if self.active_target is not None and not self.command_entities:
                 self.command_entities = [(self.active_target, "object")]
             if self.command_entities and self.renderer is not None:
-                command_boxes = [
-                    self.target_oriented_box(entity)
-                    for entity, _ in self.command_entities
-                ]
-                command_depth_and_valid = [
-                    self.entity_camera_depth(entity)
-                    for entity, _ in self.command_entities
-                ]
-                command_depth = [value for value, _ in command_depth_and_valid]
-                command_depth_valid = [
-                    float(valid) for _, valid in command_depth_and_valid
-                ]
-                command_center_valid = [
-                    float(self.projected_entity_center(entity)[1])
-                    for entity, _ in self.command_entities
-                ]
-                target_box = self.target_box()
-                target_oriented_box = self.target_oriented_box()
-                target_depth, _ = self.entity_camera_depth(self.active_target)
-                row.update({
-                    "target_box": target_box,
-                    "target_oriented_box": target_oriented_box,
-                    "target_depth_m": target_depth,
-                    "command_boxes": [box[:5] for box in command_boxes],
-                    "command_visibility": [box[5] for box in command_boxes],
-                    "command_depth_m": command_depth,
-                    "command_depth_valid": command_depth_valid,
-                    "command_center_valid": command_center_valid,
-                    "command_roles": [role for _, role in self.command_entities],
-                    "command_entity_ids": [
-                        entity for entity, _ in self.command_entities
-                    ],
-                })
+                row.update(self._recording_command_labels())
             path = self.episode_root / row["image"]
             if not cv2.imwrite(str(path), cv2.cvtColor(self.image(), cv2.COLOR_RGB2BGR)):
                 raise RuntimeError(f"Failed to save {path}")
             self.rows.append(row)
         self.data.ctrl[self.actuators] = target
-        for substep in range(
-            round(1 / self.fps / self.model.opt.timestep)
-        ):
+        interval_penetration = 0.
+        interval_table_penetration = 0.
+        for substep in range(substeps):
             mujoco.mj_step(self.model, self.data)
+            if self.contact_penetration_limit_m is not None:
+                depth, table_depth = self._checked_contact_depths(phase, substep)
+                interval_penetration = max(interval_penetration, depth)
+                interval_table_penetration = max(interval_table_penetration, table_depth)
             contacts = self.obstacle_robot_contacts()
             if contacts:
                 self.obstacle_contact_events.append({
@@ -947,6 +998,19 @@ class BeamSimulation:
                     "phase": phase,
                     "bodies": contacts,
                 })
+        if self.scene_version == SCENE_VERSION:
+            mujoco.mj_forward(self.model, self.data)
+            if self.contact_penetration_limit_m is not None:
+                depth, table_depth = self._checked_contact_depths(phase, substep + 1)
+                interval_penetration = max(interval_penetration, depth)
+                interval_table_penetration = max(interval_table_penetration, table_depth)
+        self.maximum_contact_penetration_m = max(self.maximum_contact_penetration_m, interval_penetration)
+        self.maximum_table_penetration_m = max(self.maximum_table_penetration_m, interval_table_penetration)
+        if self.episode_root is not None and self.contact_penetration_limit_m is not None:
+            self.rows[-1].update(
+                action_interval_max_contact_penetration_m=interval_penetration,
+                action_interval_max_table_penetration_m=interval_table_penetration,
+            )
         if not np.isfinite(self.data.qpos).all() or any(w.number for w in self.data.warning):
             raise RuntimeError("Simulation became unstable")
 
