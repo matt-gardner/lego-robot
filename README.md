@@ -57,7 +57,11 @@ Opening an example starts preparation immediately, without waiting for Play.
 While it prepares, the preview shows the saved source overview snapshot
 alongside recorded wrist frames, explicitly labeled as a static reference.
 When ready, the synchronized dual-view video loads paused and supports
-scrubbing both views; Play does not start a second renderer. The host's
+scrubbing both views; Play does not start a second renderer. Before it is
+ready, Play animates the saved wrist frames immediately at their recorded
+timing. The combined video takes over at the selected frame, preserving
+playing/paused state. Closing or switching examples stops wrist playback.
+The host's
 dashboard CPU budget is 150% (1.5 CPUs), with the existing single-renderer
 and memory/access limits preserved.
 

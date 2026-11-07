@@ -7,6 +7,8 @@ const vm = require("node:vm");
 
 function page() {
   const elements = new Map();
+  const timers = new Map();
+  let now = 0, timerId = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
       value: "run", open: true, disabled: false, hidden: false, attributes: {}, events: {},
@@ -15,7 +17,7 @@ function page() {
       pause() { this.paused = true; }, load() {},
       async play() { this.playCount++; this.paused = false; },
       showModal() { this.open = true; },
-      replaceChildren() {}, toggleAttribute() {},
+      replaceChildren() {}, toggleAttribute() {}, append() {},
       get src() { return this.attributes.src; },
       set src(value) { this.attributes.src = value; },
       getAttribute(name) { return this.attributes[name]; },
@@ -24,14 +26,33 @@ function page() {
     return elements.get(id);
   };
   const context = vm.createContext({
-    document: {documentElement: {dataset: {basePath: "/lego-robot"}}, getElementById: element},
+    document: {
+      documentElement: {dataset: {basePath: "/lego-robot"}}, getElementById: element,
+      createElementNS: () => ({setAttribute() {}}),
+    },
     fetch: () => new Promise(() => {}),
-    setTimeout: callback => callback(), clearTimeout() {}, Date, console, URLSearchParams,
+    setTimeout(callback, delay) {
+      if (delay === 1000) return callback();
+      const id = ++timerId;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: id => timers.delete(id),
+    Date: class extends Date { static now() { return now; } },
+    console, URLSearchParams,
   });
   vm.runInContext(fs.readFileSync(
     process.env.DATA_BROWSER_SOURCE || path.join(__dirname, "../src/so101/dashboard/data.js"),
     "utf8"), context);
-  return {context, element, run: code => vm.runInContext(code, context)};
+  return {context, element, run: code => vm.runInContext(code, context),
+    advance(ms) {
+      now += ms;
+      const callbacks = [...timers.values()];
+      timers.clear();
+      callbacks.forEach(callback => callback());
+    },
+    timers,
+  };
 }
 
 const response = (status, body, type = "application/json", redirected = false) => ({
@@ -56,7 +77,7 @@ test("JSON renderer errors retain their meaningful message", async () => {
   await assert.rejects(p.run('get("/test")'), /180-second limit/);
 });
 
-test("playback polls pending JSON before loading the exact selected recording", async () => {
+test("preparation polls pending JSON before loading the exact selected recording", async () => {
   const p = page();
   const routes = [];
   const replies = [
@@ -66,7 +87,7 @@ test("playback polls pending JSON before loading the exact selected recording", 
   ];
   p.context.fetch = async route => { routes.push(route); return replies.shift(); };
   p.run('detail = {id: "e0b1925f38c0f55b2e70", view: "examples", movie_available: true, frames: [1], playback_description: "Views"};');
-  await p.run("playMovie()");
+  await p.run("prepareMovie()");
   assert.equal(routes.length, 3);
   assert.ok(routes.every(route => route.includes("item=e0b1925f38c0f55b2e70&movie=prepare")));
   assert.ok(p.element("detail-movie").src.endsWith("item=e0b1925f38c0f55b2e70&movie=1"));
@@ -81,8 +102,8 @@ test("closing the detail stops polling without starting a movie", async () => {
     p.element("detail").open = false;
     return response(202, {ready: false, status: "preparing"});
   };
-  p.run('detail = {id: "original", view: "examples", movie_available: true};');
-  await p.run("playMovie()");
+  p.run('detail = {id: "original", view: "examples", movie_available: true, frames: []};');
+  await p.run("prepareMovie()");
   assert.equal(calls, 1);
   assert.equal(p.element("detail-movie").src, undefined);
 });
@@ -191,4 +212,133 @@ test("switching examples prevents the previous preparation from replacing the pr
   completeFirst(response(200, {ready: true}));
   assert.equal(await firstPreparation, false);
   assert.ok(p.element("detail-movie").src.includes("item=second"));
+});
+
+test("Play immediately animates wrist frames while combined preparation is still pending", async () => {
+  const p = page();
+  const routes = [];
+  const item = {...recording(), frames: [{step: 0}, {step: 1}, {step: 2}, {step: 3}]};
+  p.context.fetch = async route => {
+    routes.push(route);
+    if (route.includes("movie=prepare")) return new Promise(() => {});
+    return response(200, item);
+  };
+  await p.run('showDetail({id: "original"}, "examples")');
+  assert.equal(p.element("play-movie").disabled, false);
+  assert.equal(p.element("play-movie").textContent, "Play wrist view");
+  await p.run("playMovie()");
+  p.advance(100);
+  assert.equal(p.element("frame").value, 1);
+  assert.ok(p.element("detail-image").src.endsWith("image=1"));
+  assert.equal(p.element("play-movie").textContent, "Pause wrist view");
+  assert.equal(routes.length, 2);
+  await p.run("playMovie()");
+  p.advance(100);
+  assert.equal(p.element("frame").value, 1);
+  assert.equal(p.element("play-movie").textContent, "Play wrist view");
+});
+
+test("combined video takes over playing wrist footage at the current position", async () => {
+  const p = page();
+  let complete;
+  const item = {...recording(), frames: [{step: 0}, {step: 1}, {step: 2}, {step: 3}]};
+  p.context.fetch = async route => route.includes("movie=prepare")
+    ? new Promise(resolve => { complete = resolve; }) : response(200, item);
+  await p.run('showDetail({id: "original"}, "examples")');
+  await p.run("playMovie()");
+  p.advance(200);
+  assert.equal(p.element("frame").value, 2);
+  complete(response(200, {ready: true}));
+  await p.run("moviePreparation.promise");
+  assert.equal(p.run("wristPlayback"), null);
+  assert.equal(p.timers.size, 0);
+  p.element("detail-movie").duration = 10;
+  p.element("detail-movie").onloadedmetadata();
+  assert.equal(p.element("detail-movie").currentTime, .2);
+  assert.equal(p.element("detail-movie").playCount, 1);
+  assert.equal(p.element("play-movie").textContent, "Pause combined view");
+});
+
+test("combined video preserves a paused wrist position without autoplay", async () => {
+  const p = page();
+  let complete;
+  p.context.fetch = async route => route.includes("movie=prepare")
+    ? new Promise(resolve => { complete = resolve; }) : response(200, recording());
+  await p.run('showDetail({id: "original"}, "examples")');
+  p.element("frame").value = 1;
+  p.run("showFrame()");
+  complete(response(200, {ready: true}));
+  await p.run("moviePreparation.promise");
+  p.element("detail-movie").duration = 10;
+  p.element("detail-movie").onloadedmetadata();
+  assert.equal(p.element("detail-movie").currentTime, .1);
+  assert.equal(p.element("detail-movie").playCount, 0);
+  assert.equal(p.element("play-movie").textContent, "Play combined view");
+});
+
+test("sparse recorded wrist frames follow their recorded step timing", async () => {
+  const p = page();
+  p.run('detail = {frames: [{step: 0}, {step: 16}, {step: 32}], metadata: {fps: 10}, view: "rollouts", id: "sparse"};');
+  p.element("frame").value = 0;
+  await p.run("playMovie()");
+  p.advance(1500);
+  assert.equal(p.element("frame").value, 0);
+  p.advance(100);
+  assert.equal(p.element("frame").value, 1);
+  p.element("frame").value = 2;
+  p.run("showFrame()");
+  p.advance(100);
+  assert.equal(p.element("frame").value, 2);
+  assert.equal(p.run("wristPlayback"), null);
+});
+
+test("closing an example cancels wrist animation", async () => {
+  const p = page();
+  p.run('detail = {frames: [{step: 0}, {step: 1}, {step: 2}], metadata: {fps: 10}, view: "examples", id: "original"};');
+  p.element("frame").value = 0;
+  await p.run("playMovie()");
+  p.element("detail").open = false;
+  p.element("detail").events.close();
+  p.advance(200);
+  assert.equal(p.element("frame").value, 0);
+  assert.equal(p.run("wristPlayback"), null);
+  assert.equal(p.timers.size, 0);
+});
+
+test("failed combined preparation does not stop wrist playback", async () => {
+  const p = page();
+  let fail;
+  p.context.fetch = async route => route.includes("movie=prepare")
+    ? new Promise(resolve => { fail = resolve; })
+    : response(200, {...recording(), frames: [{step: 0}, {step: 1}, {step: 2}]});
+  await p.run('showDetail({id: "original"}, "examples")');
+  await p.run("playMovie()");
+  fail(response(500, {error: "Renderer failed"}));
+  await p.run("moviePreparation.promise");
+  p.advance(100);
+  assert.equal(p.element("frame").value, 1);
+  assert.match(p.element("movie-status").textContent, /wrist playback remains available/);
+  assert.equal(p.element("play-movie").disabled, false);
+});
+
+test("actual saved recording plays wrist frames and hands off at the same position", {
+  skip: !process.env.LIVE_RECORDING_JSON,
+}, async () => {
+  const p = page();
+  const item = JSON.parse(fs.readFileSync(process.env.LIVE_RECORDING_JSON, "utf8"));
+  let complete;
+  p.context.fetch = async route => route.includes("movie=prepare")
+    ? new Promise(resolve => { complete = resolve; }) : response(200, item);
+  await p.run(`showDetail(${JSON.stringify({id: item.id, task: item.task, target: item.target})}, "examples")`);
+  await p.run("playMovie()");
+  p.advance(1000);
+  const frame = Number(p.element("frame").value);
+  assert.ok(frame > 0);
+  assert.ok(p.element("detail-image").src.endsWith(`image=${frame}`));
+  complete(response(200, {ready: true}));
+  await p.run("moviePreparation.promise");
+  p.element("detail-movie").duration = item.frames.length / item.metadata.fps;
+  p.element("detail-movie").onloadedmetadata();
+  assert.equal(p.element("detail-movie").currentTime, item.frames[frame].step / item.metadata.fps);
+  assert.equal(p.element("detail-movie").playCount, 1);
 });

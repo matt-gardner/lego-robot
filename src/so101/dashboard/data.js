@@ -4,6 +4,7 @@ const basePath = document.documentElement.dataset.basePath || "";
 let offset = 0, total = 0, request = 0, detail = null;
 let detailRequest = 0, previousTrajectory = null, nextTrajectory = null;
 let moviePreparation = null;
+let wristPlayback = null, playbackWanted = false;
 const limit = 24;
 const filters = ["view", "task", "difficulty", "usage", "outcome", "bucket"];
 const notes = {
@@ -86,17 +87,66 @@ function showFrame(seek = true) {
   const frame = Number($("frame").value);
   $("detail-image").src = image(detail, detail.view, frame);
   $("frame-value").textContent = `${frame + 1}/${detail.frames.length} | policy/source step ${detail.frames[frame].step}`;
+  if (seek && wristPlayback) {
+    wristPlayback.originTime = Date.now();
+    wristPlayback.originStep = detail.frames[frame].step;
+  }
   if (seek && Number.isFinite($("detail-movie").duration)) {
     $("detail-movie").currentTime = Math.min($("detail-movie").duration,
       detail.frames[frame].step / (detail.fps || detail.metadata.fps || 10));
   }
 }
+function updatePlayButton() {
+  const video = $("detail-movie"), combined = !!video.getAttribute("src");
+  $("play-movie").disabled = combined ? !detail?.movie_available : !detail?.frames.length;
+  $("play-movie").textContent = `${playbackWanted ? "Pause" : "Play"} ${combined ? "combined view" : "wrist view"}`;
+}
+function stopWristPlayback() {
+  if (wristPlayback) clearTimeout(wristPlayback.timer);
+  wristPlayback = null;
+}
+function startWristPlayback() {
+  if (!detail?.frames.length) {
+    playbackWanted = false;
+    updatePlayButton();
+    return;
+  }
+  if (Number($("frame").value) >= detail.frames.length - 1) $("frame").value = 0;
+  const selected = detail, version = detailRequest;
+  const fps = selected.fps || selected.metadata.fps || 10;
+  const state = {
+    originTime: Date.now(), originStep: selected.frames[Number($("frame").value)].step, timer: null,
+  };
+  wristPlayback = state;
+  function tick() {
+    if (version !== detailRequest || !$("detail").open || wristPlayback !== state) return;
+    const step = state.originStep + (Date.now() - state.originTime) * fps / 1000;
+    let frame = 0;
+    while (frame + 1 < selected.frames.length && selected.frames[frame + 1].step <= step) frame++;
+    if (Number($("frame").value) !== frame || !state.timer) {
+      $("frame").value = frame;
+      showFrame(false);
+    }
+    if (frame === selected.frames.length - 1) {
+      stopWristPlayback();
+      playbackWanted = false;
+      updatePlayButton();
+      return;
+    }
+    state.timer = setTimeout(tick, Math.max(16, Math.min(100,
+      (selected.frames[frame + 1].step - step) * 1000 / fps)));
+  }
+  tick();
+  updatePlayButton();
+}
 function stopMovie() {
   const video = $("detail-movie");
   moviePreparation = null;
+  stopWristPlayback();
+  playbackWanted = false;
   video.onloadedmetadata = null;
   video.pause(); video.removeAttribute("src"); video.load(); video.hidden = true;
-  $("play-movie").textContent = "Play side-by-side movie";
+  updatePlayButton();
 }
 function renderTrajectoryNavigation() {
   const source = {id: detail.example_id, task: detail.task, target: detail.target, view: "examples"};
@@ -123,15 +173,35 @@ function prepareMovie() {
   return promise;
 }
 async function playMovie() {
-  const version = detailRequest, video = $("detail-movie");
+  const video = $("detail-movie");
   if (video.getAttribute("src")) {
-    if (video.paused) await video.play(); else video.pause();
+    if (playbackWanted || !video.paused) {
+      playbackWanted = false;
+      video.pause();
+    } else {
+      playbackWanted = true;
+      try {
+        await video.play();
+      } catch (e) {
+        playbackWanted = false;
+        throw e;
+      }
+    }
+    updatePlayButton();
     return;
   }
-  if (await prepareMovie() && version === detailRequest && $("detail").open) await video.play();
+  if (wristPlayback) {
+    stopWristPlayback();
+    playbackWanted = false;
+    updatePlayButton();
+  } else {
+    playbackWanted = true;
+    startWristPlayback();
+  }
+  if (detail.movie_available && !moviePreparation) prepareMovie();
 }
 async function loadMovie(version, selected, video) {
-  $("play-movie").disabled = true;
+  updatePlayButton();
   $("movie-status").textContent = "Preparing synchronized views (first playback may take up to 3 minutes)...";
   try {
     const prepareURL = endpoint({view: selected.view, item: selected.id, movie: "prepare"});
@@ -152,22 +222,31 @@ async function loadMovie(version, selected, video) {
       const frame = selected.frames[Number($("frame").value)];
       video.currentTime = Math.min(video.duration,
         (frame?.step || 0) / (selected.fps || selected.metadata?.fps || 10));
+      if (playbackWanted) video.play().catch(e => {
+        if (version !== detailRequest) return;
+        playbackWanted = false;
+        $("movie-status").textContent = `Combined view ready, but playback could not resume: ${e.message}. Press Play to continue.`;
+        updatePlayButton();
+      });
     };
+    stopWristPlayback();
     video.src = endpoint({view: selected.view, item: selected.id, movie: "1"});
     video.load();
     video.hidden = false; $("detail-preview").hidden = true;
     $("movie-status").textContent = selected.playback_description;
+    updatePlayButton();
     return true;
   } catch (e) {
     if (version === detailRequest) {
-      $("movie-status").textContent = `Playback unavailable: ${e.message}`;
+      $("movie-status").textContent = `Combined view unavailable: ${e.message}. Recorded wrist playback remains available.`;
+      video.onloadedmetadata = null;
       video.removeAttribute("src"); video.load(); video.hidden = true;
       $("detail-preview").hidden = !selected.frames.length;
       moviePreparation = null;
     }
     return false;
   } finally {
-    if (version === detailRequest) $("play-movie").disabled = !selected.movie_available;
+    if (version === detailRequest) updatePlayButton();
   }
 }
 function plotActions(actions) {
@@ -192,7 +271,7 @@ async function showDetail(item, view) {
   if (version !== detailRequest) return;
   detail = {...result, id: item.id, view};
   renderTrajectoryNavigation();
-  $("play-movie").disabled = !result.movie_available;
+  updatePlayButton();
   $("movie-status").textContent = result.movie_available ? result.playback_description : "No retained trajectory recording is available for playback.";
   $("detail-title").textContent = `${item.task} / ${item.target}`;
   $("detail-kind").textContent = view === "rollouts"
@@ -211,7 +290,7 @@ async function showDetail(item, view) {
     $("frame").max = result.frames.length - 1; $("frame").value = 0; showFrame();
   } else $("detail-image").removeAttribute("src");
   plotActions(result.actions);
-  $("trace-note").textContent = result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. Synchronized video prepares automatically when opened. Until ready, the preview pairs a static source overview with recorded wrist frames. Once ready, the slider scrubs both video views. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
+  $("trace-note").textContent = result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. Play the recorded wrist view immediately while synchronized video prepares. The source overview stays static until the combined video is ready; playback then continues there at the selected position. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
   const {metadata, source_history, frames, actions, states, qpos, recorded_trajectories, ...summary} = result;
   $("detail-summary").textContent = JSON.stringify(summary, null, 2);
   $("detail-history").textContent = JSON.stringify(source_history, null, 2);
@@ -237,15 +316,19 @@ $("next-trajectory").addEventListener("click", () => {
   if (nextTrajectory) showDetail(nextTrajectory, nextTrajectory.view).catch(e => error(e.message));
 });
 $("play-movie").addEventListener("click", () => playMovie().catch(e => { $("movie-status").textContent = e.message; }));
-$("detail-movie").addEventListener("play", () => { $("play-movie").textContent = "Pause movie"; });
-$("detail-movie").addEventListener("pause", () => { $("play-movie").textContent = "Play side-by-side movie"; });
+$("detail-movie").addEventListener("play", () => { playbackWanted = true; updatePlayButton(); });
+$("detail-movie").addEventListener("pause", () => { playbackWanted = false; updatePlayButton(); });
+$("detail-movie").addEventListener("ended", () => { playbackWanted = false; updatePlayButton(); });
 $("detail-movie").addEventListener("error", () => {
   const video = $("detail-movie");
   if (video.getAttribute("src")) {
     $("movie-status").textContent = "Movie could not be loaded or decoded. Retry playback or refresh the example.";
+    video.onloadedmetadata = null;
     video.removeAttribute("src"); video.load(); video.hidden = true;
     $("detail-preview").hidden = !detail?.frames.length;
     moviePreparation = null;
+    if (playbackWanted) startWristPlayback();
+    updatePlayButton();
   }
 });
 $("detail-movie").addEventListener("timeupdate", () => {
