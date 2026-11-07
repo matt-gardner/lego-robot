@@ -197,8 +197,16 @@ def validate_spec(spec: dict, policy: dict) -> None:
         "stop_document", "stop_document_version", "log_group",
         "start_document", "start_document_version",
     }
-    if set(spec) != required:
+    if set(spec) not in (required, required | {"purchase_option"}):
         raise ValueError(f"Job fields differ from schema: {sorted(set(spec) ^ required)}")
+    purchase = spec.get("purchase_option", "spot")
+    if purchase not in ("spot", "on-demand"):
+        raise ValueError("Invalid registered purchase option")
+    if purchase == "on-demand":
+        rate = policy.get("on_demand_rates", {}).get(spec["instance_type"])
+        if (rate is None or finite_positive(rate, "approved on-demand rate")
+                != finite_positive(spec["max_usd_per_hour"], "on-demand reservation rate")):
+            raise ValueError("On-demand requires an exact operator-approved type and rate")
     if not COMMIT.fullmatch(spec["commit"]):
         raise ValueError("A full immutable Git commit is required")
     if not re.fullmatch(r"[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}", spec["image"]):
@@ -382,10 +390,13 @@ class Broker:
                     raise ValueError("Launch template does not match the qualified worker bootstrap/AMI")
                 if template.get("InstanceType") != spec["instance_type"]:
                     raise ValueError("Launch template instance type differs from job specification")
-                if template.get("InstanceMarketOptions", {}).get("MarketType") != "spot":
+                purchase = spec.get("purchase_option", "spot")
+                if purchase == "on-demand" and "InstanceMarketOptions" in template:
+                    raise ValueError("On-demand template must omit market options")
+                if purchase == "spot" and template.get("InstanceMarketOptions", {}).get("MarketType") != "spot":
                     raise ValueError("Only qualified Spot worker templates are permitted")
-                spot = template["InstanceMarketOptions"]["SpotOptions"]
-                if (spot.get("SpotInstanceType", "one-time") != "one-time"
+                spot = template.get("InstanceMarketOptions", {}).get("SpotOptions", {})
+                if purchase == "spot" and (spot.get("SpotInstanceType", "one-time") != "one-time"
                         or spot.get("InstanceInterruptionBehavior", "terminate") != "terminate"
                         or finite_positive(float(spot["MaxPrice"]), "Spot MaxPrice")
                         > spec["max_usd_per_hour"]):

@@ -335,6 +335,38 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaisesRegex(PermissionError, "training authorization"):
             self.broker.start("session", job["id"])
 
+    def test_on_demand_requires_exact_root_rate_and_matching_template(self):
+        self.spec["purchase_option"] = "on-demand"
+        with self.assertRaisesRegex(ValueError, "operator-approved"):
+            validate_spec(self.spec, self.policy)
+        self.policy["on_demand_rates"] = {"g6.2xlarge": .5}
+        validate_spec(self.spec, self.policy)
+        with self.assertRaises(ValueError):
+            validate_spec({**self.spec, "max_usd_per_hour": .4}, self.policy)
+        original = self.broker.run
+        def run(args, **kwargs):
+            result = original(args, **kwargs)
+            if "describe-launch-template-versions" in args:
+                data = json.loads(result.stdout)
+                del data["LaunchTemplateVersions"][0]["LaunchTemplateData"]["InstanceMarketOptions"]
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(data))
+            return result
+        self.broker.run = run
+        job = self.broker.submit("session", "approved", self.digest())
+        self.assertEqual(job["status"], "idle")
+        self.assertFalse(any("send-command" in args for args in self.calls))
+        with self.assertRaises(PermissionError):
+            self.broker.start("session", job["id"])
+
+    def test_purchase_option_rejects_unknown_and_market_mismatch(self):
+        with self.assertRaises(ValueError):
+            validate_spec({**self.spec, "purchase_option": "fleet"}, self.policy)
+        self.spec["purchase_option"] = "on-demand"
+        self.policy["on_demand_rates"] = {"g6.2xlarge": .5}
+        with self.assertRaisesRegex(ValueError, "omit market"):
+            self.broker.submit("session", "approved", self.digest())
+        self.assertFalse(any("run-instances" in args for args in self.calls))
+
     def test_failed_backstop_reconciles_paid_resources_and_keeps_reservation(self):
         original = self.broker.run
         def run(args, **kwargs):

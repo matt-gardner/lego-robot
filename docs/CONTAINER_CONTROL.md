@@ -802,3 +802,14 @@ bypass it. Unresolved resource ownership/termination requires host inspection.
 The migrated trial remains stopped at update 304. MPS RNG is not CUDA RNG;
 cross-device recovery is not bitwise-identical and must be qualified without
 silently changing the recipe.
+# Registered purchase modes
+
+The host broker defaults existing specifications to Spot. An operator-created
+specification may explicitly set `purchase_option` to `spot` or `on-demand`.
+On-demand additionally requires a root policy `on_demand_rates` mapping the
+approved instance type to its exact `max_usd_per_hour` reservation rate, and a
+pinned launch template with no `InstanceMarketOptions`. Spot retains its bounded
+price, one-time, terminate-only template checks. Neither mode authorizes training
+or relaxes inventory, lease, budget, checkpoint, or qualification requirements.
+This host-only adapter change does not require replacing a previously pinned
+worker source archive or image.
