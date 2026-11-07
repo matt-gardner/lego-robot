@@ -1,5 +1,10 @@
 # SO-101 LeRobot workspace
 
+Completed `data/simulation/physical_preview*/collection.json` datasets appear
+as supplemental dashboard examples. Search for `physical_preview_v3` to inspect
+the collision-correct preview; these examples are not marked as used by historical
+training runs. Incomplete previews are not shown.
+
 Python 3.12, LeRobot 0.6.1, and the `core_scripts` and `feetech` extras.
 Includes calibration, motor setup, teleoperation, recording, replay, and
 camera discovery. Training and policy-specific extras are not installed.

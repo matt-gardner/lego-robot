@@ -93,6 +93,26 @@ def test_sft_collection_changes_invalidate_browser_cache(dataset):
         browser.list(path, {})
 
 
+def test_completed_physical_preview_is_visible_without_claiming_training_usage(dataset):
+    root, path, _, _, _, _ = dataset
+    source = "data/simulation/physical_preview_v3/episode_00000"
+    episode = root / source
+    episode.mkdir(parents=True)
+    (episode / "episode.json").write_text(json.dumps({
+        "task": "place", "target": "short", "initial": {"seed": 42}, "outcome": "success",
+    }))
+    catalog = episode.parent / "collection.json"
+    report = {"status": "building", "successful_episodes": [source]}
+    catalog.write_text(json.dumps(report))
+    browser = TrainingDataBrowser(root)
+    assert browser.list(path, {"search": "physical_preview_v3"})["total"] == 0
+    report["status"] = "complete"
+    catalog.write_text(json.dumps(report))
+    row = browser.list(path, {"search": "physical_preview_v3"})["items"][0]
+    assert row["source"] == source
+    assert row["split"] == "not-in-run" and not row["used"] and row["rollouts"] == 0
+
+
 def test_bounded_recording_and_browser_actual_frames(dataset):
     root, path, log, a, _, _ = dataset
     class Sim:

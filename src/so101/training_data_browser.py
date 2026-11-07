@@ -36,10 +36,11 @@ class TrainingDataBrowser:
             log = json.loads(log_path.read_text())
             collections = ([] if log.get("kind") == "sft" else
                            sorted(self.data_root.glob("task_difficulty*/collection.json")))
+            previews = sorted(self.data_root.glob("physical_preview*/collection.json"))
             collection = log.get("run_config", {}).get("collection")
             collection_path = self.source_path(collection) / "collection.json" if collection else None
             split_path = log_path.parent / "data_split.json"
-            files = [log_path, *collections, *([collection_path] if collection_path else []),
+            files = [log_path, *collections, *previews, *([collection_path] if collection_path else []),
                      *([split_path] if split_path.exists() else [])]
             revision = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
             cached = self.cache.get(log_path)
@@ -52,6 +53,10 @@ class TrainingDataBrowser:
             if collection_path:
                 report = json.loads(collection_path.read_text())
                 sources.update(report["successful_episodes"])
+            for path in previews:
+                report = json.loads(path.read_text())
+                if report.get("status") == "complete":
+                    sources.update(report["successful_episodes"])
             for path in collections:
                 report = json.loads(path.read_text())
                 sources.update(row["source"] for row in report.get("attempts", []) if row.get("source"))
