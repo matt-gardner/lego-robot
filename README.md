@@ -25,6 +25,28 @@ For scoped container restart and GPU job controls, see
 [Container control](docs/CONTAINER_CONTROL.md); GPU infrastructure qualification
 and launch authorization are separate from implementing the broker.
 
+Movie playback needs MuJoCo (the `simulation` extra), OpenCV, NumPy, an
+`ffmpeg` executable, and a headless renderer in the **dashboard's own**
+Python environment, not a shared host/training environment. The host
+dashboard uses CPU OSMesa (`MUJOCO_GL=osmesa`, `PYOPENGL_PLATFORM=osmesa`).
+To avoid XML compilation's memory peak inside the bounded service, prepare
+its full, unmodified model outside the service:
+
+```sh
+PYTHONPATH=/mnt/dockyard/lego-robot/src uv run --no-project \
+  --python /mnt/dockyard/so101-web/venv/bin/python \
+  python -m so101.simulation_playback \
+  --model-root /mnt/dockyard/lego-robot-data/data/simulation/model \
+  --model-cache /mnt/dockyard/so101-web/playback-runtime/so101.mjb \
+  --prepare-model-cache
+```
+
+Set the service's `SO101_PLAYBACK_MODEL` to that `.mjb` path. Playback checks
+the simulator source, generated scene, model files, MuJoCo version, and
+binary checksum before loading; rebuild explicitly when a check fails.
+Without this setting, existing XML-based simulation/playback is unchanged.
+This cache is dashboard-only and does not load a policy or authorize training.
+
 Application code is an installable package under `src/so101/`; tests are in
 `tests/`. Run commands from the project directory with
 `uv run --locked python -m so101.<module>` and run tests with

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -10,15 +12,62 @@ import cv2
 import mujoco
 import numpy as np
 
-from so101.robot_sim import BeamSimulation, restore_episode
+from so101.robot_sim import BeamSimulation, restore_episode, scene_xml
 
 
-def render(source: Path, output: Path, model_root: Path, evidence: Path | None = None):
+def file_hash(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def model_fingerprint(model_root: Path) -> str:
+    digest = hashlib.sha256(mujoco.__version__.encode())
+    digest.update(file_hash(Path(__file__).with_name("robot_sim.py")).encode())
+    digest.update(scene_xml(model_root).encode())
+    for path in sorted(model_root.rglob("*")):
+        if path.is_file():
+            digest.update(str(path.relative_to(model_root)).encode())
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+    return digest.hexdigest()
+
+
+def prepare_model_cache(model_root: Path, cache: Path) -> None:
+    """Compile outside the memory-limited dashboard, preserving the full model."""
+    fingerprint = model_fingerprint(model_root)
+    model = mujoco.MjModel.from_xml_string(scene_xml(model_root))
+    temporary = cache.with_suffix(".partial.mjb")
+    try:
+        mujoco.mj_saveModel(model, str(temporary))
+        if model_fingerprint(model_root) != fingerprint:
+            raise ValueError("Playback model changed during compilation")
+        binary_hash = file_hash(temporary)
+        temporary.replace(cache)
+        cache.with_suffix(".json").write_text(json.dumps({
+            "fingerprint": fingerprint, "sha256": binary_hash,
+        }))
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def load_model_cache(model_root: Path, cache: Path) -> mujoco.MjModel:
+    metadata = json.loads(cache.with_suffix(".json").read_text())
+    if metadata["fingerprint"] != model_fingerprint(model_root):
+        raise ValueError("Playback model cache is stale; rebuild with --prepare-model-cache")
+    if metadata["sha256"] != file_hash(cache):
+        raise ValueError("Playback model cache is corrupt; rebuild with --prepare-model-cache")
+    return mujoco.MjModel.from_binary_path(str(cache))
+
+
+def render(source: Path, output: Path, model_root: Path, evidence: Path | None = None,
+           model_cache: Path | None = None):
     source = source.resolve()
     metadata = json.loads((source / "episode.json").read_text())
     rows = [json.loads(line) for line in (source / "frames.jsonl").read_text().splitlines()]
     recording = json.loads(evidence.read_text()) if evidence else None
-    sim = BeamSimulation(model_root)
+    model = load_model_cache(model_root, model_cache) if model_cache is not None else None
+    sim = BeamSimulation(model_root, model=model)
     encoder = None
     try:
         restore_episode(sim, metadata)
@@ -97,9 +146,20 @@ def render(source: Path, output: Path, model_root: Path, evidence: Path | None =
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--source", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--model-root", type=Path, required=True)
     parser.add_argument("--evidence", type=Path)
+    parser.add_argument("--model-cache", type=Path, default=os.environ.get("SO101_PLAYBACK_MODEL"),
+                        help="Validated compiled model for memory-limited playback")
+    parser.add_argument("--prepare-model-cache", action="store_true",
+                        help="Compile --model-cache outside the dashboard service")
     args = parser.parse_args()
-    render(args.source, args.output, args.model_root, args.evidence)
+    if args.prepare_model_cache:
+        if args.model_cache is None:
+            parser.error("--prepare-model-cache requires --model-cache")
+        prepare_model_cache(args.model_root, args.model_cache)
+    else:
+        if args.source is None or args.output is None:
+            parser.error("playback requires --source and --output")
+        render(args.source, args.output, args.model_root, args.evidence, args.model_cache)

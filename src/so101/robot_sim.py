@@ -218,8 +218,9 @@ def scene_xml(root: Path) -> str:
 class BeamSimulation:
     """The expert sees object poses; exported policy observations never do."""
 
-    def __init__(self, model_root: Path = MODEL_ROOT, *, render: bool = True):
-        self.model = mujoco.MjModel.from_xml_string(scene_xml(model_root))
+    def __init__(self, model_root: Path = MODEL_ROOT, *, render: bool = True,
+                 model: mujoco.MjModel | None = None):
+        self.model = model if model is not None else mujoco.MjModel.from_xml_string(scene_xml(model_root))
         self.data = mujoco.MjData(self.model)
         self.scratch = mujoco.MjData(self.model)
         self.joints = np.array([self.model.joint(name).id for name in JOINTS])
