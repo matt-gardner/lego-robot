@@ -12,11 +12,17 @@ const notes = {
 };
 async function get(url) {
   const response = await fetch(url);
+  if (!response.headers.get("content-type")?.includes("application/json")) {
+    const message = response.redirected
+      ? "Sign-in may have expired. Refresh the page and sign in again."
+      : `Gateway returned HTTP ${response.status} instead of JSON. Retry or refresh the page.`;
+    throw new Error(message);
+  }
+  const body = await response.json();
   if (!response.ok) {
-    const body = await response.json();
     throw new Error(body.error || `HTTP ${response.status}`);
   }
-  return response.json();
+  return body;
 }
 function error(message) { $("error").textContent = message; $("error").hidden = !message; }
 function endpoint(params) {
@@ -113,9 +119,20 @@ async function playMovie() {
     return;
   }
   $("play-movie").disabled = true;
-  $("movie-status").textContent = "Preparing synchronized views (first playback may take a few seconds)...";
+  $("movie-status").textContent = "Preparing synchronized views (first playback may take up to 3 minutes)...";
   try {
-    await get(endpoint({view: selected.view, item: selected.id, movie: "prepare"}));
+    const prepareURL = endpoint({view: selected.view, item: selected.id, movie: "prepare"});
+    const deadline = Date.now() + 6 * 60 * 1000;
+    while (true) {
+      const status = await get(prepareURL);
+      if (version !== detailRequest || !$("detail").open) return;
+      if (status.ready) break;
+      if (Date.now() >= deadline) throw new Error("Playback preparation timed out. Retry playback.");
+      $("movie-status").textContent = status.status === "waiting"
+        ? "Waiting for another recording to finish preparing..."
+        : "Preparing synchronized views (first playback may take up to 3 minutes)...";
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
     if (version !== detailRequest || !$("detail").open) return;
     video.src = endpoint({view: selected.view, item: selected.id, movie: "1"});
     video.hidden = false; $("detail-image").hidden = true;

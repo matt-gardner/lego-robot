@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 
 
@@ -20,6 +21,8 @@ class TrainingDataBrowser:
         self.data_root = self.workspace / "data" / "simulation"
         self.lock = threading.RLock()
         self.movie_lock = threading.Lock()
+        self.preparation_lock = threading.Lock()
+        self.preparation: tuple[Path, Future[Path]] | None = None
         self.cache = {}
 
     def source_path(self, source: str) -> Path:
@@ -232,7 +235,7 @@ class TrainingDataBrowser:
                     + ("rendered from recorded physics states." if frames and all("qpos" in frame for frame in frames)
                        else "reconstructed from recorded commands (not original overview footage).")}
 
-    def movie(self, log_path: Path, view: str, item_id: str) -> Path:
+    def movie_request(self, log_path: Path, view: str, item_id: str) -> tuple[Path, Path | None, Path]:
         index = self.index(log_path)
         if view not in ("examples", "rollouts", "solved") or item_id not in index[view]:
             raise FileNotFoundError("Example or rollout not found")
@@ -250,9 +253,44 @@ class TrainingDataBrowser:
         cache = self.workspace / "outputs" / ".data-browser-playback"
         if cache.is_symlink():
             raise ValueError("Playback cache must not be a symlink")
+        target = cache / f"{identifier(json.dumps(revision))}.mp4"
+        return source, evidence, target
+
+    def prepare_movie(self, log_path: Path, view: str, item_id: str) -> dict:
+        """Poll one bounded render without holding a gateway request open."""
+        _, _, target = self.movie_request(log_path, view, item_id)
+        with self.preparation_lock:
+            if target.exists():
+                return {"ready": True, "status": "ready"}
+            if self.preparation is not None:
+                previous_target, future = self.preparation
+                if previous_target == target:
+                    if future.done():
+                        self.preparation = None
+                        future.result()
+                        # The cached movie may have expired; prepare it again.
+                    else:
+                        return {"ready": False, "status": "preparing"}
+                elif not future.done():
+                    return {"ready": False, "status": "waiting"}
+            future = Future()
+            self.preparation = (target, future)
+
+            def prepare() -> None:
+                future.set_running_or_notify_cancel()
+                try:
+                    future.set_result(self.movie(log_path, view, item_id))
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    future.set_exception(error)
+
+            threading.Thread(target=prepare, name="data-browser-playback", daemon=True).start()
+            return {"ready": False, "status": "preparing"}
+
+    def movie(self, log_path: Path, view: str, item_id: str) -> Path:
+        source, evidence, target = self.movie_request(log_path, view, item_id)
+        cache = target.parent
         with self.movie_lock:
             cache.mkdir(parents=True, exist_ok=True)
-            target = cache / f"{identifier(json.dumps(revision))}.mp4"
             if target.exists():
                 target.touch()
                 return target

@@ -47,6 +47,13 @@ binary checksum before loading; rebuild explicitly when a check fails.
 Without this setting, existing XML-based simulation/playback is unchanged.
 This cache is dashboard-only and does not load a policy or authorize training.
 
+Cold movie preparation returns JSON HTTP 202 promptly while one bounded
+background renderer works; the browser polls until JSON HTTP 200 reports
+ready. Other recordings wait without adding renderer jobs. This avoids the
+public gateway's 60-second request timeout without changing its limits or
+access rules. Rendering still has a 180-second limit; cached playback is
+immediate. Non-JSON gateway/sign-in errors are displayed without parsing HTML.
+
 Application code is an installable package under `src/so101/`; tests are in
 `tests/`. Run commands from the project directory with
 `uv run --locked python -m so101.<module>` and run tests with

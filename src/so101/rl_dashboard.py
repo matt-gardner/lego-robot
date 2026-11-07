@@ -469,10 +469,11 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                 try:
                     view = query.get("view", "examples")
                     if "movie" in query:
-                        movie = browser.movie(log_path, view, query.get("item", ""))
                         if query["movie"] == "prepare":
-                            self.respond(200, {"ready": True})
+                            status = browser.prepare_movie(log_path, view, query.get("item", ""))
+                            self.respond(200 if status["ready"] else 202, status)
                         else:
+                            movie = browser.movie(log_path, view, query.get("item", ""))
                             self.send_movie(movie)
                     elif "image" in query:
                         image = browser.media(log_path, view, query.get("item", ""), query["image"])

@@ -176,6 +176,82 @@ def test_movie_cache_reuses_rendering_and_surfaces_failure(dataset, monkeypatch)
     assert not list(movie.parent.glob("*.partial.mp4"))
 
 
+def test_preparation_is_prompt_deduplicated_and_bounded(dataset, monkeypatch):
+    root, path, _, a, b, _ = dataset
+    browser = TrainingDataBrowser(root)
+    started, release = threading.Event(), threading.Event()
+    calls = []
+    def render(command, **kwargs):
+        calls.append(command)
+        started.set()
+        assert release.wait(5)
+        Path(command[command.index("--output") + 1]).write_bytes(b"movie")
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr('so101.training_data_browser.subprocess.run', render)
+    try:
+        assert browser.prepare_movie(path, "examples", identifier(a)) == {
+            "ready": False, "status": "preparing",
+        }
+        assert started.wait(2)
+        assert not browser.prepare_movie(path, "examples", identifier(a))["ready"]
+        assert browser.prepare_movie(path, "examples", identifier(b))["status"] == "waiting"
+        assert len(calls) == 1
+    finally:
+        release.set()
+    browser.preparation[1].result(timeout=5)
+    assert browser.prepare_movie(path, "examples", identifier(a))["ready"]
+    assert len(calls) == 1
+
+
+def test_preparation_surfaces_renderer_failure_and_allows_retry(dataset, monkeypatch):
+    root, path, _, a, _, _ = dataset
+    browser = TrainingDataBrowser(root)
+    monkeypatch.setattr('so101.training_data_browser.subprocess.run',
+                        lambda *args, **kwargs: SimpleNamespace(returncode=1, stderr="renderer failed"))
+    browser.prepare_movie(path, "examples", identifier(a))
+    with pytest.raises(OSError, match="renderer failed"):
+        browser.preparation[1].result(timeout=5)
+    with pytest.raises(OSError, match="renderer failed"):
+        browser.prepare_movie(path, "examples", identifier(a))
+    assert browser.preparation is None
+
+
+def test_preparation_http_returns_json_while_rendering(dataset, monkeypatch):
+    root, path, _, a, _, _ = dataset
+    started, release = threading.Event(), threading.Event()
+    def render(command, **kwargs):
+        started.set()
+        assert release.wait(5)
+        Path(command[command.index("--output") + 1]).write_bytes(b"movie")
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr('so101.training_data_browser.subprocess.run', render)
+    server = make_server(root / "outputs", "127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    run_id = next(iter(RunStore(root / "outputs").discover()))
+    url = f"http://127.0.0.1:{server.server_port}/api/data/{run_id}?item={identifier(a)}&movie=prepare"
+    try:
+        response = urlopen(url, timeout=2)
+        assert response.status == 202
+        assert response.headers["Content-Type"] == "application/json"
+        assert json.load(response)["ready"] is False
+        assert started.wait(2)
+        release.set()
+        for _ in range(100):
+            response = urlopen(url, timeout=2)
+            if json.load(response)["ready"]:
+                assert response.status == 200
+                break
+            threading.Event().wait(.01)
+        else:
+            pytest.fail("Preparation never became ready")
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 def test_media_rejects_source_and_evidence_escapes(dataset):
     root, path, log, a, _, _ = dataset
     browser = TrainingDataBrowser(root)
