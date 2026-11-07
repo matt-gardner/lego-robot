@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const basePath = document.documentElement.dataset.basePath || "";
 let offset = 0, total = 0, request = 0, detail = null;
 let detailRequest = 0, previousTrajectory = null, nextTrajectory = null;
+let moviePreparation = null;
 const limit = 24;
 const filters = ["view", "task", "difficulty", "usage", "outcome", "bucket"];
 const notes = {
@@ -92,6 +93,8 @@ function showFrame(seek = true) {
 }
 function stopMovie() {
   const video = $("detail-movie");
+  moviePreparation = null;
+  video.onloadedmetadata = null;
   video.pause(); video.removeAttribute("src"); video.load(); video.hidden = true;
   $("play-movie").textContent = "Play side-by-side movie";
 }
@@ -112,12 +115,22 @@ function renderTrajectoryNavigation() {
     : `Summary only | step ${detail.step}`;
   $("trajectory-position").textContent = `${label} | ${recordings.length} recorded / ${detail.source_rollout_total} logged policy rollouts`;
 }
-async function playMovie() {
+function prepareMovie() {
+  if (moviePreparation?.version === detailRequest) return moviePreparation.promise;
   const version = detailRequest, selected = detail, video = $("detail-movie");
+  const promise = loadMovie(version, selected, video);
+  moviePreparation = {version, promise};
+  return promise;
+}
+async function playMovie() {
+  const version = detailRequest, video = $("detail-movie");
   if (video.getAttribute("src")) {
     if (video.paused) await video.play(); else video.pause();
     return;
   }
+  if (await prepareMovie() && version === detailRequest && $("detail").open) await video.play();
+}
+async function loadMovie(version, selected, video) {
   $("play-movie").disabled = true;
   $("movie-status").textContent = "Preparing synchronized views (first playback may take up to 3 minutes)...";
   try {
@@ -125,7 +138,7 @@ async function playMovie() {
     const deadline = Date.now() + 6 * 60 * 1000;
     while (true) {
       const status = await get(prepareURL);
-      if (version !== detailRequest || !$("detail").open) return;
+      if (version !== detailRequest || !$("detail").open) return false;
       if (status.ready) break;
       if (Date.now() >= deadline) throw new Error("Playback preparation timed out. Retry playback.");
       $("movie-status").textContent = status.status === "waiting"
@@ -133,17 +146,26 @@ async function playMovie() {
         : "Preparing synchronized views (first playback may take up to 3 minutes)...";
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    if (version !== detailRequest || !$("detail").open) return;
+    if (version !== detailRequest || !$("detail").open) return false;
+    video.onloadedmetadata = () => {
+      if (version !== detailRequest) return;
+      const frame = selected.frames[Number($("frame").value)];
+      video.currentTime = Math.min(video.duration,
+        (frame?.step || 0) / (selected.fps || selected.metadata?.fps || 10));
+    };
     video.src = endpoint({view: selected.view, item: selected.id, movie: "1"});
-    video.hidden = false; $("detail-image").hidden = true;
+    video.load();
+    video.hidden = false; $("detail-preview").hidden = true;
     $("movie-status").textContent = selected.playback_description;
-    await video.play();
+    return true;
   } catch (e) {
     if (version === detailRequest) {
       $("movie-status").textContent = `Playback unavailable: ${e.message}`;
       video.removeAttribute("src"); video.load(); video.hidden = true;
-      $("detail-image").hidden = !selected.frames.length;
+      $("detail-preview").hidden = !selected.frames.length;
+      moviePreparation = null;
     }
+    return false;
   } finally {
     if (version === detailRequest) $("play-movie").disabled = !selected.movie_available;
   }
@@ -179,17 +201,23 @@ async function showDetail(item, view) {
         : "POLICY SUMMARY ONLY: this historical rollout did not record images or actions."
     : "SOURCE EXPERT DEMONSTRATION - not a learned-policy trajectory";
   $("frame-label").hidden = !result.frames.length;
+  $("detail-preview").hidden = !result.frames.length;
   $("detail-image").hidden = !result.frames.length;
+  $("detail-overview").src = image({id: result.example_id}, "examples", "overview");
+  $("overview-caption").textContent = view === "rollouts"
+    ? "Source expert overview reference - not this rollout"
+    : "Saved overview snapshot - static until synchronized video is ready";
   if (result.frames.length) {
     $("frame").max = result.frames.length - 1; $("frame").value = 0; showFrame();
   } else $("detail-image").removeAttribute("src");
   plotActions(result.actions);
-  $("trace-note").textContent = result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. The slider scrubs original recorded wrist frames; Play shows synchronized overview and wrist views. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
+  $("trace-note").textContent = result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. Synchronized video prepares automatically when opened. Until ready, the preview pairs a static source overview with recorded wrist frames. Once ready, the slider scrubs both video views. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
   const {metadata, source_history, frames, actions, states, qpos, recorded_trajectories, ...summary} = result;
   $("detail-summary").textContent = JSON.stringify(summary, null, 2);
   $("detail-history").textContent = JSON.stringify(source_history, null, 2);
   $("detail-metadata").textContent = JSON.stringify(metadata, null, 2);
   if (!$("detail").open) $("detail").showModal();
+  if (result.movie_available) prepareMovie();
 }
 filters.forEach(id => $(id).addEventListener("change", () => { offset = 0; load(); }));
 $("data-run").addEventListener("change", () => { $("detail").close(); ++detailRequest; stopMovie(); offset = 0; load(); });
@@ -212,7 +240,13 @@ $("play-movie").addEventListener("click", () => playMovie().catch(e => { $("movi
 $("detail-movie").addEventListener("play", () => { $("play-movie").textContent = "Pause movie"; });
 $("detail-movie").addEventListener("pause", () => { $("play-movie").textContent = "Play side-by-side movie"; });
 $("detail-movie").addEventListener("error", () => {
-  if ($("detail-movie").getAttribute("src")) $("movie-status").textContent = "Movie could not be loaded or decoded. Retry playback or refresh the example.";
+  const video = $("detail-movie");
+  if (video.getAttribute("src")) {
+    $("movie-status").textContent = "Movie could not be loaded or decoded. Retry playback or refresh the example.";
+    video.removeAttribute("src"); video.load(); video.hidden = true;
+    $("detail-preview").hidden = !detail?.frames.length;
+    moviePreparation = null;
+  }
 });
 $("detail-movie").addEventListener("timeupdate", () => {
   if (!detail?.frames.length) return;
@@ -223,6 +257,10 @@ $("detail-movie").addEventListener("timeupdate", () => {
 });
 $("frame").addEventListener("input", showFrame);
 $("detail-image").addEventListener("error", () => error("Recorded frame unavailable. Refresh to check recording retention or source files."));
+$("detail-overview").addEventListener("error", () => {
+  $("detail-overview").removeAttribute("src");
+  $("detail-overview").alt = "Saved overview snapshot unavailable";
+});
 get(`${basePath}/api/runs`).then(result => {
   const runs = result.runs.filter(run => !run.error);
   for (const run of runs) {

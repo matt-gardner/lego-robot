@@ -42,8 +42,17 @@
     </nav>
     <button id="play-movie">Play side-by-side movie</button>
     <p id="movie-status" class="hint" role="status"></p>
-    <video id="detail-movie" controls playsinline preload="none" aria-label="Synchronized overview and wrist movie" hidden></video>
-    <img id="detail-image" alt="Selected recorded wrist frame">
+    <video id="detail-movie" controls playsinline preload="auto" aria-label="Synchronized overview and wrist movie" hidden></video>
+    <div id="detail-preview" class="detail-previews">
+      <figure>
+        <img id="detail-overview" alt="Saved source overview snapshot">
+        <figcaption id="overview-caption"></figcaption>
+      </figure>
+      <figure>
+        <img id="detail-image" alt="Selected recorded wrist frame">
+        <figcaption>Recorded wrist frame</figcaption>
+      </figure>
+    </div>
     <label id="frame-label">Frame <input id="frame" type="range" min="0" max="0" value="0"><output id="frame-value"></output></label>
     <p id="trace-note" class="hint"></p>
     <svg id="action-plot" viewBox="0 0 800 180" role="img" aria-label="Five arm joint commanded positions over time"></svg>
