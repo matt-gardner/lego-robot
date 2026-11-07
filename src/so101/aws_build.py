@@ -17,6 +17,7 @@ WORKER_ASSETS = (
     "scripts/so101-worker-spot.service", "scripts/so101-worker-spot.timer",
     "scripts/so101-worker-start.ssm.json", "scripts/so101-worker-checkpoint-stop.ssm.json",
     "scripts/so101-worker-install.py",
+    "scripts/so101-worker-early.py", "scripts/so101-worker-provision.ssm.json",
 )
 
 

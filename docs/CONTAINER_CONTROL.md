@@ -314,6 +314,32 @@ means **prepared-idle**, not training or aggregate PASS. No start is issued.
 Failed/ambiguous installation leaves an intent and cannot blindly replay or
 overwrite existing state; inspect that exact disposable worker before recovery.
 Never run this installer/guard on the CPU controller or coding-agent host.
+
+### Noncircular two-phase transport
+
+Do **not** embed the final manifest, plan, execution hashes, or specification
+hash into launch-template user data: the specification itself pins that user
+data and numeric template version. First generate fixed user data with
+`so101.aws_bootstrap_payload.userdata` from the verified source bundle and
+only account/region/AMI/type/broker/AWS-CLI identity plus source/launcher raw
+hashes. It embeds the standalone early bootstrap and lease guard, checks
+GPU identity and valid runtime job/spec/deadline tags, and enables the guard
+without downloading anything or starting training. Freeze these exact bytes
+and the template version, then construct the specification, then the configs.
+
+After launch, the trusted operator/controller sends the fixed numeric version
+of `scripts/so101-worker-provision.ssm.json` with `JobId`, `SpecSHA256`, and
+`ProvisionBase64` (base64 of canonical JSON containing exactly `manifest`,
+`plan`, and `execution`). This requires separately scoped SSM provisioning
+permission; source availability is not evidence that that permission exists.
+The provisioner binds expected job/spec to IMDS, hashes actual IMDS user data
+against `spec.bootstrap_sha256`, verifies all configuration links, and downloads
+only the exact source version using the worker role. The launcher raw hash is
+checked before execution. Provisioning is bounded by the lease, leaves an
+exclusive intent on failure, and never starts training or writes PASS.
+The installer adopts an existing early guard only when its root-owned receipt,
+code, unit and early script match this exact worker and pinned source bytes.
+Altered/ambiguous existing assets are rejected, not replaced.
 Failure leaves explicit partial task-owned staging, never modifies original
 trees, and does not automatically retry or delete.
 

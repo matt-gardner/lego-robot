@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Identity-bound postlaunch configuration and prepared-idle bootstrap; never training",
+  "parameters": {
+    "JobId": {"type": "String", "allowedPattern": "^[0-9a-f]{32}$", "interpolationType": "ENV_VAR"},
+    "SpecSHA256": {"type": "String", "allowedPattern": "^[0-9a-f]{64}$", "interpolationType": "ENV_VAR"},
+    "ProvisionBase64": {"type": "String", "allowedPattern": "^[A-Za-z0-9+/]{1,32766}={0,2}$", "interpolationType": "ENV_VAR"}
+  },
+  "mainSteps": [{
+    "action": "aws:runShellScript",
+    "name": "ProvisionIdleWorker",
+    "inputs": {
+      "timeoutSeconds": "3600",
+      "runCommand": ["set -eu", "/usr/bin/python3 -I /opt/lego-robot-worker/early.py"]
+    }
+  }]
+}

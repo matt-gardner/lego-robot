@@ -84,6 +84,35 @@ def pull_image(manifest: dict, auth_root: Path, *, run=subprocess.run) -> None:
             check=True, capture_output=True, text=True, timeout=3600, env=env)
 
 
+def adopt_guard(source: Path, manifest: dict, job: str) -> None:
+    expected_names = {"early.json", "early.py", "aws_worker_guard.py", "early-receipt.json"}
+    if {path.name for path in trusted_path(GUARD).iterdir()} != expected_names:
+        raise ValueError("Existing early guard has ambiguous contents")
+    config = trusted_json(GUARD / "early.json")
+    receipt = trusted_json(GUARD / "early-receipt.json")
+    if (receipt.get("schema") != 1 or receipt.get("job_id") != job
+            or receipt.get("spec_sha256") != manifest["spec_sha256"]
+            or receipt.get("config_sha256") != hashlib.sha256(canonical(config)).hexdigest()
+            or any(config.get(key) != manifest[key]
+                   for key in ("account_id", "ami", "instance_type", "broker_id"))
+            or config.get("region") != "us-west-2"
+            or config.get("aws_cli") != manifest["aws_cli"]
+            or config.get("source_sha256") != manifest["runtime"]["source_sha256"]
+            or config.get("launcher_sha256") != hashlib.sha256(
+                trusted_path(source / "scripts/so101-worker-install.py").read_bytes()).hexdigest()):
+        raise ValueError("Existing early guard receipt does not bind this worker")
+    for existing, original, key in (
+        (GUARD / "early.py", source / "scripts/so101-worker-early.py", "early_sha256"),
+        (GUARD / "aws_worker_guard.py", source / "src/so101/aws_worker_guard.py", "guard_sha256"),
+        (UNITS / "lego-robot-worker-guard.service",
+         source / "scripts/lego-robot-worker-guard.service", "guard_unit_sha256"),
+    ):
+        if (existing.is_symlink() or not trusted_path(existing).is_file()
+                or hashlib.sha256(existing.read_bytes()).hexdigest() != config.get(key)
+                or existing.read_bytes() != trusted_path(original).read_bytes()):
+            raise ValueError("Existing early guard code/unit differs from pinned source")
+
+
 def install(execution_sha256: str, source_sha256: str, *, metadata=None,
             run=subprocess.run, wall=time.time) -> dict:
     if os.geteuid() != 0:
@@ -123,12 +152,16 @@ def install(execution_sha256: str, source_sha256: str, *, metadata=None,
         trusted_path(parent)
     metadata = metadata if metadata is not None else Metadata()
     job, deadline = identity(manifest, metadata, wall=wall)
-    if (STATE.exists() or GUARD.exists() or (WORKER / "pyvenv.cfg").exists()
+    early = GUARD.exists()
+    if early:
+        adopt_guard(source, manifest, job)
+    if (STATE.exists() or (WORKER / "pyvenv.cfg").exists()
             or (CONFIG / "qualification.json").exists()):
         raise ValueError("Fresh-worker installer cannot overwrite existing state or qualification")
     assets = ("lego-robot-worker-guard.service", "so101-worker-spot.service",
               "so101-worker-spot.timer")
-    if any((UNITS / name).exists() or (UNITS / name).is_symlink() for name in assets):
+    if any((UNITS / name).exists() or (UNITS / name).is_symlink()
+           for name in (assets[1:] if early else assets)):
         raise ValueError("Fresh-worker installer cannot replace existing service units")
     for name in assets:
         trusted_path(source / "scripts" / name)
@@ -145,17 +178,20 @@ def install(execution_sha256: str, source_sha256: str, *, metadata=None,
         bounded_run(["/usr/bin/systemctl", *arguments], check=True, capture_output=True,
                     text=True, timeout=30, env={"PATH": "/usr/bin:/bin"})
 
+    if early:
+        require_guard(bounded_run)
     STATE.mkdir(mode=0o700)
     atomic_json(STATE / "installation-intent.json", {
         "job_id": job, "execution_sha256": execution_sha256, "source_sha256": source_sha256,
     })
-    GUARD.mkdir(mode=0o755)
-    shutil.copyfile(source / "src/so101/aws_worker_guard.py", GUARD / "aws_worker_guard.py")
-    (GUARD / "aws_worker_guard.py").chmod(0o644)
-    shutil.copyfile(source / "scripts" / assets[0], UNITS / assets[0])
-    (UNITS / assets[0]).chmod(0o644)
-    systemctl("daemon-reload")
-    systemctl("enable", "--now", assets[0])
+    if not early:
+        GUARD.mkdir(mode=0o755)
+        shutil.copyfile(source / "src/so101/aws_worker_guard.py", GUARD / "aws_worker_guard.py")
+        (GUARD / "aws_worker_guard.py").chmod(0o644)
+        shutil.copyfile(source / "scripts" / assets[0], UNITS / assets[0])
+        (UNITS / assets[0]).chmod(0o644)
+        systemctl("daemon-reload")
+        systemctl("enable", "--now", assets[0])
     require_guard(bounded_run)
 
     venv.EnvBuilder(with_pip=False, symlinks=True).create(WORKER)

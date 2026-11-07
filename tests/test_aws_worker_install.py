@@ -192,3 +192,59 @@ def test_isolated_stdlib_interpreter_imports_worker_without_training_dependencie
     ], check=True, capture_output=True, text=True, timeout=30,
         env={"PATH": "/usr/bin:/bin", "PYTHONPATH": "/invalid/untrusted"})
     assert result.stdout.strip() == "stdlib worker imports verified"
+
+
+def early_guard(tmp_path, monkeypatch):
+    manifest, config, events, run = setup(tmp_path, monkeypatch)
+    source = module.WORKER / "source"
+    for name in ("so101-worker-early.py", "so101-worker-install.py"):
+        (source / "scripts" / name).write_bytes((Path("scripts") / name).read_bytes())
+    module.GUARD.mkdir()
+    early = dict(account_id=manifest["account_id"], region="us-west-2",
+                 ami=manifest["ami"], instance_type=manifest["instance_type"],
+                 broker_id=manifest["broker_id"], aws_cli=manifest["aws_cli"],
+                 source_sha256="c" * 64)
+    for target, original, key in (
+        (module.GUARD / "early.py", source / "scripts/so101-worker-early.py", "early_sha256"),
+        (module.GUARD / "aws_worker_guard.py", source / "src/so101/aws_worker_guard.py",
+         "guard_sha256"),
+        (module.UNITS / "lego-robot-worker-guard.service",
+         source / "scripts/lego-robot-worker-guard.service", "guard_unit_sha256"),
+    ):
+        target.write_bytes(original.read_bytes())
+        early[key] = hashlib.sha256(original.read_bytes()).hexdigest()
+    early["launcher_sha256"] = hashlib.sha256(
+        (source / "scripts/so101-worker-install.py").read_bytes()).hexdigest()
+    (module.GUARD / "early.json").write_bytes(canonical(early))
+    receipt = {"schema": 1, "job_id": "a" * 32, "spec_sha256": "b" * 64,
+               "config_sha256": hashlib.sha256(canonical(early)).hexdigest()}
+    (module.GUARD / "early-receipt.json").write_bytes(canonical(receipt))
+    prior = module.trusted_json
+    monkeypatch.setattr(module, "trusted_json",
+                        lambda path: json.loads(path.read_bytes())
+                        if path.parent == module.GUARD else prior(path))
+    return config, events, run
+
+
+def test_only_exact_early_guard_adopted_without_overwrite(tmp_path, monkeypatch):
+    config, events, run = early_guard(tmp_path, monkeypatch)
+    original = (module.GUARD / "aws_worker_guard.py").read_bytes()
+    result = module.install(hashlib.sha256(canonical(config)).hexdigest(), "c" * 64,
+                            metadata=Metadata(), run=run, wall=lambda: 1000)
+    assert result["phase"] == "prepared-idle"
+    assert (module.GUARD / "aws_worker_guard.py").read_bytes() == original
+    assert ["/usr/bin/systemctl", "enable", "--now", "lego-robot-worker-guard.service"] not in events
+
+
+@pytest.mark.parametrize("change", ["guard", "unit", "early", "extra"])
+def test_altered_or_ambiguous_early_guard_rejected(tmp_path, monkeypatch, change):
+    config, events, run = early_guard(tmp_path, monkeypatch)
+    path = {"guard": module.GUARD / "aws_worker_guard.py",
+            "unit": module.UNITS / "lego-robot-worker-guard.service",
+            "early": module.GUARD / "early.py", "extra": module.GUARD / "unknown"}[change]
+    path.write_text("altered")
+    with pytest.raises(ValueError, match="ambiguous|differs"):
+        module.install(hashlib.sha256(canonical(config)).hexdigest(), "c" * 64,
+                       metadata=Metadata(), run=run, wall=lambda: 1000)
+    assert events == []
+    assert not module.STATE.exists()
