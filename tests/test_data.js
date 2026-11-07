@@ -342,3 +342,21 @@ test("actual saved recording plays wrist frames and hands off at the same positi
   assert.equal(p.element("detail-movie").currentTime, item.frames[frame].step / item.metadata.fps);
   assert.equal(p.element("detail-movie").playCount, 1);
 });
+
+test("slow wrist frames are allowed to finish rather than being repeatedly canceled", async () => {
+  const p = page();
+  p.run('detail = {frames: [{step: 0}, {step: 1}, {step: 2}, {step: 3}], metadata: {fps: 10}, view: "examples", id: "original"};');
+  p.element("frame").value = 0;
+  await p.run("playMovie()");
+  const wrist = p.element("detail-image");
+  wrist.complete = false;
+  p.advance(100);
+  assert.equal(p.element("frame").value, 1);
+  assert.ok(wrist.src.endsWith("image=0"));
+  p.advance(100);
+  assert.ok(wrist.src.endsWith("image=0"));
+  wrist.complete = true;
+  wrist.events.load();
+  assert.ok(wrist.src.endsWith("image=2"));
+  p.run("stopMovie()");
+});

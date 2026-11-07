@@ -85,7 +85,10 @@ async function load() {
 }
 function showFrame(seek = true) {
   const frame = Number($("frame").value);
-  $("detail-image").src = image(detail, detail.view, frame);
+  const wrist = $("detail-image"), source = image(detail, detail.view, frame);
+  if (!$("detail-preview").hidden && (!wrist.getAttribute("src") || wrist.complete !== false)) {
+    if (wrist.getAttribute("src") !== source) wrist.src = source;
+  }
   $("frame-value").textContent = `${frame + 1}/${detail.frames.length} | policy/source step ${detail.frames[frame].step}`;
   if (seek && wristPlayback) {
     wristPlayback.originTime = Date.now();
@@ -130,6 +133,7 @@ function startWristPlayback() {
     if (frame === selected.frames.length - 1) {
       stopWristPlayback();
       playbackWanted = false;
+      $("detail-image").removeAttribute("src");
       updatePlayButton();
       return;
     }
@@ -327,6 +331,7 @@ $("detail-movie").addEventListener("error", () => {
     video.removeAttribute("src"); video.load(); video.hidden = true;
     $("detail-preview").hidden = !detail?.frames.length;
     moviePreparation = null;
+    if (detail?.frames.length) showFrame(false);
     if (playbackWanted) startWristPlayback();
     updatePlayButton();
   }
@@ -339,6 +344,11 @@ $("detail-movie").addEventListener("timeupdate", () => {
   if (Number($("frame").value) !== frame) { $("frame").value = frame; showFrame(false); }
 });
 $("frame").addEventListener("input", showFrame);
+$("detail-image").addEventListener("load", () => {
+  if (!detail?.frames.length || $("detail-preview").hidden) return;
+  const wrist = $("detail-image"), source = image(detail, detail.view, Number($("frame").value));
+  if (wrist.getAttribute("src") !== source) wrist.src = source;
+});
 $("detail-image").addEventListener("error", () => error("Recorded frame unavailable. Refresh to check recording retention or source files."));
 $("detail-overview").addEventListener("error", () => {
   $("detail-overview").removeAttribute("src");
