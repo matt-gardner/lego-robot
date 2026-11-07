@@ -1,7 +1,6 @@
 """One-shot IMDSv2 Spot handling; timer driven, never restarts training."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import fcntl
 import json
 import logging
@@ -15,22 +14,13 @@ from urllib.error import HTTPError
 from so101.aws_worker_bootstrap import load_manifest
 from so101.aws_worker_guard import Metadata, poweroff
 from so101.aws_worker_run import stop_and_publish
+from so101.aws_spot_qualification import stop as qualification_stop
+from so101.aws_spot_notice import notice_deadline
 from so101.cloud_checkpoint import atomic_json
 from so101.control_broker import trusted_json, trusted_path
 
 
 LOG = logging.getLogger(__name__)
-
-
-def notice_deadline(notice: dict, now: float, lease: float) -> int:
-    if not isinstance(notice, dict) or set(notice) != {"action", "time"}:
-        raise ValueError("Malformed Spot interruption notice")
-    if notice["action"] not in {"terminate", "stop", "hibernate"}:
-        raise ValueError("Unknown Spot interruption action")
-    deadline = datetime.fromisoformat(notice["time"].replace("Z", "+00:00"))
-    if deadline.utcoffset() != timezone.utc.utcoffset(deadline):
-        raise ValueError("Spot interruption time must be UTC")
-    return int(min(deadline.timestamp(), now + 120, lease))
 
 
 def tick(config: dict, *, metadata=None, wall=time.time, stop=stop_and_publish,
@@ -60,6 +50,12 @@ def tick(config: dict, *, metadata=None, wall=time.time, stop=stop_and_publish,
     deadline = notice_deadline(notice, wall(), metadata.deadline())
     attempts = trusted_path(Path(config["attempts_root"]))
     attempt = attempts / job
+    qualification = attempts / "spot-qualification" / job
+    if attempt.exists() and qualification.exists():
+        raise ValueError("Training and disposable Spot attempts must not overlap")
+    disposable = qualification.exists()
+    if disposable:
+        attempt = trusted_path(qualification)
     intent = attempts / (job + "-spot.json")
     if intent.exists():
         previous = trusted_json(intent)
@@ -89,11 +85,12 @@ def tick(config: dict, *, metadata=None, wall=time.time, stop=stop_and_publish,
         shutdown()
         return True
     try:
-        stop(config, job_id=job, spec_sha256=spec, stop_deadline=deadline)
+        handler = qualification_stop if disposable else stop
+        handler(config, job_id=job, spec_sha256=spec, stop_deadline=deadline)
     except BlockingIOError:
         LOG.warning("Existing checkpoint operation owns stop lock; Spot deadline shortened")
         return False
-    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
         LOG.error("Spot checkpoint recovery failed; requesting termination: %s", error)
         shutdown()
         raise

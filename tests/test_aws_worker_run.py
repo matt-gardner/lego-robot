@@ -128,7 +128,7 @@ def test_ssm_documents_use_only_validated_environment_parameters():
                 assert parameter["allowedPattern"].startswith(
                     "^[1-9]" if name == "StopDeadline" else "^[0-9a-f]")
             else:
-                assert parameter["allowedPattern"] == "^(start|qualify)$"
+                assert parameter["allowedPattern"] == "^(start|qualify|spot-qualify|spot-recover-check)$"
         commands = document["mainSteps"][0]["inputs"]["runCommand"]
         assert commands[0] == "set -eu"
         assert ("so101.aws_worker_run checkpoint-stop" if action == "checkpoint-stop"

@@ -94,3 +94,32 @@ def test_notice_is_capped_by_two_minutes_and_original_lease():
     assert notice_deadline(notice(1100), 1000, 1050) == 1050
     with pytest.raises(ValueError, match="UTC"):
         notice_deadline({"action": "terminate", "time": "2026-11-03T00:00:00"}, 1000, 1300)
+
+
+def test_real_notice_routes_disposable_attempt_and_publishes_before_shutdown(tmp_path, monkeypatch):
+    import so101.aws_spot as module
+    config, metadata, events, job = setup(tmp_path, monkeypatch, notice())
+    attempt = tmp_path / "spot-qualification" / job
+    attempt.mkdir(parents=True)
+    (attempt / "launched.json").write_text("{}")
+
+    def qualification(config, **options):
+        assert options["stop_deadline"] == 1100
+        assert (attempt / "stop-deadline.json").is_file()
+        events.append("qualified-publication")
+
+    monkeypatch.setattr(module, "qualification_stop", qualification)
+    assert tick(config, metadata=metadata, wall=lambda: 1000,
+                stop=lambda *args, **kwargs: pytest.fail("training stop"),
+                shutdown=lambda: events.append("shutdown"))
+    assert events == ["qualified-publication", "shutdown"]
+
+
+def test_ambiguous_training_and_disposable_attempts_fail_closed(tmp_path, monkeypatch):
+    config, metadata, events, job = setup(tmp_path, monkeypatch, notice())
+    (tmp_path / job).mkdir()
+    (tmp_path / "spot-qualification" / job).mkdir(parents=True)
+    with pytest.raises(ValueError, match="must not overlap"):
+        tick(config, metadata=metadata, wall=lambda: 1000,
+             shutdown=lambda: events.append("shutdown"))
+    assert events == []

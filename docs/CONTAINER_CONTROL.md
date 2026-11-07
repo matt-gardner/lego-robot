@@ -98,7 +98,10 @@ Requests use JSON `--body`, e.g. `{"job_id":"..."}` or
 `{"spec_id":"sft-b64","spec_sha256":"..."}`. Resume also requires `parent`.
 The persisted SQLite ledger reserves the full compute allowance before
 allocation, allows only one nonterminal attempt, and retains reservations
-after failures. Compute reservations do **not** cover S3, storage, network,
+after failures. The active-attempt count, cumulative reservation read, and insert
+share SQLite `BEGIN IMMEDIATE`; separate broker processes cannot both reserve
+the same empty slot. Failed reservations roll back before releasing the lock.
+Compute reservations do **not** cover S3, storage, network,
 taxes, or all account spend. Those need independent AWS budget controls.
 
 ## AWS prerequisites and shutdown
@@ -210,7 +213,8 @@ root JSON receipt with `status=PASS` and the exact `spec_sha256`; it must reflec
 actual runtime qualification, not fabricated source-test results. The root
 Python package must be installed in `/opt/so101-worker/bin/python`'s environment.
 
-The start document accepts only `Mode=start` (default) or `Mode=qualify`.
+The start document accepts `Mode=start` (default), `Mode=qualify`, or the
+separate disposable `Mode=spot-qualify` and cold `Mode=spot-recover-check`.
 Qualification does **not** require an existing PASS, so the workflow is not
 circular. It uses the exact root plan and explicit migration seed, idle receipt,
 active guard and remaining lease, and refuses to overlap a started training
@@ -343,6 +347,65 @@ exclusive intent on failure, and never starts training or writes PASS.
 The installer adopts an existing early guard only when its root-owned receipt,
 code, unit and early script match this exact worker and pinned source bytes.
 Altered/ambiguous existing assets are rejected, not replaced.
+
+### Disposable real Spot qualification
+
+After prepared-idle bootstrap, dispatch the same pinned start document with
+`Mode=spot-qualify`. It starts only a new tiny CUDA13/BF16 Linear/Adam workload,
+not the SFT trainer, and refuses an existing training attempt. Its zero-filled
+CPU padding equals the original staged checkpoint's exact byte size, so the
+stop exercises representative I/O volume without reading/advancing that trial.
+The workload saves full model/Adam and CPU/CUDA RNG state every five seconds
+and exits only after a new-output STOP; an1800-second maximum without a stop
+is a failure, not qualification. Check image+archives+expanded inputs+padding
+and publication snapshot storage before launching the disposable worker.
+
+Use an actual AWS Spot interruption (for example an operator-authorized,
+single-tagged-worker FIS `aws:ec2:send-spot-instance-interruptions` with PT2M);
+no fake IMDS notice is implemented. The existing Spot timer reads the real
+notice, routes to the isolated `attempts/spot-qualification/JOB` attempt, and
+shares the absolute deadline/stop lock. The CPU validator runs as root in the
+read-only/networkless pinned image so it can read the root-private stable
+snapshot; validation failure never becomes publication success. Successful
+state and notice evidence commit under `OUTPUT_URI/qualification/JOB/` and
+`OUTPUT_URI/qualification-events/JOB/`, never the normal training recovery
+namespace, before requesting poweroff. The worker template must terminate,
+not stop, on poweroff; independent scheduled termination remains armed.
+
+The separately allowlisted read-only `gpu.recover_qualification` capability
+requires the actual owned worker already `terminated`. It retrieves exact
+versioned evidence, verifies the checkpoint/notice/spec links, compares padding
+against the original S3 version's byte size, and checks the CloudWatch
+`JOB-spot-qualification` checkpoint-stop marker. It returns
+`QUALIFICATION_EVIDENCE`, **never aggregate PASS**. Poll observation time is
+not AWS's actual termination timestamp: a late poll leaves deadline evidence
+unproven, not proof of late termination. Use independently verified AWS event
+timestamps when reviewing that uncertainty; do not substitute an invented time.
+
+Download and SHA-verify the recovered disposable checkpoint's exact version
+into a durable local copy before a cold GPU recovery test. Bind that same exact
+reference as `spot_recovered_state.pt` in the next approved single GPU's root
+manifest and stage it through the normal version/SHA-verified input transport.
+Dispatch the pinned start document with `Mode=spot-recover-check`; the root
+handler uses GPU0, no network, a read-only recovered checkpoint,
+`CUBLAS_WORKSPACE_CONFIG=:4096:8`, and the fixed runtime command:
+
+```text
+python -m so101.aws_spot_workload check-cuda --state /check/state.pt \
+  --padding-bytes ORIGINAL_CHECKPOINT_BYTES
+```
+
+Each checkpoint stores a next-update model/Adam byte hash forecast on a clone
+on the pre-interruption GPU without consuming the running RNG stream.
+The recovered CUDA RNG/model/Adam must reproduce that reference twice;
+CPU-only validation returns `cuda_next_update_exact=false` and is not this test.
+The separate `JOB-spot-recovery/recovered-runtime.json` receipt binds the actual
+recovered artifact URI/version/SHA and returns `SPOT_CUDA_RECOVERY_PASS`, not
+aggregate PASS. It cannot overlap training or the disposable workload; timeout
+cleanup checks the exact owned container label before removal.
+Only actual runtime, recovered-GPU, logs, real Spot and independent shutdown
+evidence supports the operator's aggregate PASS and unchanged304 continuation.
+Evidence retrieval is not a full local checkpoint export or cloud cleanup.
 Failure leaves explicit partial task-owned staging, never modifies original
 trees, and does not automatically retry or delete.
 

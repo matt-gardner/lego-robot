@@ -70,6 +70,54 @@ class BrokerTests(unittest.TestCase):
     def digest(self):
         return hashlib.sha256(canonical(self.spec)).hexdigest()
 
+    def test_reservation_is_atomic_across_two_connections(self):
+        second = Broker(self.policy, self.root / "state.sqlite", self.root, self.command)
+        first_read, release = threading.Event(), threading.Event()
+        second_begin, second_read = threading.Event(), threading.Event()
+        results = []
+
+        def first_trace(statement):
+            if statement.startswith("SELECT COALESCE(SUM"):
+                first_read.set()
+                if not release.wait(5):
+                    raise RuntimeError("Reservation test timed out")
+
+        def second_trace(statement):
+            if statement == "BEGIN IMMEDIATE":
+                second_begin.set()
+            if statement.startswith("SELECT COUNT"):
+                second_read.set()
+
+        def reserve(broker):
+            try:
+                results.append(broker.reserve("session", "spec", self.digest(), None))
+            except ValueError as error:
+                results.append(error)
+
+        self.broker.db.set_trace_callback(first_trace)
+        second.db.set_trace_callback(second_trace)
+        first = threading.Thread(target=reserve, args=(self.broker,))
+        other = threading.Thread(target=reserve, args=(second,))
+        try:
+            first.start()
+            self.assertTrue(first_read.wait(3))
+            other.start()
+            self.assertTrue(second_begin.wait(3))
+            self.assertFalse(second_read.is_set())
+        finally:
+            release.set()
+            first.join(5)
+            if other.ident is not None:
+                other.join(5)
+            self.broker.db.set_trace_callback(None)
+            second.db.close()
+        self.assertFalse(first.is_alive())
+        self.assertFalse(other.is_alive())
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        self.assertEqual(sum(isinstance(result, ValueError) for result in results), 1)
+        self.assertEqual(self.broker.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+        self.assertFalse(self.broker.db.in_transaction)
+
     def command(self, args, **kwargs):
         self.calls.append(args)
         if "get-caller-identity" in args:

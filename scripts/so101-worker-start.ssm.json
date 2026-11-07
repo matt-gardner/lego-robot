@@ -1,10 +1,10 @@
 {
   "schemaVersion": "2.2",
-  "description": "Bounded pre-PASS qualification or exact root-qualified SFT start; no arbitrary command input",
+  "description": "Bounded runtime/Spot qualification or exact root-qualified SFT start; no arbitrary command input",
   "parameters": {
     "JobId": {"type": "String", "allowedPattern": "^[0-9a-f]{32}$", "interpolationType": "ENV_VAR"},
     "SpecSHA256": {"type": "String", "allowedPattern": "^[0-9a-f]{64}$", "interpolationType": "ENV_VAR"},
-    "Mode": {"type": "String", "default": "start", "allowedPattern": "^(start|qualify)$", "interpolationType": "ENV_VAR"}
+    "Mode": {"type": "String", "default": "start", "allowedPattern": "^(start|qualify|spot-qualify|spot-recover-check)$", "interpolationType": "ENV_VAR"}
   },
   "mainSteps": [{
     "action": "aws:runShellScript",

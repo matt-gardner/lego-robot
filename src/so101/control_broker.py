@@ -26,6 +26,7 @@ import uuid
 
 from so101.aws_inventory import require_no_gpu
 from so101.aws_recovery import recover as recover_checkpoint
+from so101.aws_qualification_recovery import evidence as qualification_evidence
 
 
 LOG = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ def validate_policy(policy: dict) -> None:
     allowed = {
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
         "gpu.start", "gpu.status", "gpu.logs", "gpu.stop",
-        "gpu.recover",
+        "gpu.recover", "gpu.recover_qualification",
     }
     identifiers = set()
     hashes = set()
@@ -331,7 +332,8 @@ class Broker:
                 raise ValueError("Resume checkpoint must match independently verified published recovery")
         cost = spec["max_hours"] * spec["max_usd_per_hour"]
         now = time.time()
-        with self.db:
+        with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
             active = self.db.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('stopped','failed')"
             ).fetchone()[0]
@@ -558,6 +560,21 @@ class Broker:
             prefix=spec["output_uri"], job_id=job_id, spec_sha256=job["digest"],
         )
 
+    def recover_qualification(self, owner: str, job_id: str) -> dict:
+        job = self.job(job_id, owner)
+        instance = self.owned_instance(job)
+        observed = time.time()
+        if instance["State"]["Name"] != "terminated":
+            raise ValueError("Qualification recovery requires the actual owned worker terminated")
+        spec = json.loads(job["spec"])
+        return qualification_evidence(
+            self.aws, self.recovery_root,
+            owner=self.policy["controller_role_arn"].split(":")[4],
+            prefix=spec["output_uri"], job_id=job_id, spec_sha256=job["digest"],
+            original_checkpoint=spec["checkpoint"], log_group=spec["log_group"],
+            termination_observed_at=observed,
+        )
+
     def dashboard(self, restart: bool) -> dict:
         service = self.policy["dashboard_service"]
         if service != "so101-web.service":
@@ -581,6 +598,7 @@ class Broker:
             "gpu.status": {"job_id"}, "gpu.logs": {"job_id"}, "gpu.stop": {"job_id"},
             "gpu.start": {"job_id"},
             "gpu.recover": {"job_id"},
+            "gpu.recover_qualification": {"job_id"},
         }
         if action not in fields or set(body) != fields[action]:
             raise ValueError("Unknown action or unexpected request fields")
@@ -653,6 +671,7 @@ def main() -> None:
     call.add_argument("action", choices=[
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
         "gpu.status", "gpu.logs", "gpu.stop", "gpu.start", "gpu.recover",
+        "gpu.recover_qualification",
     ])
     call.add_argument("--url", required=True)
     call.add_argument("--token-file", type=Path, required=True)

@@ -319,7 +319,8 @@ def qualify_worker(config: dict, *, job_id: str, spec_sha256: str,
 
 
 def stop_and_publish(config: dict, *, job_id: str, spec_sha256: str, stop_deadline: int,
-                     run=subprocess.run, wall=time.time, monotonic=time.monotonic) -> dict:
+                     run=subprocess.run, wall=time.time, monotonic=time.monotonic,
+                     publisher=None) -> dict:
     if (not re.fullmatch(r"[0-9a-f]{32}", job_id)
             or not re.fullmatch(r"[0-9a-f]{64}", spec_sha256) or type(stop_deadline) is not int):
         raise ValueError("Bounded stop requires exact job/specification/deadline")
@@ -351,8 +352,8 @@ def stop_and_publish(config: dict, *, job_id: str, spec_sha256: str, stop_deadli
             Path(config["attempts_root"]), job_id=job_id, spec_sha256=spec_sha256,
             docker_cli=config["docker_cli"], grace_seconds=grace, run=bounded_run,
         )
-        recovery = publish_stopped(config, job_id=job_id, spec_sha256=spec_sha256,
-                                   run=bounded_run)
+        publish = publish_stopped if publisher is None else publisher
+        recovery = publish(config, job_id=job_id, spec_sha256=spec_sha256, run=bounded_run)
         if monotonic() >= end or wall() >= stop_deadline:
             raise TimeoutError("Checkpoint publication exceeded total stop grace")
         return recovery
@@ -360,7 +361,8 @@ def stop_and_publish(config: dict, *, job_id: str, spec_sha256: str, stop_deadli
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("start", "qualify", "checkpoint-stop"))
+    parser.add_argument("action", choices=("start", "qualify", "spot-qualify",
+                                         "spot-recover-check", "checkpoint-stop"))
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--spec-sha256", required=True)
     parser.add_argument("--stop-deadline", type=int)
@@ -382,6 +384,11 @@ def main() -> None:
             Path(config["staging_root"]) / args.job_id, attempts,
             job_id=args.job_id, spec_sha256=args.spec_sha256,
         ))
+    elif args.action in {"spot-qualify", "spot-recover-check"}:
+        # Avoid the launcher/qualification stop-orchestration import cycle.
+        from so101.aws_spot_qualification import check_recovered, start
+        action = start if args.action == "spot-qualify" else check_recovered
+        print(json.dumps(action(config, job_id=args.job_id, spec_sha256=args.spec_sha256)))
     elif args.action == "qualify":
         print(json.dumps(qualify_worker(config, job_id=args.job_id,
                                        spec_sha256=args.spec_sha256)))
