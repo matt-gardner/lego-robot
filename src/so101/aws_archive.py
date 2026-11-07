@@ -12,6 +12,7 @@ import stat
 import tarfile
 
 from so101.cloud_checkpoint import fsync_directory, sha256
+from so101.aws_extract import MAX_MEMBERS
 
 
 _PRIVATE = {".git", ".ssh", ".aws", ".config", ".netrc", ".gitconfig",
@@ -48,7 +49,7 @@ def _scan(path: Path) -> tuple[tuple[int, int, int, int, int], str]:
 def inventory(root: Path, selections: list[str], *, hf_cache: bool,
               max_bytes: int, max_members: int) -> list[Entry]:
     if (type(max_bytes) is not int or max_bytes <= 0
-            or type(max_members) is not int or not 1 <= max_members <= 100_000
+            or type(max_members) is not int or not 1 <= max_members <= MAX_MEMBERS
             or not selections):
         raise ValueError("Explicit selections and positive byte/member ceilings are required")
     root = root.resolve(strict=True)

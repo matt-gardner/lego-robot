@@ -259,6 +259,9 @@ For HF_HOME use `--hf-cache --include hub/models--ORG--REPO` (repeat per approve
 model). Only `refs`, `snapshots`, and `blobs` are selected. Internal regular-file
 links are flattened; external/directory links and private/auth paths are rejected.
 Root `token`, `stored_tokens`, `xet`, and unrelated caches are never selected.
+Producer and extractor share a hard ceiling of200,000 members; each operator
+plan must still pin an explicit smaller measured budget (for example150,000
+for the large approved dataset), never an unbounded tree or implicit merging.
 The inventory counts every flattened copy, including repeated snapshot blobs,
 not `du`'s unique-inode size. Sources are rechecked by inode, size, mtime, ctime,
 and SHA256 during production. A failed command's partial output is not an artifact;

@@ -10,9 +10,12 @@ import tarfile
 from so101.cloud_checkpoint import atomic_json, fsync_directory, sha256
 
 
+MAX_MEMBERS = 200_000
+
+
 def extract(archive: Path, destination: Path, *, max_bytes: int, max_members: int) -> dict:
     if (type(max_bytes) is not int or max_bytes <= 0
-            or type(max_members) is not int or not 1 <= max_members <= 100_000):
+            or type(max_members) is not int or not 1 <= max_members <= MAX_MEMBERS):
         raise ValueError("Archive preparation requires explicit byte/member ceilings")
     descriptor = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as source:

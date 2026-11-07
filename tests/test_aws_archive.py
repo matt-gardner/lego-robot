@@ -107,3 +107,16 @@ def test_symlinked_parent_escape_rejected(tmp_path):
     (root / "alias").symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match="escapes"):
         aws_archive.inventory(root, ["alias/file"], **options(hf_cache=False))
+
+
+def test_large_explicit_member_budget_has_consistent_hard_ceiling(tmp_path):
+    root, _ = cache(tmp_path)
+    target = tmp_path / "large-budget.tar"
+    receipt = aws_archive.produce(root, [MODEL], target, **options(max_members=200_000))
+    restored = extract(target, tmp_path / "restored", max_bytes=1024, max_members=200_000)
+    assert restored["members"] == receipt["members"] == 3
+    with pytest.raises(ValueError, match="ceilings"):
+        aws_archive.inventory(root, [MODEL], **options(max_members=200_001))
+    with pytest.raises(ValueError, match="ceilings"):
+        extract(target, tmp_path / "invalid", max_bytes=1024, max_members=200_001)
+    assert not (tmp_path / "invalid").exists()
