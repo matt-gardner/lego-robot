@@ -415,7 +415,7 @@ class Broker:
                     "ec2", "run-instances", "--launch-template", json.dumps({
                         "LaunchTemplateId": spec["launch_template_id"],
                         "Version": spec["launch_template_version"],
-                    }), "--min-count", "1", "--max-count", "1", "--client-token", job["id"],
+                    }), "--count", "1", "--client-token", job["id"],
                     "--tag-specifications", json.dumps([
                         {"ResourceType": kind, "Tags": tags} for kind in ("instance", "volume")
                     ]),
