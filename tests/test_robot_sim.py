@@ -3,15 +3,20 @@ import json
 import numpy as np
 import pytest
 
-pytest.importorskip("mujoco")
-from so101.robot_sim import BeamSimulation, IMAGE_SHAPE, MODEL_ROOT, _prepare_recovery_start, training_command
+mujoco = pytest.importorskip("mujoco")
+from so101.robot_sim import (
+    BeamSimulation, DISTRACTOR_SIZES, IMAGE_SHAPE, INITIAL_PENETRATION_TOLERANCE,
+    LEGACY_SCENE_VERSION, MODEL_ROOT, SCENE_VERSION, _prepare_recovery_start,
+    restore_episode, training_command,
+)
+from so101.collect_difficulty_sim import configure_scene
 
 
 @pytest.fixture
 def sim():
     if not (MODEL_ROOT / "revision.json").exists():
         pytest.skip("Download the pinned model with robot_sim.py setup")
-    environment = BeamSimulation(render=False)
+    environment = BeamSimulation(render=False, scene_version=LEGACY_SCENE_VERSION)
     try:
         yield environment
     finally:
@@ -29,6 +34,105 @@ def test_seeded_resets_vary_arm_and_objects_without_exposing_object_state(sim):
     assert sim.initial == first
     assert sim.model.neq == 0
     assert sim.model.body("moving_jaw_so101_v1").id != sim.model.body("gripper").id
+
+
+def test_physical_props_and_studs_generate_contacts_without_duplicate_mass():
+    environment = BeamSimulation(render=False)
+    legacy = BeamSimulation(render=False, scene_version=LEGACY_SCENE_VERSION)
+    try:
+        environment.reset(10, real_scene=True)
+        assert environment.model.body("studded").mass == pytest.approx(legacy.model.body("studded").mass)
+        for name in DISTRACTOR_SIZES:
+            assert environment.model.body(name).mass > 0
+            assert environment.model.joint(f"{name}_free").type == mujoco.mjtJoint.mjJNT_FREE
+            environment.set_body_pose(name, [.45, 0., -.003])
+            mujoco.mj_forward(environment.model, environment.data)
+            geom = environment.model.geom(f"{name}_geom").id
+            assert any(
+                geom in (contact.geom1, contact.geom2) and contact.dist < 0
+                for contact in environment.data.contact
+            )
+            environment.set_body_pose(name, [.45, 0., .03])
+            for _ in range(200):
+                mujoco.mj_step(environment.model, environment.data)
+            assert environment.position(name)[2] == pytest.approx(
+                -.003 + DISTRACTOR_SIZES[name][2], abs=INITIAL_PENETRATION_TOLERANCE,
+            )
+            environment.set_body_pose(name, [0., 0., -1.])
+        stud = int(environment.studded_studs[0])
+        point = environment.data.geom_xpos[stud].copy()
+        point[2] += .0065
+        environment.set_body_pose("green_piece", point)
+        mujoco.mj_forward(environment.model, environment.data)
+        assert any(stud in (contact.geom1, contact.geom2) for contact in environment.data.contact)
+    finally:
+        environment.close()
+        legacy.close()
+
+
+def test_physical_initialization_rejects_overlap_and_preserves_full_restore():
+    environment = BeamSimulation(render=False)
+    try:
+        for seed in range(12):
+            environment.reset(seed, varied_layout=True, real_scene=True, color_targets=True)
+            assert not environment.initial_penetrations()
+            assert environment.initial["scene_version"] == SCENE_VERSION
+        expected = environment.data.qpos.copy()
+        expected_velocity = environment.data.qvel.copy()
+        expected_control = environment.data.ctrl.copy()
+        metadata = {"initial": environment.initial, "target": "short", "task": "grasp"}
+        environment.step(environment.data.ctrl[environment.actuators], "hold")
+        restore_episode(environment, metadata)
+        np.testing.assert_array_equal(environment.data.qpos, expected)
+        np.testing.assert_array_equal(environment.data.qvel, expected_velocity)
+        np.testing.assert_array_equal(environment.data.ctrl, expected_control)
+        environment.set_body_pose("green_piece", environment.position("short"))
+        with pytest.raises(ValueError, match="Initial scene interpenetrates"):
+            environment.settle_initial_scene()
+        assert max(value["depth_m"] for value in environment.initial_penetrations()) > INITIAL_PENETRATION_TOLERANCE
+    finally:
+        environment.close()
+
+
+def test_untagged_legacy_episode_keeps_legacy_physics_and_pose_dimensions(sim):
+    sim.reset(10, real_scene=True)
+    metadata = {"initial": sim.initial, "target": "short", "task": "grasp"}
+    environment = BeamSimulation(render=False)
+    try:
+        restore_episode(environment, metadata)
+        assert environment.scene_version == LEGACY_SCENE_VERSION
+        assert environment.model.nq == 34
+        for name in DISTRACTOR_SIZES:
+            assert environment.model.geom(f"{name}_geom").contype == 0
+        assert np.all(environment.model.geom_contype[environment.studded_studs] == 0)
+        for name, position in sim.initial["objects"].items():
+            np.testing.assert_allclose(environment.position(name), position)
+    finally:
+        environment.close()
+
+
+@pytest.mark.parametrize("task", ["grasp", "view", "push", "place"])
+@pytest.mark.parametrize("level", [0, 3])
+def test_corrected_scene_experts_with_valid_solid_starts(task, level):
+    environment = BeamSimulation()
+    try:
+        case = configure_scene(environment, task, level, 90000 + level)
+        assert not environment.initial_penetrations()
+        assert case["difficulty"]["level"] == level
+        if task == "view" and level == 3:
+            assert case["difficulty"]["measurements"]["initial_visible_pixels"] == 0
+        result = (
+            environment.demonstrate_obstacle_grasp(case["target"])
+            if task == "grasp" and level == 3 else
+            environment.demonstrate_command(task, case["target"], case["destination"])
+        )
+        assert result["success"], result
+        if task in ("push", "place"):
+            assert result["destination_error_m"] <= case["constraints"]["destination_tolerance_m"]
+        if task == "grasp" and level == 3:
+            assert result["obstacle_contacts"] == 0
+    finally:
+        environment.close()
 
 
 def test_joint_units_and_gripper_mapping_round_trip(sim):

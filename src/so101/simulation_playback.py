@@ -12,7 +12,9 @@ import cv2
 import mujoco
 import numpy as np
 
-from so101.robot_sim import BeamSimulation, restore_episode, scene_xml
+from so101.robot_sim import (
+    BeamSimulation, LEGACY_SCENE_VERSION, SCENE_VERSION, restore_episode, scene_xml,
+)
 
 
 def file_hash(path: Path) -> str:
@@ -20,10 +22,10 @@ def file_hash(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def model_fingerprint(model_root: Path) -> str:
+def model_fingerprint(model_root: Path, scene_version: int = LEGACY_SCENE_VERSION) -> str:
     digest = hashlib.sha256(mujoco.__version__.encode())
     digest.update(file_hash(Path(__file__).with_name("robot_sim.py")).encode())
-    digest.update(scene_xml(model_root).encode())
+    digest.update(scene_xml(model_root, scene_version).encode())
     for path in sorted(model_root.rglob("*")):
         if path.is_file():
             digest.update(str(path.relative_to(model_root)).encode())
@@ -33,27 +35,29 @@ def model_fingerprint(model_root: Path) -> str:
     return digest.hexdigest()
 
 
-def prepare_model_cache(model_root: Path, cache: Path) -> None:
+def prepare_model_cache(model_root: Path, cache: Path, scene_version: int = LEGACY_SCENE_VERSION) -> None:
     """Compile outside the memory-limited dashboard, preserving the full model."""
-    fingerprint = model_fingerprint(model_root)
-    model = mujoco.MjModel.from_xml_string(scene_xml(model_root))
+    fingerprint = model_fingerprint(model_root, scene_version)
+    model = mujoco.MjModel.from_xml_string(scene_xml(model_root, scene_version))
     temporary = cache.with_suffix(".partial.mjb")
     try:
         mujoco.mj_saveModel(model, str(temporary))
-        if model_fingerprint(model_root) != fingerprint:
+        if model_fingerprint(model_root, scene_version) != fingerprint:
             raise ValueError("Playback model changed during compilation")
         binary_hash = file_hash(temporary)
         temporary.replace(cache)
         cache.with_suffix(".json").write_text(json.dumps({
-            "fingerprint": fingerprint, "sha256": binary_hash,
+            "fingerprint": fingerprint, "sha256": binary_hash, "scene_version": scene_version,
         }))
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def load_model_cache(model_root: Path, cache: Path) -> mujoco.MjModel:
+def load_model_cache(model_root: Path, cache: Path, scene_version: int = LEGACY_SCENE_VERSION) -> mujoco.MjModel:
     metadata = json.loads(cache.with_suffix(".json").read_text())
-    if metadata["fingerprint"] != model_fingerprint(model_root):
+    if metadata.get("scene_version", LEGACY_SCENE_VERSION) != scene_version:
+        raise ValueError("Playback model cache has the wrong scene version")
+    if metadata["fingerprint"] != model_fingerprint(model_root, scene_version):
         raise ValueError("Playback model cache is stale; rebuild with --prepare-model-cache")
     if metadata["sha256"] != file_hash(cache):
         raise ValueError("Playback model cache is corrupt; rebuild with --prepare-model-cache")
@@ -66,8 +70,13 @@ def render(source: Path, output: Path, model_root: Path, evidence: Path | None =
     metadata = json.loads((source / "episode.json").read_text())
     rows = [json.loads(line) for line in (source / "frames.jsonl").read_text().splitlines()]
     recording = json.loads(evidence.read_text()) if evidence else None
-    model = load_model_cache(model_root, model_cache) if model_cache is not None else None
-    sim = BeamSimulation(model_root, model=model)
+    version = int(metadata["initial"].get("scene_version", LEGACY_SCENE_VERSION))
+    if recording and int(recording.get("scene_version", version)) != version:
+        raise ValueError("Rollout and source scene versions differ")
+    if model_cache is not None and version != LEGACY_SCENE_VERSION:
+        model_cache = model_cache.with_name(f"{model_cache.stem}-v{version}{model_cache.suffix}")
+    model = load_model_cache(model_root, model_cache, version) if model_cache is not None else None
+    sim = BeamSimulation(model_root, model=model, scene_version=version)
     encoder = None
     try:
         restore_episode(sim, metadata)
@@ -91,7 +100,10 @@ def render(source: Path, output: Path, model_root: Path, evidence: Path | None =
             actions = [row["action"] for row in rows]
             snapshots = [row["qpos"] for row in rows] if rows and all("qpos" in row for row in rows) else None
             sequence = range(len(rows))
-            labels = ("Overview (recorded physics)" if snapshots else "Overview (action reconstruction)", "Wrist (original recording)")
+            labels = ("Overview (recorded physics)" if snapshots else "Overview (legacy reconstruction)",
+                      "Wrist (original recording)")
+        if version == SCENE_VERSION and not snapshots:
+            raise ValueError("Version 2 playback requires recorded physics states")
         if not actions:
             raise ValueError("No recorded actions available for playback")
         encoder = subprocess.Popen([
@@ -154,11 +166,16 @@ if __name__ == "__main__":
                         help="Validated compiled model for memory-limited playback")
     parser.add_argument("--prepare-model-cache", action="store_true",
                         help="Compile --model-cache outside the dashboard service")
+    parser.add_argument("--scene-version", type=int, choices=(LEGACY_SCENE_VERSION, SCENE_VERSION),
+                        default=LEGACY_SCENE_VERSION, help="Scene version to compile (legacy by default)")
     args = parser.parse_args()
     if args.prepare_model_cache:
         if args.model_cache is None:
             parser.error("--prepare-model-cache requires --model-cache")
-        prepare_model_cache(args.model_root, args.model_cache)
+        cache = args.model_cache
+        if args.scene_version != LEGACY_SCENE_VERSION:
+            cache = cache.with_name(f"{cache.stem}-v{args.scene_version}{cache.suffix}")
+        prepare_model_cache(args.model_root, cache, args.scene_version)
     else:
         if args.source is None or args.output is None:
             parser.error("playback requires --source and --output")

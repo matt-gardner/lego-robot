@@ -35,6 +35,15 @@ TASK = "Pick up the {target} gray beam."
 OBJECT_NAMES = ("studded", "hollow", "short", "wide")
 DESTINATION_NAMES = ("goal_left", "goal_right")
 OBSTACLE_NAMES = ("obstacle_box",)
+LEGACY_SCENE_VERSION = 1
+SCENE_VERSION = 2
+INITIAL_PENETRATION_TOLERANCE = .0002
+DISTRACTOR_SIZES = {
+    "green_plate_a": (.11, .045, .002),
+    "green_plate_b": (.075, .04, .002),
+    "green_piece": (.025, .012, .006),
+    "gray_clutter": (.055, .007, .0048),
+}
 TARGET_COLORS = {
     "teal": np.array([.02, .55, .58]),
     "orange": np.array([.93, .34, .04]),
@@ -47,6 +56,7 @@ TARGET_COLORS = {
 
 def restore_episode(sim: BeamSimulation, metadata: dict) -> tuple[str, str | None, list[tuple[str, str]]]:
     initial = metadata["initial"]
+    sim.use_scene_version(int(initial.get("scene_version", LEGACY_SCENE_VERSION)))
     appearance = initial.get("appearance", {})
     labels = appearance.get("target_labels", {})
     color_targets = metadata.get("color_targets")
@@ -80,7 +90,7 @@ def restore_episode(sim: BeamSimulation, metadata: dict) -> tuple[str, str | Non
     if "table_rgba" in appearance:
         sim.model.geom_rgba[sim.model.geom("table").id] = appearance["table_rgba"]
     for name, position in appearance.get("distractors", {}).items():
-        sim.model.body_pos[sim.distractors[name]] = position
+        sim.set_body_pose(name, position)
     for name, position in appearance.get("destinations", {}).items():
         sim.model.body_pos[sim.model.body(name).id] = position
     for name, position in appearance.get("obstacles", {}).items():
@@ -90,6 +100,17 @@ def restore_episode(sim: BeamSimulation, metadata: dict) -> tuple[str, str | Non
         color = label.split()[0]
         if color in TARGET_COLORS:
             sim.model.geom_rgba[sim.beam_geoms[name], :3] = TARGET_COLORS[color]
+    if sim.scene_version == SCENE_VERSION:
+        pose = np.asarray(initial["qpos"], dtype=np.float64)
+        velocity = np.asarray(initial["qvel"], dtype=np.float64)
+        control = np.asarray(initial["ctrl"], dtype=np.float64)
+        if (pose.shape != sim.data.qpos.shape or velocity.shape != sim.data.qvel.shape
+                or control.shape != sim.data.ctrl.shape or not np.isfinite(pose).all()
+                or not np.isfinite(velocity).all() or not np.isfinite(control).all()):
+            raise ValueError("Invalid initial recorded physics state")
+        sim.data.qpos[:] = pose
+        sim.data.qvel[:] = velocity
+        sim.data.ctrl[:] = control
     mujoco.mj_forward(sim.model, sim.data)
     sim.initial = initial
     sim.hide_unseen_centers = bool(metadata.get("perception", {}).get("hide_unseen_centers", False))
@@ -127,7 +148,9 @@ def fetch_model(root: Path) -> None:
     (root / "revision.json").write_text(json.dumps({"commit": MODEL_COMMIT, "url": MODEL_URL}))
 
 
-def scene_xml(root: Path) -> str:
+def scene_xml(root: Path, scene_version: int = SCENE_VERSION) -> str:
+    if scene_version not in (LEGACY_SCENE_VERSION, SCENE_VERSION):
+        raise ValueError(f"Unsupported scene version: {scene_version}")
     revision = json.loads((root / "revision.json").read_text())
     if revision["commit"] != MODEL_COMMIT:
         raise ValueError("Model revision mismatch; rerun robot_sim.py setup")
@@ -212,6 +235,21 @@ def scene_xml(root: Path) -> str:
     )
     gripper = world.find(".//body[@name='gripper']")
     ET.SubElement(gripper, "site", name="grasp", pos="0 0 -.096", size=".002", group="3")
+    if scene_version == SCENE_VERSION:
+        for name in DISTRACTOR_SIZES:
+            body = world.find(f"body[@name='{name}']")
+            body.set("pos", "0 0 0")
+            ET.SubElement(body, "freejoint", name=f"{name}_free")
+            geom = body.find("geom")
+            geom.set("contype", "1")
+            geom.set("conaffinity", "1")
+            geom.set("density", "1040")
+            geom.set("friction", ".8 .005 .0001")
+        for geom in world.find("body[@name='studded']").findall("geom"):
+            geom.set("contype", "1")
+            geom.set("conaffinity", "1")
+        for name in DESTINATION_NAMES:
+            world.find(f"body[@name='{name}']/geom").set("size", ".027 .00001")
     return ET.tostring(xml, encoding="unicode")
 
 
@@ -219,8 +257,13 @@ class BeamSimulation:
     """The expert sees object poses; exported policy observations never do."""
 
     def __init__(self, model_root: Path = MODEL_ROOT, *, render: bool = True,
-                 model: mujoco.MjModel | None = None):
-        self.model = model if model is not None else mujoco.MjModel.from_xml_string(scene_xml(model_root))
+                 model: mujoco.MjModel | None = None, scene_version: int = SCENE_VERSION):
+        self.model_root = model_root
+        self.scene_version = scene_version
+        self.model = model if model is not None else mujoco.MjModel.from_xml_string(
+            scene_xml(model_root) if scene_version == SCENE_VERSION
+            else scene_xml(model_root, scene_version)
+        )
         self.data = mujoco.MjData(self.model)
         self.scratch = mujoco.MjData(self.model)
         self.joints = np.array([self.model.joint(name).id for name in JOINTS])
@@ -268,6 +311,97 @@ class BeamSimulation:
         }
         self.active_obstacles: list[str] = []
         self.obstacle_contact_events: list[dict[str, Any]] = []
+
+    def use_scene_version(self, version: int) -> None:
+        if version not in (LEGACY_SCENE_VERSION, SCENE_VERSION):
+            raise ValueError(f"Unsupported scene version: {version}")
+        if version != self.scene_version:
+            render = self.renderer is not None
+            fps = self.fps
+            self.close()
+            self.__init__(self.model_root, render=render, scene_version=version)
+            self.fps = fps
+
+    def set_body_pose(self, name: str, position, quaternion=None) -> None:
+        body = self.model.body(name).id
+        if self.scene_version == SCENE_VERSION and name in DISTRACTOR_SIZES:
+            joint = self.model.joint(f"{name}_free")
+            address = joint.qposadr[0]
+            self.data.qpos[address:address + 7] = [
+                *position, *(quaternion if quaternion is not None else [1., 0., 0., 0.]),
+            ]
+            self.data.qvel[joint.dofadr[0]:joint.dofadr[0] + 6] = 0
+            visible = float(position[2]) > -.1
+            geoms = np.flatnonzero(self.model.geom_bodyid == body)
+            self.model.geom_contype[geoms] = int(visible)
+            self.model.geom_conaffinity[geoms] = int(visible)
+            self.model.body_gravcomp[body] = float(not visible)
+        else:
+            self.model.body_pos[body] = position
+            if quaternion is not None:
+                self.model.body_quat[body] = quaternion
+
+    def initial_penetrations(self) -> list[dict[str, Any]]:
+        mujoco.mj_forward(self.model, self.data)
+        return [
+            {
+                "geom1": self.model.geom(int(contact.geom1)).name,
+                "geom2": self.model.geom(int(contact.geom2)).name,
+                "depth_m": float(-contact.dist),
+            }
+            for contact in self.data.contact
+            if contact.dist < -INITIAL_PENETRATION_TOLERANCE
+        ]
+
+    def place_prop(self, name: str, position, quaternion, rng) -> None:
+        self.set_body_pose(name, position, quaternion)
+        if self.scene_version == LEGACY_SCENE_VERSION:
+            return
+        geom = self.model.geom(f"{name}_geom").id
+        for _ in range(100):
+            mujoco.mj_forward(self.model, self.data)
+            if not any(
+                contact.dist < -INITIAL_PENETRATION_TOLERANCE
+                and geom in (contact.geom1, contact.geom2)
+                for contact in self.data.contact
+            ):
+                return
+            self.set_body_pose(name, [
+                rng.uniform(.06, .4), rng.uniform(-.32, .32), float(position[2]) + .001,
+            ], quaternion)
+        raise ValueError(f"Cannot place physical prop without penetration: {name}")
+
+    def settle_initial_scene(self) -> None:
+        if self.scene_version == LEGACY_SCENE_VERSION:
+            return
+        penetrations = self.initial_penetrations()
+        if penetrations:
+            raise ValueError(f"Initial scene interpenetrates: {penetrations}")
+        self.data.qvel[:] = 0
+        for _ in range(100):
+            mujoco.mj_step(self.model, self.data)
+        if not np.isfinite(self.data.qpos).all() or any(w.number for w in self.data.warning):
+            raise RuntimeError("Initial simulation became unstable")
+        penetrations = self.initial_penetrations()
+        if penetrations:
+            raise ValueError(f"Settled scene interpenetrates: {penetrations}")
+
+    def snapshot_initial_physics(self) -> None:
+        self.initial.update(
+            arm_state=self.state().tolist(),
+            objects={name: self.position(name).tolist() for name in OBJECT_NAMES},
+            yaws=dict(self.yaws),
+        )
+        if self.scene_version == SCENE_VERSION:
+            self.initial.update(
+                scene_version=self.scene_version,
+                qpos=self.data.qpos.tolist(),
+                qvel=self.data.qvel.tolist(),
+                ctrl=self.data.ctrl.tolist(),
+            )
+            self.initial["appearance"]["distractors"] = {
+                name: self.position(name).tolist() for name in self.distractors
+            }
 
     def close(self):
         if self.renderer is not None:
@@ -514,8 +648,9 @@ class BeamSimulation:
         self.data.qpos[self.qadr] = q
         self.data.ctrl[self.actuators] = q
         mujoco.mj_forward(self.model, self.data)
-        for _ in range(100):
-            mujoco.mj_step(self.model, self.data)
+        if self.scene_version == LEGACY_SCENE_VERSION:
+            for _ in range(100):
+                mujoco.mj_step(self.model, self.data)
         self.rows = []
         self.frame_start = self.data.time
         self.initial = {
@@ -539,7 +674,7 @@ class BeamSimulation:
             }
             for name, color in zip(OBJECT_NAMES, color_names, strict=True):
                 self.model.geom_rgba[self.beam_geoms[name], :3] = TARGET_COLORS[color]
-            if rng.random() < .5:
+            if rng.random() < .5 and self.scene_version == LEGACY_SCENE_VERSION:
                 self.model.geom_rgba[self.studded_studs, 3] = 0
         else:
             self.target_labels = {name: name for name in OBJECT_NAMES}
@@ -554,26 +689,29 @@ class BeamSimulation:
         for name, body_id in self.distractors.items():
             if real_scene:
                 x, y, z = distractor_layout[name]
-                self.model.body_pos[body_id] = [
+                position = [
                     x + rng.uniform(-.015, .015),
                     y + rng.uniform(-.015, .015),
                     z,
                 ]
                 yaw = rng.uniform(-.5, .5)
-                self.model.body_quat[body_id] = [math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)]
+                quaternion = [math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)]
+                self.place_prop(name, position, quaternion, rng)
                 if color_targets:
                     color = rng.choice([
                         name for name in TARGET_COLORS if name not in color_names
                     ])
                     self.model.geom_rgba[self.model.geom(f"{name}_geom").id, :3] = TARGET_COLORS[color]
             else:
-                self.model.body_pos[body_id] = [0, 0, -1]
+                self.set_body_pose(name, [0, 0, -1])
         goal_positions = {
             "goal_left": (.155 + rng.uniform(-.012, .012), -.100 + rng.uniform(-.008, .008)),
             "goal_right": (.155 + rng.uniform(-.012, .012), .100 + rng.uniform(-.008, .008)),
         }
         for name, (x, y) in goal_positions.items():
-            self.model.body_pos[self.model.body(name).id] = [x, y, TABLE_Z + .001]
+            self.model.body_pos[self.model.body(name).id] = [
+                x, y, TABLE_Z + (.00002 if self.scene_version == SCENE_VERSION else .001)
+            ]
         for name in OBSTACLE_NAMES:
             self.model.body_pos[self.model.body(name).id] = [0, 0, -1]
         mujoco.mj_forward(self.model, self.data)
@@ -584,7 +722,7 @@ class BeamSimulation:
             "table_rgba": self.model.geom_rgba[self.model.geom("table").id].tolist(),
             "real_scene": real_scene,
             "distractors": {
-                name: self.model.body_pos[body_id].tolist()
+                name: self.position(name).tolist()
                 for name, body_id in self.distractors.items()
             },
             "target_labels": self.target_labels,
@@ -596,6 +734,10 @@ class BeamSimulation:
                 name: self.position(name).tolist() for name in OBSTACLE_NAMES
             },
         }
+        if self.scene_version == SCENE_VERSION:
+            self.settle_initial_scene()
+            self.snapshot_initial_physics()
+            self.frame_start = self.data.time
 
     def place_grasp_obstacle(
         self,
@@ -1160,6 +1302,7 @@ task: str | None = None,):
         "objects": {name: sim.position(name).tolist() for name in sim.yaws},
         "yaws": sim.yaws, "recovery_prefix": {"steps": executed, "error": error},
     }
+    sim.snapshot_initial_physics()
     sim.rows = []
     sim.frame_start = sim.data.time
 

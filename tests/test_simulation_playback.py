@@ -1,5 +1,8 @@
 import json
+import shutil
+import subprocess
 
+import cv2
 import mujoco
 import numpy as np
 import pytest
@@ -14,7 +17,7 @@ def model_root(tmp_path, monkeypatch):
     root.mkdir()
     xml = '<mujoco><worldbody><body><freejoint/><geom size=".1"/></body></worldbody></mujoco>'
     (root / "model.xml").write_text(xml)
-    monkeypatch.setattr(playback, "scene_xml", lambda path: (path / "model.xml").read_text())
+    monkeypatch.setattr(playback, "scene_xml", lambda path, version=1: (path / "model.xml").read_text())
     return root
 
 
@@ -59,7 +62,7 @@ def test_corrupt_compiled_model_is_not_loaded(model_root, tmp_path):
 def test_model_changed_during_compilation_is_not_published(model_root, tmp_path, monkeypatch):
     cache = tmp_path / "playback.mjb"
     fingerprints = iter(["before", "after"])
-    monkeypatch.setattr(playback, "model_fingerprint", lambda root: next(fingerprints))
+    monkeypatch.setattr(playback, "model_fingerprint", lambda root, version=1: next(fingerprints))
     with pytest.raises(ValueError, match="changed during compilation"):
         playback.prepare_model_cache(model_root, cache)
     assert not cache.exists()
@@ -73,6 +76,56 @@ def test_cache_manifest_records_binary_integrity(model_root, tmp_path):
     metadata = json.loads(cache.with_suffix(".json").read_text())
     assert metadata["fingerprint"] == playback.model_fingerprint(model_root)
     assert len(metadata["sha256"]) == 64
+
+
+def test_scene_versions_cannot_share_a_compiled_playback_model(model_root, tmp_path):
+    cache = tmp_path / "playback.mjb"
+    playback.prepare_model_cache(model_root, cache, robot_sim.SCENE_VERSION)
+    with pytest.raises(ValueError, match="wrong scene version"):
+        playback.load_model_cache(model_root, cache)
+    assert playback.load_model_cache(model_root, cache, robot_sim.SCENE_VERSION).nq == 7
+
+
+@pytest.mark.parametrize("version", [robot_sim.LEGACY_SCENE_VERSION, robot_sim.SCENE_VERSION])
+def test_real_recorded_playback_uses_its_version_and_preserves_source_files(tmp_path, version):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("Playback requires the documented ffmpeg runtime")
+    source = tmp_path / "episode"
+    (source / "wrist").mkdir(parents=True)
+    environment = robot_sim.BeamSimulation(scene_version=version)
+    try:
+        environment.reset(10, real_scene=True, color_targets=True)
+        initial = environment.initial
+        environment.episode_root = source
+        for _ in range(2):
+            environment.step(environment.data.ctrl[environment.actuators], "hold")
+        rows = environment.rows
+    finally:
+        environment.close()
+    del environment
+    (source / "episode.json").write_text(json.dumps({
+        "initial": initial, "task": "grasp", "target": "short", "fps": 10,
+    }))
+    if version == robot_sim.LEGACY_SCENE_VERSION:
+        rows = [{key: value for key, value in row.items() if key != "qpos"} for row in rows]
+    (source / "frames.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    before = {path: playback.file_hash(path) for path in source.rglob("*") if path.is_file()}
+    output = tmp_path / "movie.mp4"
+    base_cache = tmp_path / "playback.mjb"
+    cache = base_cache if version == robot_sim.LEGACY_SCENE_VERSION else (
+        tmp_path / f"playback-v{version}.mjb"
+    )
+    playback.prepare_model_cache(robot_sim.MODEL_ROOT, cache, version)
+    playback.render(source, output, robot_sim.MODEL_ROOT, model_cache=base_cache)
+    result = subprocess.run([
+        "ffmpeg", "-v", "error", "-i", str(output), "-f", "rawvideo",
+        "-pix_fmt", "rgb24", "-",
+    ], capture_output=True, check=True)
+    frames = np.frombuffer(result.stdout, dtype=np.uint8).reshape(-1, 264, 640, 3)
+    assert len(frames) == 2
+    original = cv2.cvtColor(cv2.imread(str(source / rows[0]["image"])), cv2.COLOR_BGR2RGB)
+    assert np.mean(np.abs(frames[0, 24:, 320:].astype(float) - original)) < 8
+    assert before == {path: playback.file_hash(path) for path in before}
 
 
 @pytest.mark.parametrize("supplied", [False, True])

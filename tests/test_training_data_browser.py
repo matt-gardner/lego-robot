@@ -98,6 +98,7 @@ def test_bounded_recording_and_browser_actual_frames(dataset):
     class Sim:
         fps = 10
         data = SimpleNamespace(qpos=np.zeros(34))
+        scene_version = 1
         def image(self): return np.zeros((24, 32, 3), dtype=np.uint8)
         def state(self): return np.ones(6, dtype=np.float32)
     sim = Sim()

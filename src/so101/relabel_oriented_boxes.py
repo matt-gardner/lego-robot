@@ -8,7 +8,7 @@ import shutil
 
 import numpy as np
 
-from so101.robot_sim import BeamSimulation, MODEL_ROOT
+from so101.robot_sim import BeamSimulation, LEGACY_SCENE_VERSION, MODEL_ROOT
 
 
 def relabel(
@@ -45,6 +45,7 @@ def relabel(
                 json.loads(line)
                 for line in (source_episode / "frames.jsonl").read_text().splitlines()
             ]
+            sim.use_scene_version(int(metadata["initial"].get("scene_version", LEGACY_SCENE_VERSION)))
             sim.reset(
                 metadata["initial"]["seed"],
                 varied_layout=metadata["initial"]["varied_layout"],

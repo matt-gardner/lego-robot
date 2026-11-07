@@ -47,6 +47,25 @@ binary checksum before loading; rebuild explicitly when a check fails.
 Without this setting, existing XML-based simulation/playback is unchanged.
 This cache is dashboard-only and does not load a policy or authorize training.
 
+New simulations use scene version 2: Lego props are movable colliding bodies,
+studs have contacts without adding duplicate shell mass, and initial solid
+placements are checked before and after settling (maximum permitted penetration
+0.2 mm). Destination regions are flat, nonphysical annotations, not solid
+obstacles. Invalid initial scenes fail explicitly rather than recording an
+interpenetrating start. New episode initials retain the scene version and full
+joint positions/velocities and actuator targets; recorded frames retain full
+joint positions.
+
+Untagged historical episodes use version 1 geometry and initialization for
+playback and evaluation. Their original wrist JPEGs, actions, labels and metrics
+are not rewritten. Legacy episodes without full joint positions show a **legacy
+action reconstruction**, not corrected physics or original overview footage.
+Changing future physics cannot repair those historical recordings. The existing
+cache command compiles version 1; additionally run it with `--scene-version 2`
+to compile the sibling `so101-v2.mjb` for new episodes. Both caches must be
+rebuilt after simulator source changes before restarting the dashboard.
+No dataset regeneration or training is performed by scene updates.
+
 Cold movie preparation returns JSON HTTP 202 promptly while one bounded
 background renderer works; the browser polls until JSON HTTP 200 reports
 ready. Other recordings wait without adding renderer jobs. This avoids the

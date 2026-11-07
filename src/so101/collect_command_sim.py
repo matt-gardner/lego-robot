@@ -154,6 +154,7 @@ def collect(
                             "error": recovery_error,
                         },
                     }
+                    sim.snapshot_initial_physics()
                     sim.rows = []
                     sim.frame_start = sim.data.time
                     recovery = sim.initial["recovery_prefix"]

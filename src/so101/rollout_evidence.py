@@ -18,6 +18,7 @@ class RolloutRecorder:
             "fps": sim.fps, "scope": "policy suffix after expert assistance",
             "actions": [], "states": [], "frames": [],
             "qpos": [sim.data.qpos.tolist()],
+            "scene_version": sim.scene_version,
         }
         self.capture(sim)
 

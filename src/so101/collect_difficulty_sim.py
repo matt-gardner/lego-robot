@@ -11,7 +11,10 @@ import mujoco
 import numpy as np
 
 from so101.cloud_checkpoint import atomic_json
-from so101.robot_sim import BeamSimulation, MODEL_ROOT, MODEL_COMMIT, OBJECT_NAMES, TABLE_Z
+from so101.robot_sim import (
+    BeamSimulation, DISTRACTOR_SIZES, MODEL_ROOT, MODEL_COMMIT, OBJECT_NAMES,
+    SCENE_VERSION, TABLE_Z,
+)
 
 
 TASKS = ("grasp", "view", "push", "place")
@@ -40,8 +43,9 @@ def snapshot(sim: BeamSimulation) -> None:
         ("destinations", sim.destination_geoms),
         ("obstacles", sim.obstacle_geoms),
     ):
-        appearance[key] = {name: sim.model.body_pos[sim.model.body(name).id].tolist()
+        appearance[key] = {name: sim.position(name).tolist()
                            for name in names}
+    sim.snapshot_initial_physics()
 
 
 def arm_at(sim: BeamSimulation, point: np.ndarray, yaw: float) -> None:
@@ -63,7 +67,11 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
     destination = "goal_right" if task in ("push", "place") else None
     for index, name in enumerate(OBJECT_NAMES):
         address = sim.model.joint(f"{name}_free").qposadr[0]
-        position = [.30, -.21 + index * .035, TABLE_Z + .0058]
+        position = (
+            [.38, -.30 + index * .10, TABLE_Z + .0058]
+            if sim.scene_version == SCENE_VERSION else
+            [.30, -.21 + index * .035, TABLE_Z + .0058]
+        )
         if name == target:
             position[:2] = [.22, .025 if level == 0 else .12]
         yaw = float(rng.uniform(-.12, .12) if level == 0 else rng.uniform(-.5, .5))
@@ -71,20 +79,27 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
         sim.data.qpos[address:address + 7] = [
             *position, math.cos(yaw / 2), 0., 0., math.sin(yaw / 2),
         ]
-    for index, body in enumerate(sim.distractors.values()):
-        sim.model.body_pos[body] = (
-            [.16 + index * .025, -.10, TABLE_Z + .005]
-            if level >= 2 else [0., 0., -1.]
-        )
+    for name in sim.distractors:
+        sim.set_body_pose(name, [0., 0., -1.])
+    if level >= 2:
+        for index, name in enumerate(sim.distractors):
+            sim.place_prop(
+                name, [.16 + index * .025, -.10, TABLE_Z + DISTRACTOR_SIZES[name][2] + .001],
+                [1., 0., 0., 0.], rng,
+            )
     if destination:
         goals = ([.22, -.06], [.20, .015], [.15, -.08], [.15, -.12]) if task == "push" else (
             [.17, -.025], [.15, .02], [.15, -.08], [.15, -.12])
         goal = goals[level]
-        sim.model.body_pos[sim.model.body(destination).id] = [*goal, TABLE_Z + .001]
+        sim.model.body_pos[sim.model.body(destination).id] = [
+            *goal, TABLE_Z + (.00002 if sim.scene_version == SCENE_VERSION else .001)
+        ]
     mujoco.mj_forward(sim.model, sim.data)
     position = sim.position(target).copy()
     yaw = sim.yaws[target] + math.pi / 2
     arm_at(sim, np.r_[position[:2] + ([0., 0.] if level == 0 else [0., -.10]), .075], yaw)
+    sim.settle_initial_scene()
+    position = sim.position(target).copy()
     obstacles = []
     if task == "grasp" and level == 3:
         sim.place_grasp_obstacle(target)
@@ -115,7 +130,11 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
         else:
             obstacle_id = sim.model.body("obstacle_box").id
             found = False
-            for dx, dy in ((-.06, .02), (-.08, .02), (-.05, -.02), (0., -.03)):
+            camera_starts = [(-.06, .02), (-.08, .02), (-.05, -.02), (0., -.03)]
+            if sim.scene_version == SCENE_VERSION:
+                camera_starts = [(0., -.20), (-.05, -.25), (0., -.25), (.05, -.20),
+                                 (-.10, 0.), (0., -.10)] + camera_starts
+            for dx, dy in camera_starts:
                 sim.model.body_pos[obstacle_id] = [0., 0., -1.]
                 try:
                     arm_at(sim, np.r_[position[:2] + [dx, dy], .075], yaw)
@@ -126,7 +145,10 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
                 if unoccluded < 12:
                     continue
                 camera = sim.data.cam_xpos[sim.model.camera("wrist_cam").id].copy()
-                for fraction in (.45, .55, .65, .75):
+                fractions = (.25, .35, .45, .55, .65, .75) if sim.scene_version == SCENE_VERSION else (
+                    .45, .55, .65, .75
+                )
+                for fraction in fractions:
                     blocker = position + fraction * (camera - position)
                     blocker[2] = TABLE_Z + .045
                     sim.model.body_pos[obstacle_id] = blocker
@@ -139,6 +161,8 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
                             contact.geom2 in obstacle_geoms and contact.geom1 in target_geoms
                         ) for contact in sim.data.contact
                     )
+                    if sim.scene_version == SCENE_VERSION:
+                        interpenetrates = bool(sim.initial_penetrations())
                     if interpenetrates:
                         continue
                     visible = int(sim.entity_mask(target).sum())
@@ -153,7 +177,9 @@ def configure_scene(sim: BeamSimulation, task: str, level: int, seed: int) -> di
             obstacles = ["obstacle_box"]
             sim.configure_command(task, [(target, "object"), ("obstacle_box", "obstacle")])
         sim.hide_unseen_centers = level >= 2
+    sim.settle_initial_scene()
     snapshot(sim)
+    sim.frame_start = sim.data.time
     box = sim.target_oriented_box(target)
     return {
         "target": target, "destination": destination, "obstacles": obstacles,

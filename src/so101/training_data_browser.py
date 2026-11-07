@@ -233,7 +233,8 @@ class TrainingDataBrowser:
                 "movie_available": bool(frames), "playback_description":
                     "Original recorded wrist images alongside an overview "
                     + ("rendered from recorded physics states." if frames and all("qpos" in frame for frame in frames)
-                       else "reconstructed from recorded commands (not original overview footage).")}
+                       else "reconstructed from recorded commands using the legacy scene "
+                            "(not original overview footage or corrected physics).")}
 
     def movie_request(self, log_path: Path, view: str, item_id: str) -> tuple[Path, Path | None, Path]:
         index = self.index(log_path)
