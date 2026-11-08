@@ -9,7 +9,7 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 
 from so101.lego_parts_catalog import (
-    Library, decoration, prepare, publish, safe_path, settling_height, validate,
+    Library, annotate_base_parts, decoration, prepare, publish, safe_path, settling_height, validate,
 )
 from so101 import lego_parts_catalog as catalog_module
 
@@ -187,15 +187,20 @@ def test_releases_share_immutable_sources_and_require_explicit_requalification(t
         assert a.stat().st_dev == b.stat().st_dev
         assert not b.stat().st_mode & 0o222
     original_sha256 = catalog_module.sha256
-    def changed_converter(path):
-        return ("f" * 64 if path == Path(catalog_module.__file__)
+    def publisher_only_change(path):
+        return ("e" * 64 if path == Path(catalog_module.__file__)
                 else original_sha256(path))
-    monkeypatch.setattr(catalog_module, "sha256", changed_converter)
+    monkeypatch.setattr(catalog_module, "sha256", publisher_only_change)
+    metadata = publish(archive, output, "publisher-only", (), second)
+    assert json.loads(metadata.read_text())["converter_sha256"] == "e" * 64
+    assert (metadata.parent / "source/complete.zip").stat().st_ino == (
+        second.parent / "source/complete.zip").stat().st_ino
+    monkeypatch.setattr(catalog_module, "conversion_sha256", lambda: "f" * 64)
     with pytest.raises(ValueError, match="different converter"):
         publish(archive, output, "blocked", (), second)
     third = publish(archive, output, "requalified", (), second,
                     requalify_previous=True)
-    assert json.loads(third.read_text())["converter_sha256"] == "f" * 64
+    assert json.loads(third.read_text())["conversion_sha256"] == "f" * 64
 
 
 def test_retry_unlinks_shared_assets_and_clears_failure_metadata(tmp_path, monkeypatch):
@@ -208,6 +213,7 @@ def test_retry_unlinks_shared_assets_and_clears_failure_metadata(tmp_path, monke
                         "3 16 0 0 0 0 0 10 0 20 0\n"
                         "3 16 10 0 0 0 20 0 0 0 10\n")
     output = tmp_path / "catalog"
+    monkeypatch.setattr(catalog_module, "conversion_sha256", lambda: "0" * 64)
     monkeypatch.setattr(catalog_module, "qualify", lambda *args: {"test_fixture": True})
     first = publish(archive, output, "first", ("1",))
     def fail_qualification(*args):
@@ -237,3 +243,31 @@ def test_retry_unlinks_shared_assets_and_clears_failure_metadata(tmp_path, monke
 def test_long_parts_start_four_mm_above_table_in_each_orientation(quaternion, expected_height):
     bounds = np.array([[-.005, -.004, -.002], [.005, .004, .08]])
     assert settling_height(bounds, quaternion) == pytest.approx(expected_height)
+
+
+def test_declared_variants_preserve_mold_revision_and_do_not_claim_equivalence():
+    def entry(part_id, kind):
+        return {"part_id": part_id, "decoration": kind, "source": {"sha256": "a" * 64}}
+    entries = [entry("3068a", "undecorated"), entry("3068b", "undecorated"),
+               entry("3068bp01", "print"), entry("3068bd01", "sticker"),
+               entry("3068ap0012", "print"), entry("9999p01", "print"),
+               entry("3068bp01c01", "print")]
+    annotate_base_parts(entries)
+    assert entries[2]["base_part_id"] == "3068b"
+    assert entries[3]["base_part_id"] == "3068b"
+    assert entries[4]["base_part_id"] == "3068a"
+    for part in entries[2:5]:
+        relationship = part["base_part_relationship"]
+        assert relationship["basis"] == "ldraw_official_numbering"
+        assert relationship["geometry_equivalence"] == "not_qualified"
+        assert relationship["base_source_sha256"] == "a" * 64
+    assert entries[5]["base_part_id"] is None
+    assert entries[6]["base_part_id"] is None
+
+
+def test_ambiguous_mold_suffix_and_pattern_code_are_not_grouped():
+    entries = [{"part_id": part, "decoration": kind, "source": {"sha256": "a" * 64}}
+               for part, kind in (("3001", "undecorated"), ("3001p", "undecorated"),
+                                  ("3001pp21", "print"))]
+    annotate_base_parts(entries)
+    assert entries[-1]["base_part_id"] is None

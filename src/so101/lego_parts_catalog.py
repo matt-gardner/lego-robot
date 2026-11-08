@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import errno
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -34,10 +35,13 @@ import numpy as np
 
 
 SOURCE_URL = "https://library.ldraw.org/library/updates/complete.zip"
-CONVERTER_VERSION = "surface-prisms-v4-zup"
+CONVERTER_VERSION = "surface-prisms-v5-zup"
 LDU_M = 0.0004
 CONTACT_HALF_THICKNESS_M = 0.00002
 FRAME = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
+CONTACT_SOLREF = (0.002, 1.)
+CONTACT_SOLIMP = (0.99, 0.999, 0.0001)
+NUMBERING_SPECIFICATION = "https://www.ldraw.org/part-number-spec.html"
 DEFAULT_PARTS = ("54200", "3062b", "3626c", "3005", "3024", "3070b", "3700")
 
 
@@ -101,6 +105,40 @@ def decoration(description: str, part_id: str = "") -> str:
             or re.fullmatch(r"\d+[a-z]*p[0-9a-z]+", part_id, re.IGNORECASE)):
         return "print"
     return "undecorated"
+
+
+def annotate_base_parts(entries: list[dict]) -> None:
+    parts = {entry["part_id"]: entry for entry in entries}
+    for entry in entries:
+        entry["base_part_id"] = None
+        if entry["decoration"] == "undecorated":
+            entry["base_part_id"] = entry["part_id"]
+            continue
+        marker = "p" if entry["decoration"] == "print" else "d"
+        candidates = {}
+        for width in (2, 3, 4) if marker == "p" else (2, 4):
+            name = entry["part_id"]
+            if len(name) <= width + 1 or name[-width - 1] != marker:
+                continue
+            code, base_id = name[-width:], name[:-width - 1]
+            if not re.fullmatch(r"[0-9]{3,5}[a-z]?", base_id):
+                continue
+            if not re.fullmatch(r"[0-9]{4}" if width == 4 else r"[a-z0-9]+", code):
+                continue
+            base = parts.get(base_id)
+            if base is not None and base["decoration"] == "undecorated":
+                candidates[base_id] = base
+        if len(candidates) != 1:
+            continue
+        base = next(iter(candidates.values()))
+        entry["base_part_id"] = base["part_id"]
+        entry["base_part_relationship"] = {
+            "kind": "pattern_of" if marker == "p" else "sticker_applied_to",
+            "basis": "ldraw_official_numbering",
+            "specification_url": NUMBERING_SPECIFICATION,
+            "base_source_sha256": base["source"]["sha256"],
+            "geometry_equivalence": "not_qualified",
+        }
 
 
 class Library:
@@ -233,7 +271,8 @@ def prepare(library: Library, release: Path, part_id: str) -> dict:
         ET.SubElement(body, "geom", name=name, type="mesh", mesh=name,
                       group="3", rgba="0.8 0.25 0.1 0",
                       friction="0.5 0.005 0.0001", condim="3",
-                      solref="0.004 1", solimp="0.99 0.999 0.0001")
+                      solref=numbers(np.array(CONTACT_SOLREF)),
+                      solimp=numbers(np.array(CONTACT_SOLIMP)))
     path = directory / "part.xml"
     ET.indent(root)
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
@@ -245,8 +284,8 @@ def prepare(library: Library, release: Path, part_id: str) -> dict:
                         "volume_m3": volume, "inertia_model": "bounding_box_at_bbox_center",
                         "center_of_mass_m": center.tolist(),
                         "friction": [0.5, 0.005, 0.0001],
-                        "contact_solref": [0.004, 1],
-                        "contact_solimp": [0.99, 0.999, 0.0001]},
+                        "contact_solref": list(CONTACT_SOLREF),
+                        "contact_solimp": list(CONTACT_SOLIMP)},
             "geometry": {"visual_triangles": len(triangles),
                          "collision_method": "compound_triangle_prisms",
                          "surface_half_thickness_m": CONTACT_HALF_THICKNESS_M,
@@ -281,7 +320,8 @@ def qualify(release: Path, entry: dict) -> dict:
     world = root.find("worldbody")
     ET.SubElement(world, "geom", name="qualification_table", type="plane",
                   size="1 1 0.01", friction="0.5 0.005 0.0001",
-                  solref="0.004 1", solimp="0.99 0.999 0.0001")
+                  solref=numbers(np.array(CONTACT_SOLREF)),
+                  solimp=numbers(np.array(CONTACT_SOLIMP)))
     model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
     table = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "qualification_table")
     bounds = np.array(entry["geometry"]["bounds_m"])
@@ -319,7 +359,7 @@ def qualify(release: Path, entry: dict) -> dict:
                      "final_velocity_norm": speed, "table_contact_steps": contact_steps,
                      "max_penetration_m": max_penetration,
                      "final_qpos": data.qpos.tolist()})
-    return {"version": "table-shell-v4-zup", "mujoco_version": mujoco.__version__,
+    return {"version": "table-shell-v5-zup", "mujoco_version": mujoco.__version__,
             "frame_check": "LDraw +Y maps to MuJoCo -Z; right-handed rotation",
             "scale_check": "0.0004 metres/LDU; 3005 reference includes stud height",
             "compile_wall_seconds": compile_wall_s,
@@ -332,7 +372,20 @@ def qualify(release: Path, entry: dict) -> dict:
             "limitations": ["Nominal ABS density and friction, not measured materials",
                             "Bounding-box inertia approximation",
                             "Thin surface contacts, not interlocking/stud clutch qualification",
+                            "Four mm drop test only; higher-energy impacts are not qualified",
                             "No robot graspability qualification"]}
+
+
+def conversion_sha256() -> str:
+    payload = {
+        "version": CONVERTER_VERSION, "mujoco": mujoco.__version__, "numpy": np.__version__,
+        "frame": FRAME.tolist(), "metres_per_ldu": LDU_M,
+        "contact_half_thickness_m": CONTACT_HALF_THICKNESS_M,
+        "solref": CONTACT_SOLREF, "solimp": CONTACT_SOLIMP,
+        "code": [inspect.getsource(function) for function in
+                 (Library, numbers, prepare, settling_height, qualify)],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def publish(archive: Path, output: Path, catalog_id: str,
@@ -350,13 +403,17 @@ def publish(archive: Path, output: Path, catalog_id: str,
     try:
         archive_sha = sha256(archive)
         converter_sha = sha256(Path(__file__))
+        conversion_sha = conversion_sha256()
         prior = None
         if previous is not None:
             validate(previous.parent)
             prior = json.loads(previous.read_text())
             if prior["source"]["archive_sha256"] != archive_sha:
                 raise ValueError("Previous catalog uses a different official source archive")
-            if prior["converter_sha256"] != converter_sha and not requalify_previous:
+            compatible = (prior.get("conversion_sha256") == conversion_sha
+                          if "conversion_sha256" in prior
+                          else prior["converter_sha256"] == converter_sha)
+            if not compatible and not requalify_previous:
                 raise ValueError("Previous catalog uses a different converter; "
                                  "use --requalify-previous")
         source = staging / "source"
@@ -398,18 +455,20 @@ def publish(archive: Path, output: Path, catalog_id: str,
         write_json(source / "files.json", inventory)
         if not entries:
             raise ValueError("Archive contains no top-level official LDraw parts")
+        annotate_base_parts(entries)
         requalification = set()
         if prior is not None:
             retained = {e["part_id"]: e for e in prior["parts"]
                         if e["status"] in ("verified", "prepared", "unavailable")}
-            for index, entry in enumerate(entries):
+            for entry in entries:
                 if entry["part_id"] not in retained:
                     continue
                 if requalify_previous:
                     requalification.add(entry["part_id"])
                     continue
                 old = retained[entry["part_id"]]
-                entries[index] = old
+                entry.update({key: value for key, value in old.items()
+                              if key not in ("base_part_id", "base_part_relationship")})
                 for asset in old.get("assets", []):
                     destination_asset = staging.joinpath(*safe_path(asset["path"]).parts)
                     destination_asset.parent.mkdir(parents=True, exist_ok=True)
@@ -442,6 +501,9 @@ def publish(archive: Path, output: Path, catalog_id: str,
             for field in ("mjcf", "assets", "geometry", "physics", "source_dependencies",
                           "dimensions_m", "qualification", "failure"):
                 entry.pop(field, None)
+            entry.update({"converter_version": CONVERTER_VERSION,
+                          "converter_sha256": converter_sha,
+                          "conversion_sha256": conversion_sha})
             print(f"Preparing {entry['part_id']}", flush=True)
             try:
                 entry.update(prepare(library, staging, entry["part_id"]))
@@ -461,6 +523,7 @@ def publish(archive: Path, output: Path, catalog_id: str,
             "schema_version": 1, "catalog_id": catalog_id, "parts": entries,
             "converter_version": CONVERTER_VERSION,
             "converter_sha256": converter_sha,
+            "conversion_sha256": conversion_sha,
             "source": {"url": SOURCE_URL, "archive_path": "source/complete.zip",
                        "archive_sha256": archive_sha, "license_files": license_files,
                        "inventory": {"path": "source/files.json", "sha256": sha256(source / "files.json")},
