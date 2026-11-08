@@ -115,7 +115,7 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
                 **{key: row.get(key) for key in (
                     "loss", "action_loss", "box_loss",
                     "learning_rate", "gradient_norm",
-                    "step_seconds", "completed_at", "eta_seconds",
+                    "step_seconds", "completed_at", "eta_seconds", "samples_seen",
                 )},
             })
     elif trajectory:
@@ -220,6 +220,10 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
                 }
                 if metrics.get("success_rate") == 0:
                     point["completion_efficiency"] = None
+                if sft:
+                    point["samples_seen"] = row.get("samples_seen")
+                    if task == "all":
+                        point["supervised_loss"] = row.get("supervised_loss")
                 series[("eval", task)].append(point)
     normalized_series = [
         {"phase": phase, "task": task, "points": sorted(points, key=lambda p: p["step"])}

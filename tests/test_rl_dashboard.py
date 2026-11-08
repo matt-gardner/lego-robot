@@ -74,6 +74,21 @@ def sft_log():
     }
 
 
+def test_sft_exposure_preserves_logged_train_and_evaluation_counts():
+    data = sft_log()
+    data["steps"][0].update(samples_seen=128)
+    data["validation"][0].update(samples_seen=0, supervised_loss=2.5,
+                                 by_task={"grasp": {"success_rate": 0.5}})
+    normalized = normalize_log(data)
+    assert normalized["latest_train"]["samples_seen"] == 128
+    assert normalized["latest_eval"]["samples_seen"] == 0
+    assert normalized["latest_eval"]["supervised_loss"] == 2.5
+    task_eval = next(row for row in normalized["series"] if row["phase"] == "eval" and row["task"] == "grasp")
+    assert task_eval["points"][0]["samples_seen"] == 0
+    del data["steps"][0]["samples_seen"]
+    assert normalize_log(data)["latest_train"]["samples_seen"] is None
+
+
 def test_sft_has_loss_only_training_and_same_rollout_evaluation_metrics():
     result = normalize_log(sft_log())
     assert result["kind"] == "sft"

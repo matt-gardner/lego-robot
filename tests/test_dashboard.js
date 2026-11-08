@@ -40,9 +40,9 @@ function run(id, kind, active = false) {
   return {
     id, kind, name: `${kind}-${id}`, active, archived: false, revision: "1",
     axis: "Optimizer step", config: {}, last_step_at: Date.now() / 1000 - 3,
-    latest_train: {step: 10, learning_rate: 1e-5, step_seconds: 2,
+    latest_train: {step: 10, samples_seen: 1280, learning_rate: 1e-5, step_seconds: 2,
       ...(kind === "sft" ? {loss: 0.4, action_loss: 0.3} : {success_rate: 0.5, jerk_margin_gap: -1})},
-    latest_eval: {step: 10, success_rate: 0.5, completion_efficiency: 0.7, rms_jerk: 3, wrong_object_rate: 0},
+    latest_eval: {step: 10, samples_seen: 1280, success_rate: 0.5, completion_efficiency: 0.7, rms_jerk: 3, wrong_object_rate: 0},
     series: [],
   };
 }
@@ -97,6 +97,27 @@ test("prefixed dashboard fetches catalog and run details without touching root A
   assert.ok(page.requests.includes("/lego-robot/api/runs"));
   assert.ok(page.requests.includes("/lego-robot/api/runs/11111111"));
   assert.ok(page.requests.every(route => route.startsWith("/lego-robot/api/")));
+});
+
+test("SFT plots align different batch sizes by logged samples, retaining optimizer steps in tooltips", async () => {
+  const page = await dashboard([run("11111111", "sft"), run("22222222", "sft")]);
+  await page.elements.get("tab-sft").events.click();
+  page.eval(`state.kind = "sft"; state.selected = new Set(["11111111", "22222222"]);
+    state.runs.set("11111111", {...state.catalog[0], series: [{phase:"train",task:"all",points:[
+      {step:2,samples_seen:128,loss:2}, {step:3,loss:1}]}]});
+    state.runs.set("22222222", {...state.catalog[1], series: [{phase:"train",task:"all",points:[
+      {step:1,samples_seen:128,loss:3}]}]});`);
+  const values = page.eval('seriesFor({key:"loss",phase:"train",task:"all"})');
+  assert.equal(values.length, 2);
+  assert.equal(values[0].values[0].x, 128);
+  assert.equal(values[1].values[0].x, 128);
+  assert.equal(values[0].values[0].step, 2);
+  assert.equal(values[1].values[0].step, 1);
+  assert.equal(values[0].values[1].value, null);
+  assert.match(values[0].axis, /samples seen/);
+  page.eval(`state.runs.get("11111111").series = [{phase:"eval",task:"all",points:[
+    {step:0,samples_seen:0,supervised_loss:4}]}];`);
+  assert.equal(page.eval('seriesFor({key:"supervised_loss",phase:"eval",task:"all"})[0].values[0].x'), 0);
 });
 
 test("data browser prefixes catalog requests and image/movie endpoints", async () => {
@@ -345,7 +366,7 @@ test("SFT loss plots use log-log coordinates, positive gaps and logarithmic inte
       {step: 0, loss: 100}, {step: 1, loss: 10}, {step: 5, loss: 0},
       {step: 10, loss: 1}, {step: 50, loss: -1}, {step: 100, loss: .1},
       {step: 1000, loss: .01},
-    ];
+    ].map(point => ({...point, samples_seen: point.step}));
     chart.update();
   `);
   assert.equal(page.eval("Math.abs((chart.x(10) - chart.x(1)) - (chart.x(100) - chart.x(10))) < 1e-9"), true);

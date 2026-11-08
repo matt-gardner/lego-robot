@@ -45,7 +45,7 @@ const sections = [
   ].map(metric => ({...metric, phase: "train", task: "all"}))},
 ];
 const sftSections = [
-  {id: "sft-loss", title: "Supervised training loss", note: "Log-log axes · mean losses over valid labels, not batch totals · nonpositive values are gaps", open: true,
+  {id: "sft-loss", title: "Sample-matched training loss", note: "Logged cumulative training samples · log-log axes · mean losses, not batch totals", open: true,
     metrics: [
       {key: "loss", title: "Mean total loss"},
       {key: "action_loss", title: "Mean action loss"},
@@ -53,6 +53,10 @@ const sftSections = [
     ].map(metric => ({...metric, phase: "train", task: "all", unit: "", logLog: true,
       note: "Losses are normalized by valid action/entity labels, not summed across the batch. No additional batch-size division. Missing components remain gaps, not zeros."}))},
   {...sections[0], id: "sft-eval"},
+  {id: "sft-frozen-loss", title: "Sample-matched frozen-set loss",
+    note: "Same frozen evaluation set · logged training exposure · baseline at zero samples", open: true,
+    metrics: [{key: "supervised_loss", title: "Frozen supervised loss", phase: "eval", task: "all", unit: "",
+      note: "Fixed evaluation examples, diffusion noise and time. Equal training samples are a compute proxy, not equal FLOPs or elapsed time."}]},
   ...["grasp", "view", "push", "place"].map(task => ({
     ...sections[0], id: `sft-eval-${task}`, title: `${task[0].toUpperCase()}${task.slice(1)} eval metrics`,
     note: `Unassisted validation · ${task} only`, open: false,
@@ -293,18 +297,19 @@ function seriesFor(metric) {
       const visiblePoints = metric.key === "gradient_norm" && finite(gradientStart)
         ? series.points.filter(point => point.step >= gradientStart) : series.points;
       const values = visiblePoints.map(point => {
+        const x = state.kind === "sft" ? point.samples_seen : point.step;
         const raw = finite(point[metric.key]) ? point[metric.key] * (metric.percent ? 100 : 1) : null;
-        if (raw === null || (metric.logLog && (raw <= 0 || point.step <= 0))) {
+        if (!finite(x) || x < 0 || raw === null || (metric.logLog && (raw <= 0 || x <= 0))) {
           previous = null;
-          return {...point, raw, value: null};
+          return {...point, x, raw, value: null};
         }
         previous = previous === null ? raw : state.smoothing * previous + (1 - state.smoothing) * raw;
-        return {...point, raw, value: previous};
+        return {...point, x, raw, value: previous};
       });
       if (!values.some(point => finite(point.value))) continue;
       result.push({
         label: `${shortName(run)} · ${series.task} · ${series.phase === "eval" ? "validation" : "train"}`,
-        values, color: color(run.id), axis: run.axis,
+        values, color: color(run.id), axis: state.kind === "sft" ? "Training samples seen (compute proxy)" : run.axis,
         dash: series.phase === "eval" ? [6, 4] : [],
       });
     }
@@ -332,7 +337,7 @@ class Chart {
     this.panel = text("section", "", "panel plot");
     this.canvas = document.createElement("canvas");
     this.canvas.setAttribute("role", "img");
-    this.canvas.setAttribute("aria-label", `${section.querySelector("h2").textContent}: ${metric.title} versus optimizer step${metric.logLog ? ", both axes logarithmic" : ""}`);
+    this.canvas.setAttribute("aria-label", `${section.querySelector("h2").textContent}: ${metric.title} versus ${section.dataset.kind === "sft" ? "training samples seen" : "optimizer step"}${metric.logLog ? ", both axes logarithmic" : ""}`);
     this.legend = text("div", "", "legend");
     const heading = text("h2", metric.title);
     this.panel.append(heading);
@@ -351,7 +356,7 @@ class Chart {
   }
 
   plottable(point, key = "value") {
-    return finite(point[key]) && (!this.metric.logLog || (point[key] > 0 && point.step > 0));
+    return finite(point.x) && finite(point[key]) && (!this.metric.logLog || (point[key] > 0 && point.x > 0));
   }
 
   update() {
@@ -389,7 +394,7 @@ class Chart {
       ctx.fillText("No data for this phase / task selection", W / 2, H / 2);
       return;
     }
-    const steps = valid.map(p => p.step);
+    const steps = valid.map(p => p.x);
     const minStep = Math.min(...steps), maxStep = Math.max(...steps);
     let [x0, x1] = state.zoom || [minStep, maxStep === minStep ? (this.metric.logLog ? minStep * 10 : minStep + 1) : maxStep];
     if (this.metric.logLog) {
@@ -397,7 +402,7 @@ class Chart {
       if (x1 <= x0) x1 = x0 * 10;
     }
     this.domain = [x0, x1];
-    const ys = valid.filter(p => p.step >= x0 && p.step <= x1).flatMap(p => [p.value, p.raw])
+    const ys = valid.filter(p => p.x >= x0 && p.x <= x1).flatMap(p => [p.value, p.raw])
       .filter(value => finite(value) && (!this.metric.logLog || value > 0));
     let ymin = 0, ymax = 1;
     if (this.metric.logLog) {
@@ -458,13 +463,13 @@ class Chart {
       let started = false;
       for (const point of series.values) {
         if (!this.plottable(point, key)) { started = false; continue; }
-        if (!started) { ctx.moveTo(x(point.step), y(point[key])); started = true; }
-        else ctx.lineTo(x(point.step), y(point[key]));
+        if (!started) { ctx.moveTo(x(point.x), y(point[key])); started = true; }
+        else ctx.lineTo(x(point.x), y(point[key]));
       }
       ctx.stroke();
       if (series.values.filter(p => this.plottable(p, key)).length === 1) {
         const point = series.values.find(p => this.plottable(p, key));
-        ctx.beginPath(); ctx.arc(x(point.step), y(point[key]), 3, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x(point.x), y(point[key]), 3, 0, Math.PI * 2); ctx.fill();
       }
     };
     for (const series of this.series) {
@@ -501,9 +506,9 @@ class Chart {
     for (const series of this.series) {
       const values = series.values.filter(p => this.plottable(p));
       if (!values.length) continue;
-      const point = values.reduce((best, p) => Math.abs(this.x(p.step) - pixel) < Math.abs(this.x(best.step) - pixel) ? p : best);
+      const point = values.reduce((best, p) => Math.abs(this.x(p.x) - pixel) < Math.abs(this.x(best.x) - pixel) ? p : best);
       const value = this.metric.scientific ? point.raw.toExponential(2) : point.raw.toFixed(2);
-      const line = text("div", `${series.label} · step ${point.step}: ${value}${this.metric.unit === "%" ? "%" : ` ${this.metric.unit}`}`);
+      const line = text("div", `${series.label} · ${state.kind === "sft" ? `${point.x} samples · ` : ""}step ${point.step}: ${value}${this.metric.unit === "%" ? "%" : ` ${this.metric.unit}`}`);
       line.style.color = series.color;
       tooltip.append(line);
     }
@@ -530,7 +535,7 @@ function render() {
   updateStepCounters();
   $("context").textContent = !chosen().length ? "Select one or more runs to compare." :
     `${chosen().length} run(s) selected · Cards and table: ${shortName(chosen().find(r => r.id === state.focus) || chosen()[0])} · Eval is unassisted. ` +
-    (state.kind === "sft" ? "SFT training is loss-only; rollout metrics are evaluation only."
+    (state.kind === "sft" ? "Plots compare logged training samples seen, not optimizer steps. Equal exposure is a compute proxy, not equal FLOPs or wall time. Runs/points without sample counts are omitted, not guessed. SFT training is loss-only; rollout metrics are evaluation only."
       : "Training includes every sampled group; each section has a fixed task scope.");
   showErrors();
 }

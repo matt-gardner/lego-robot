@@ -423,6 +423,11 @@ Results and sample-axis loss/success plots are written under
 rerunning the same command resumes incomplete trials with strict recipe checks.
 Equal exposure is only a compute proxy; wall time, optimizer overhead, valid
 label counts and sampling streams can differ. Adam betas remain fixed.
+The dashboard's SFT plots use logged cumulative `samples_seen` rather than
+optimizer step, aligning different batch sizes at equal training exposure.
+Frozen-set supervised loss includes the zero-sample baseline. Tooltips retain
+optimizer step for diagnosis; historical points without sample counts are
+omitted explicitly, not estimated from batch size. RL plots keep their step axis.
 Frozen40 is used for tuning, not an independent final test set; pilot rankings
 need seed confirmation. The sweep does not automatically deploy a winner,
 restart RL, or provision cloud resources.
