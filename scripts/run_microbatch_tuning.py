@@ -52,6 +52,9 @@ def run(root, image, job_id, no_checkpointing_only=False, accumulation_only=Fals
     root.mkdir(exist_ok=True)
     with (root / "tuning.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if (accumulation_only
+                and list(accumulation_microbatches) != sorted(set(accumulation_microbatches))):
+            raise ValueError("Accumulation candidates must be unique and in increasing order")
 
         def continuation(label, microbatch, until_step, activation_checkpointing=True, accumulation=False):
             destination = root / label
@@ -190,7 +193,7 @@ def main():
     parser.add_argument("--no-checkpointing-only", action="store_true")
     parser.add_argument("--accumulation-only", action="store_true")
     parser.add_argument("--accumulation-microbatch", type=int, action="append",
-                        choices=(16, 24, 32, 48, 64, 96, 128))
+                        choices=range(2, 129, 2))
     args = parser.parse_args()
     try:
         if args.no_checkpointing_only and args.accumulation_only:
