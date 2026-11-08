@@ -115,6 +115,7 @@ test("type, footprint and decoration filters combine and reset pagination", asyn
   ui.get("lego-family").value = "plate";
   ui.get("lego-footprint").value = "1 x 1";
   ui.get("lego-decoration").value = "undecorated";
+  ui.get("lego-coverage").value = "generated";
   await ui.get("lego-family").events.change();
   await new Promise(resolve => setImmediate(resolve));
   const query = ui.requests.at(-1).query;
@@ -122,6 +123,7 @@ test("type, footprint and decoration filters combine and reset pagination", asyn
   assert.equal(query.get("family"), "plate");
   assert.equal(query.get("footprint"), "1 x 1");
   assert.equal(query.get("decoration"), "undecorated");
+  assert.equal(query.get("coverage"), "generated");
   assert.equal(query.get("offset"), "0");
 });
 

@@ -24,6 +24,7 @@ class LegoDataBrowser:
         self.lock = threading.RLock()
         self.preview_catalogs: dict[str, dict] = {}
         self.release_summaries: dict[str, dict] = {}
+        self.target_coverage: dict[str, set[str]] = {}
 
     def artifact_hash(self, path: Path) -> str:
         stat = path.stat()
@@ -231,6 +232,40 @@ class LegoDataBrowser:
             raise ValueError("Duplicate example identity in release")
         return sorted(rows, key=generation_order)
 
+    def generated_targets(self) -> set[str]:
+        releases = [row for row in self.releases().values() if row["kind"] == "examples"]
+        self.target_coverage = {row["id"]: self.target_coverage[row["id"]]
+                                for row in releases if row["id"] in self.target_coverage}
+        for release in releases:
+            if release["id"] in self.target_coverage:
+                continue
+            targets = set()
+            path = self.contained(self.episode_root / release["path"], self.episode_root)
+            with EpisodeStorage(path) as storage:
+                for source in storage.catalog.get("successful_episodes", []):
+                    files = {}
+                    for name in ("episode.json", "scene_plan.json"):
+                        found = storage.connection.execute(
+                            "SELECT content,sha256 FROM files WHERE source=? AND name=?",
+                            (source, name),
+                        ).fetchone()
+                        if found is None:
+                            continue
+                        if hashlib.sha256(found[0]).hexdigest() != found[1]:
+                            raise ValueError(f"Coverage metadata checksum mismatch: {source}/{name}")
+                        files[name] = json.loads(found[0])
+                    metadata, plan = files.get("episode.json"), files.get("scene_plan.json")
+                    if not metadata or not plan or not storage.catalog.get("catalog_sha256"):
+                        continue
+                    objects = [obj for obj in plan.get("objects", [])
+                               if obj.get("instance_id") == metadata.get("target")]
+                    if len(objects) > 1:
+                        raise ValueError(f"Ambiguous supervised target identity: {source}")
+                    if objects and isinstance(objects[0].get("part_id"), str):
+                        targets.add(objects[0]["part_id"])
+            self.target_coverage[release["id"]] = targets
+        return set().union(*self.target_coverage.values()) if self.target_coverage else set()
+
     def geometry(self, query: dict[str, str]) -> dict:
         cached = self.preview_catalogs.get(query["release"])
         if cached is None:
@@ -319,6 +354,14 @@ class LegoDataBrowser:
                             "reason": "Authenticated request-monitor delivery is not configured."}}
         release = self.release(query["release"])
         rows = self.rows(release)
+        coverage = query.get("coverage", "")
+        if coverage not in ("", "generated"):
+            raise ValueError("Coverage must be empty or generated")
+        if coverage:
+            if release["kind"] != "parts":
+                raise ValueError("Part coverage requires a parts catalog")
+            targets = self.generated_targets()
+            rows = [row for row in rows if row["part_id"] in targets]
         if "item" in query:
             row = next((row for row in rows if row["id"] == query["item"]), None)
             if row is None:

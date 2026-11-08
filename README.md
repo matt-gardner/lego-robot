@@ -259,6 +259,11 @@ alone is not a Family identity. Submissions pin the immutable release and artifa
 hash; example comments can pin the selected original camera, frame and timestamp.
 The browser retains the exact payload and UUID in local storage before sending;
 after interrupted delivery, check the original receipt or retry that same payload.
+The Data created filter matches generated supervised targets by joining archived
+episode target identity to scene-plan part IDs, not every part present in a scene.
+It matches part IDs across catalog versions and includes development examples;
+training eligibility/promotion and actual training use are not inferred. Archives
+without catalog provenance or a target-to-part join do not establish coverage.
 Owner and monitor receipts/errors are separate. Queued means durable intake;
 delivered means owner enqueue, not acknowledgment, resolution or execution approval.
 Starting another comment explicitly releases the browser's saved payload; server

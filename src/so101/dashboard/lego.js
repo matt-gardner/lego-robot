@@ -239,7 +239,7 @@ async function legoLoad() {
     const query = legoExamples ? {release, offset: legoOffset} :
       {release, readiness: legoElement("readiness").value,
         family: legoElement("family").value, footprint: legoElement("footprint").value,
-        decoration: legoElement("decoration").value, offset: legoOffset};
+        decoration: legoElement("decoration").value, coverage: legoElement("coverage").value, offset: legoOffset};
     const result = await legoFetch(query);
     if (request !== legoRequest) return;
     legoElement("error").textContent = "";
@@ -248,7 +248,7 @@ async function legoLoad() {
       ? "Newest recorded generation dates first; undated legacy recordings follow in stable identity order. Original wrist and external recordings. Development diagnostics are not promoted to training data."
       : notices.length
       ? notices.map(notice => `${notice.status}: ${notice.reason}`).join(" ")
-      : "Training ready means prepared for simulation-data generation, not proven robot graspability. Footprints follow the part description; they are not measured bounding boxes.";
+      : "Training ready means prepared for simulation-data generation, not proven robot graspability. Data created matches supervised target part IDs across catalog versions; development examples do not establish training eligibility or actual training use. Footprints follow the description.";
     for (const [field, all] of [["family", "All types"], ["footprint", "All footprints"], ["decoration", "All decorations"]]) {
       const selected = legoElement(field).value;
       const options = [["", all], ...(result.facets?.[field] || []).map(value => [value,
@@ -317,7 +317,7 @@ async function legoRefresh() {
     await legoLoad();
   } catch (error) { legoElement("error").textContent = error.message; }
 }
-for (const id of ["readiness", "family", "footprint", "decoration"]) {
+for (const id of ["readiness", "family", "footprint", "decoration", "coverage"]) {
   legoElement(id).addEventListener("change", () => { legoOffset = 0; legoLoad(); });
 }
 legoElement("refresh").addEventListener("click", legoRefresh);

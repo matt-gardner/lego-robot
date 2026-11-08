@@ -61,6 +61,36 @@ def test_curriculum_operational_ledger_is_not_an_episode_release(tmp_path):
         browser.list({})
 
 
+def test_generated_coverage_joins_supervised_target_not_scene_presence_and_refreshes(tmp_path):
+    catalog(tmp_path)
+    archive = episode_release(tmp_path)
+    browser = LegoDataBrowser(tmp_path)
+    release = next(row["id"] for row in browser.list({})["releases"] if row["kind"] == "parts")
+    assert browser.list({"release": release, "coverage": "generated"})["total"] == 0
+    with sqlite3.connect(archive) as db:
+        db.execute("UPDATE catalog SET content=?", (json.dumps({
+            "catalog_sha256": "a" * 64, "successful_episodes": ["old/source"],
+        }).encode(),))
+        for name, value in [
+            ("episode.json", {"target": "target", "split": "development"}),
+            ("scene_plan.json", {"objects": [
+                {"instance_id": "target", "part_id": "54200"},
+                {"instance_id": "distractor", "part_id": "missing"},
+            ]}),
+        ]:
+            content = json.dumps(value).encode()
+            db.execute("DELETE FROM files WHERE name=?", (name,))
+            db.execute("INSERT INTO files VALUES (?,?,?,?)",
+                       ("old/source", name, content, hashlib.sha256(content).hexdigest()))
+    result = browser.list({"release": release, "coverage": "generated"})
+    assert [row["part_id"] for row in result["items"]] == ["54200"]
+    assert browser.list({"release": release, "coverage": "generated", "family": "tile"})["total"] == 0
+    with sqlite3.connect(archive) as db:
+        db.execute("UPDATE files SET sha256=? WHERE name='scene_plan.json'", ("bad",))
+    with pytest.raises(ValueError, match="Coverage metadata checksum"):
+        browser.list({"release": release, "coverage": "generated"})
+
+
 def test_generation_order_uses_dates_not_ids_copy_times_or_qualification(tmp_path):
     releases = []
     for name, generated_at in [
