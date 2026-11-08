@@ -242,8 +242,17 @@ external scripts or new runtime dependency. Unsupported or unprepared geometry
 is explicitly unavailable. Print/sticker variants use producer-declared
 `base_part_id` relationships; numbering-based declarations are not claims of
 qualified geometric equivalence or decorated simulation readiness.
-Authenticated request-monitor feedback delivery is not yet integrated and is
-explicitly shown as unavailable. This page does not accept or acknowledge comments.
+Part/example details offer comments and “looks wrong” feedback when the same-origin
+Family feedback capabilities endpoint is enabled and authenticated. Website login
+alone is not a Family identity. Submissions pin the immutable release and artifact
+hash; example comments can pin the selected original camera, frame and timestamp.
+The browser retains the exact payload and UUID in local storage before sending;
+after interrupted delivery, check the original receipt or retry that same payload.
+Owner and monitor receipts/errors are separate. Queued means durable intake;
+delivered means owner enqueue, not acknowledgment, resolution or execution approval.
+Starting another comment explicitly releases the browser's saved payload; server
+receipts remain sender-private. Storage/authentication failures are shown rather
+than silently accepting feedback.
 Producer-authored immutable `notices/*.json` (schema version 1) annotate an exact
 `catalog_id` and `catalog_sha256` with `invalidated` or `superseded`, a unique
 `notice_id`, `reason`, `source_work_item`, and an `evidence` object. The browser

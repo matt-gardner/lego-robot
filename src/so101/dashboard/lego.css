@@ -21,4 +21,8 @@
 .part-variants { display: grid; gap: 10px; }
 .part-variants button { text-align: left; }
 #lego-preview-status { color: var(--muted); font-size: 13px; }
+#lego-feedback-form { display: grid; gap: 12px; margin: 16px 0; }
+#lego-feedback-form label { display: grid; gap: 6px; }
+#lego-feedback-text { width: 100%; box-sizing: border-box; }
+#lego-feedback-target, #lego-feedback-receipt { overflow-wrap: anywhere; white-space: pre-wrap; }
 @media (max-width: 650px) { .part-detail-layout { grid-template-columns: 1fr; } .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

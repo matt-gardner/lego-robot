@@ -39,6 +39,24 @@
       <p id="lego-frame-identity"></p>
       <div class="detail-previews"><img id="lego-wrist" alt="Recorded wrist frame" hidden><img id="lego-external" alt="Recorded external frame" hidden></div>
       </div>
+      <section aria-label="Feedback">
+        <h3>Comment or report something that looks wrong</h3>
+        <p id="lego-feedback-status" role="status"></p>
+        <a href="/family" target="_blank" rel="noopener">Sign in with a Family identity for feedback</a>
+        <form id="lego-feedback-form" hidden>
+          <p id="lego-feedback-target"></p>
+          <label>Feedback type<select id="lego-feedback-kind"><option value="comment">Comment</option><option value="looks_wrong">Looks wrong</option></select></label>
+          <label>Issue category<select id="lego-feedback-category"></select></label>
+          <label id="lego-feedback-camera-label" hidden>Recorded context<select id="lego-feedback-camera"><option value="">Whole example (no frame)</option><option value="wrist">Current wrist frame</option><option value="external">Current external frame</option></select></label>
+          <label>Comment<textarea id="lego-feedback-text" required maxlength="8000" rows="3"></textarea></label>
+          <button id="lego-feedback-submit" type="submit">Send feedback</button>
+        </form>
+        <button id="lego-feedback-check" type="button" hidden>Check original receipt</button>
+        <button id="lego-feedback-retry" type="button" hidden>Retry exact saved feedback</button>
+        <button id="lego-feedback-new" type="button" hidden>Start another comment</button>
+        <p class="hint">Queued means saved, not delivered. Owner delivery means enqueued, not acknowledged or fixed. A pending comment is retained in this browser until you explicitly start another.</p>
+        <pre id="lego-feedback-receipt"></pre>
+      </section>
       <details><summary>Technical metadata and immutable identity</summary><pre id="lego-metadata"></pre></details>
     </dialog>
   </main>

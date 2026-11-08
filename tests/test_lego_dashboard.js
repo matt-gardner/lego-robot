@@ -35,8 +35,9 @@ class Element {
   }
 }
 
-async function catalog() {
+async function catalog(feedback = null, detail = null) {
   const elements = new Map(), requests = [];
+  const storage = new Map();
   const get = id => {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
@@ -46,9 +47,15 @@ async function catalog() {
     document: {documentElement: {dataset: {basePath: "/lego-robot"}},
       getElementById: get, createElement: tag => new Element(tag)},
     URLSearchParams, console, setInterval, clearInterval,
-    fetch: async route => {
+    crypto: {randomUUID: () => "3699f611-928c-4329-a839-927c141cd123"},
+    localStorage: {getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
+    fetch: async (route, options) => {
       const query = new URL(route, "http://localhost").searchParams;
-      requests.push({route, query});
+      requests.push({route, query, options});
+      if (route.startsWith("/family/")) {
+        return feedback ? feedback(route, options) : {ok: false, status: 401, json: async () => ({detail: "Sign in"})};
+      }
       let value;
       if (!query.has("release")) value = {
         releases: [
@@ -60,8 +67,8 @@ async function catalog() {
       else if (query.get("preview") === "geometry") value = {
         meshes: [{vertices: [[0, 0, 0], [1, 0, 0], [0, 1, 1]], faces: [[0, 1, 2]], color: [0.8, 0.25, 0.1, 1]}],
       };
-      else if (query.has("item")) value = {
-        release: {kind: "parts"}, item: {id: "3005", part_id: "3005", description: "Brick", effective_status: "verified"},
+      else if (query.has("item")) value = detail || {
+        release: {kind: "parts", id: "a".repeat(64), artifact_sha256: "b".repeat(64)}, item: {id: "3005", part_id: "3005", description: "Brick", effective_status: "verified"},
         variants: [], frames: [],
       };
       else value = {
@@ -76,7 +83,7 @@ async function catalog() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/so101/dashboard", filename), "utf8"), context);
   }
   await new Promise(resolve => setImmediate(resolve));
-  return {get, requests, evaluate: code => vm.runInContext(code, context)};
+  return {get, requests, storage, evaluate: code => vm.runInContext(code, context)};
 }
 
 test("defaults to latest usable catalog and effective validated parts with image cards", async () => {
@@ -122,4 +129,107 @@ test("part click opens real geometry, dragging changes projection, and missing v
   canvas.events.pointercancel();
   canvas.events.pointermove({clientX: 200, clientY: 80, pointerId: 1});
   assert.equal(ui.evaluate("legoViewer.yaw"), yaw);
+});
+
+const feedbackResponse = value => ({ok: true, json: async () => value});
+const capabilities = {supported_target_kinds: ["part", "example"], issue_categories: ["catalog", "geometry", "task", "camera"]};
+const queuedReceipt = {request_id: "tracked", status: "queued", owner_delivery: "queued", monitor_delivery: "delivered"};
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test("feedback requires Family identity instead of assuming website login", async () => {
+  const ui = await catalog();
+  await ui.get("lego-grid").children[0].events.click();
+  await flush();
+  assert.equal(ui.get("lego-feedback-form").hidden, true);
+  assert.match(ui.get("lego-feedback-status").textContent, /Family identity/);
+});
+
+test("uncertain submission retains exact payload and key; checking and replay do not create duplicates", async () => {
+  let posts = 0;
+  const ui = await catalog(async (route, options) => {
+    if (route.endsWith("/capabilities")) return feedbackResponse(capabilities);
+    if (options.method === "POST" && ++posts === 1) throw new Error("Connection lost");
+    return feedbackResponse(queuedReceipt);
+  });
+  await ui.get("lego-grid").children[0].events.click();
+  await flush();
+  ui.get("lego-feedback-text").value = "Geometry looks wrong";
+  await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
+  assert.match(ui.get("lego-feedback-status").textContent, /Saved feedback has not been discarded/);
+  const saved = JSON.parse([...ui.storage.values()][0]);
+  assert.equal(saved.target.id, "3005");
+  assert.equal(saved.target.release_id, "a".repeat(64));
+  assert.equal(saved.target.artifact_sha256, "b".repeat(64));
+  await ui.get("lego-feedback-check").events.click();
+  assert.match(ui.get("lego-feedback-status").textContent, /Owner: queued; monitor: delivered/);
+  await ui.get("lego-feedback-retry").events.click();
+  const bodies = ui.requests.filter(request => request.options?.method === "POST").map(request => request.options.body);
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0], bodies[1]);
+  assert.equal(ui.storage.size, 1);
+});
+
+test("example feedback pins actual selected frame, timestamp and camera; missing cameras cannot submit", async () => {
+  const detail = {release: {kind: "examples", id: "c".repeat(64), artifact_sha256: "d".repeat(64)},
+    item: {id: "episode", task: "pick", split: "diagnostic", expert_acceptance: "diagnostic"}, variants: [],
+    frames: [{frame_index: 0, timestamp: 0.15, wrist: "image.jpg"}]};
+  const ui = await catalog(async route => feedbackResponse(route.endsWith("/capabilities") ? capabilities : queuedReceipt), detail);
+  await ui.get("lego-grid").children[0].events.click();
+  await flush();
+  ui.get("lego-feedback-text").value = "Camera looks wrong";
+  ui.get("lego-feedback-camera").value = "external";
+  await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
+  assert.equal(ui.storage.size, 0);
+  assert.match(ui.get("lego-feedback-status").textContent, /unavailable/);
+  ui.get("lego-feedback-camera").value = "wrist";
+  await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
+  const saved = JSON.parse([...ui.storage.values()][0]);
+  assert.equal(saved.target.kind, "example");
+  assert.equal(saved.frame_index, 0);
+  assert.equal(saved.timestamp, 0.15);
+  assert.equal(saved.camera, "wrist");
+});
+
+for (const status of [401, 403, 404, 409, 422, 503]) {
+  test(`feedback HTTP ${status} stays visible and preserves the original saved key`, async () => {
+    const ui = await catalog(async route => route.endsWith("/capabilities") ? feedbackResponse(capabilities) :
+      {ok: false, status, json: async () => ({detail: "Rejected"})});
+    await ui.get("lego-grid").children[0].events.click();
+    await flush();
+    ui.get("lego-feedback-text").value = "Check this";
+    await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
+    assert.match(ui.get("lego-feedback-status").textContent, /Rejected/);
+    assert.equal(ui.storage.size, 1);
+    assert.equal(ui.get("lego-feedback-new").hidden, true);
+  });
+}
+
+test("delivered and failed receipts distinguish owner enqueue from resolution and retain errors", async () => {
+  const ui = await catalog(async route => feedbackResponse(route.endsWith("/capabilities") ? capabilities :
+    {request_id: "tracked", status: "failed", owner_delivery: "failed", monitor_delivery: "delivered", error: "Owner unavailable"}));
+  await ui.get("lego-grid").children[0].events.click();
+  await flush();
+  ui.get("lego-feedback-text").value = "Check this";
+  await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
+  assert.match(ui.get("lego-feedback-status").textContent, /Owner: failed.*Owner unavailable/);
+  ui.evaluate('legoFeedbackReceipt({request_id: "tracked", status: "delivered", owner_delivery: "delivered", monitor_delivery: "queued"})');
+  assert.match(ui.get("lego-feedback-status").textContent, /not acknowledgment or resolution/);
+});
+
+test("storage failure prevents sending, and navigating preserves a saved comment's original target", async () => {
+  const ui = await catalog(async route => feedbackResponse(route.endsWith("/capabilities") ? capabilities : queuedReceipt));
+  await ui.get("lego-grid").children[0].events.click();
+  await flush();
+  ui.get("lego-feedback-text").value = "Keep this exact comment";
+  ui.evaluate('localStorage.setItem = () => { throw new Error("Storage blocked"); }');
+  await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
+  assert.match(ui.get("lego-feedback-status").textContent, /Storage blocked/);
+  assert.equal(ui.requests.filter(request => request.options?.method === "POST").length, 0);
+  const pending = {idempotency_uuid: "saved", target: {id: "prior-part"}, text: "Prior comment"};
+  ui.storage.set("lego-feedback-pending-v1", JSON.stringify(pending));
+  await ui.get("lego-grid").children[0].events.click();
+  await flush();
+  assert.equal(ui.get("lego-feedback-form").hidden, true);
+  assert.match(ui.get("lego-feedback-receipt").textContent, /prior-part/);
+  assert.match(ui.get("lego-feedback-status").textContent, /original target and context are preserved/);
 });
