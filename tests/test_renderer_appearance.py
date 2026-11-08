@@ -13,10 +13,12 @@ from so101.renderer_appearance import RendererAppearance
 from so101.renderer_appearance_v2 import WristAppearanceV2
 from so101.renderer_appearance_v3 import WristAppearanceV3
 from so101.renderer_appearance_v4 import WristAppearanceV4
+from so101.renderer_appearance_v5 import WristAppearanceV5
 from so101.robot_sim import BeamSimulation, MODEL_ROOT, restore_episode
 
 
-@pytest.fixture(params=[RendererAppearance, WristAppearanceV2, WristAppearanceV3, WristAppearanceV4])
+@pytest.fixture(params=[RendererAppearance, WristAppearanceV2, WristAppearanceV3,
+                        WristAppearanceV4, WristAppearanceV5])
 def pair(request):
     if not (MODEL_ROOT / "revision.json").exists():
         pytest.skip("Pinned SO101 assets unavailable")
@@ -67,6 +69,33 @@ def test_photometric_processing_is_reproducible_without_spatial_warp():
     assert first.shape == image.shape and first.dtype == image.dtype
     np.testing.assert_array_equal(first, profile.process_rgb(image, seed=10, frame=1))
     assert not np.array_equal(first, profile.process_rgb(image, seed=10, frame=2))
+
+
+def test_v5_noise_matches_reference_correlation_without_chromatic_speckle():
+    profile = WristAppearanceV5()
+    image = np.full((240, 320, 3), 128, dtype=np.uint8)
+    first = profile.process_rgb(image, seed=10, frame=1)
+    np.testing.assert_array_equal(first, profile.process_rgb(image, seed=10, frame=1))
+    assert not np.array_equal(first, profile.process_rgb(image, seed=10, frame=2))
+    np.testing.assert_array_equal(first[:, :, 0], first[:, :, 1])
+    np.testing.assert_array_equal(first[:, :, 1], first[:, :, 2])
+    gray = first[5:-5, 5:-5, 0].astype(float)
+    assert .85 < gray.std() < 1.15
+    assert .85 < np.diff(gray, axis=1).std() / gray.std() < 1.15
+    assert profile.identity()["parent_v4_implementation_sha256"] == WristAppearanceV4().implementation_sha256
+
+
+@pytest.mark.parametrize("field,value", [
+    ("noise_sigma_u8", 1), ("noise_correlation_sigma_px", 0),
+    ("correlated_noise_sigma_u8", np.nan),
+])
+def test_v5_rejects_invalid_noise_parameters(tmp_path, field, value):
+    config = json.loads(WristAppearanceV5().path.read_text())
+    config[field] = value
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="correlated noise"):
+        WristAppearanceV5(path)
 
 
 def test_v2_desaturates_without_changing_gray_or_parent_identity():
@@ -166,7 +195,7 @@ def test_unqualified_diagnostic_rejects_unsafe_source(tmp_path, monkeypatch, inv
 @pytest.mark.skipif(os.environ.get("MUJOCO_GL") not in ("osmesa", "egl"),
                     reason="Requires explicit headless rendering backend")
 @pytest.mark.parametrize("profile_type", [RendererAppearance, WristAppearanceV2, WristAppearanceV3,
-                                        WristAppearanceV4])
+                                        WristAppearanceV4, WristAppearanceV5])
 def test_rgb_area_lighting_preserves_segmentation_depth_and_model(profile_type):
     sim = BeamSimulation(appearance=profile_type())
     try:

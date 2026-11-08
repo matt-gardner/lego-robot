@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "profile_id": "wrist-soft-v5",
+  "parent_v4_profile_sha256": "ef9d9726fc6158803ad7798e490bbf94d6514f5642b35d5865f76ecf00507c15",
+  "noise_sigma_u8": 0,
+  "correlated_noise_sigma_u8": 0.95,
+  "noise_correlation_sigma_px": 0.7
+}
