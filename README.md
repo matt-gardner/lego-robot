@@ -217,7 +217,8 @@ under the prefix. The default empty base path preserves direct-root serving.
 `/lego` (or `/lego-robot/lego`) separately browses schema-1 LEGO catalogs and
 existing immutable `.sqlite` episode containers under the workspace's `data`
 directory without extraction. Set `--lego-catalog-root /mnt/data/lego-catalog`
-to read externally published catalog releases. Exact artifact and catalog hashes,
+to read externally published catalog releases. Hidden staging paths are excluded
+from discovery until publication. Exact artifact and catalog hashes,
 part preparation failures, historical acceptance labels and original recorded
 frames remain visible; missing external recordings are not reconstructed.
 Authenticated request-monitor feedback delivery is not yet integrated and is

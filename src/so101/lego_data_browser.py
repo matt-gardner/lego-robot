@@ -48,6 +48,8 @@ class LegoDataBrowser:
         for pattern, kind in (("**/catalog.json", "parts"), ("**/*.sqlite", "examples")):
             root = self.catalog_root if kind == "parts" else self.root
             for path in sorted(root.glob(pattern)):
+                if any(component.startswith(".") for component in path.relative_to(root).parts):
+                    continue
                 self.contained(path, root)
                 if kind == "parts":
                     content = path.read_bytes()

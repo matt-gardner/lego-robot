@@ -108,6 +108,21 @@ def test_explicit_catalog_root(tmp_path):
     assert browser.list({"release": release["id"]})["total"] == 2
 
 
+def test_unpublished_hidden_releases_are_not_discovered(tmp_path):
+    catalog(tmp_path)
+    staging = catalog(tmp_path, ".catalog-staging-incomplete")
+    staging.write_text("incomplete JSON")
+    nested = tmp_path / "data" / "published" / ".catalog-staging-nested"
+    nested.mkdir(parents=True)
+    (nested / "catalog.json").write_text("incomplete JSON")
+    hidden_sqlite = tmp_path / "data" / ".episode-staging.sqlite"
+    hidden_sqlite.write_bytes(b"incomplete SQLite")
+    releases = LegoDataBrowser(tmp_path).list({})["releases"]
+    assert [(row["kind"], row["version"]) for row in releases] == [("parts", "v1")]
+    assert staging.read_text() == "incomplete JSON"
+    assert hidden_sqlite.read_bytes() == b"incomplete SQLite"
+
+
 def test_dashboard_prefix_and_lego_api(tmp_path):
     from so101.rl_dashboard import make_server
 
