@@ -40,6 +40,20 @@ def test_fastest_baseline_still_compares_a_changed_feasible_microbatch():
     assert runner.select_candidates(candidates) == (16, 32)
 
 
+def test_selection_uses_throughput_not_memory_occupancy():
+    candidates = [
+        {"status": "completed", "microbatch": 16, "steady_mean_seconds": 8,
+         "max_reserved_bytes": 50, "total_memory_bytes": 100},
+        {"status": "completed", "microbatch": 32, "steady_mean_seconds": 9,
+         "max_reserved_bytes": 80, "total_memory_bytes": 100},
+        {"status": "completed", "microbatch": 48, "steady_mean_seconds": 7,
+         "max_reserved_bytes": 95, "total_memory_bytes": 100},
+        {"status": "out_of_memory", "microbatch": 64},
+    ]
+    feasible = runner.feasible_candidates(candidates)
+    assert min(feasible, key=lambda item: item["steady_mean_seconds"])["microbatch"] == 16
+
+
 def test_short_comparison_rejects_different_sample_populations():
     receipts = [
         {"status": "completed", "base_sha256": "same", "sample_fingerprints": ["a"] * 6},

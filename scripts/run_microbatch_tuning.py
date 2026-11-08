@@ -14,7 +14,7 @@ def write(path, value):
     temporary.replace(path)
 
 
-def select_candidates(candidates):
+def feasible_candidates(candidates):
     feasible = [
         item for item in candidates
         if item["status"] == "completed"
@@ -22,6 +22,11 @@ def select_candidates(candidates):
     ]
     if not feasible:
         raise RuntimeError("No tested microbatch retained ten-percent memory headroom")
+    return feasible
+
+
+def select_candidates(candidates):
+    feasible = feasible_candidates(candidates)
     selected = min(feasible, key=lambda item: item["steady_mean_seconds"])["microbatch"]
     alternatives = [item for item in feasible if item["microbatch"] != 16]
     if not alternatives:
@@ -30,7 +35,8 @@ def select_candidates(candidates):
     return selected, comparison
 
 
-def run(root, image, job_id, no_checkpointing_only=False, accumulation_only=False):
+def run(root, image, job_id, no_checkpointing_only=False, accumulation_only=False,
+        accumulation_microbatches=(16,)):
     inputs = Path("/home/ubuntu/lego-sweep/inputs")
     sweep = Path("/home/ubuntu/lego-sweep/output")
     scripts = Path("/home/ubuntu/lego-sweep/microbatch-scripts")
@@ -103,11 +109,34 @@ def run(root, image, job_id, no_checkpointing_only=False, accumulation_only=Fals
             return receipt
 
         if accumulation_only:
-            receipt = continuation("probe-16-accumulation", 16, 54, False, True)
-            write(root / "gradient_accumulation.json", receipt)
+            candidates = []
+            for microbatch in accumulation_microbatches:
+                receipt = continuation(
+                    f"probe-{microbatch}-accumulation", microbatch, 54, False, True)
+                if (candidates and receipt["status"] == "completed"
+                        and receipt["sample_fingerprints"] != candidates[0]["sample_fingerprints"]):
+                    raise ValueError("Accumulation candidates sampled different examples")
+                candidates.append(receipt)
+                write(root / "accumulation_candidates.json", candidates)
+                if receipt["status"] == "out_of_memory":
+                    break
+            if len(accumulation_microbatches) == 1:
+                write(root / "gradient_accumulation.json", candidates[0])
+            feasible = feasible_candidates(candidates)
+            fastest = min(feasible, key=lambda item: item["steady_mean_seconds"])
+            write(root / "accumulation_selection.json", {
+                "microbatch": fastest["microbatch"],
+                "steady_mean_seconds": fastest["steady_mean_seconds"],
+                "effective_batch": 128,
+                "tested": [item["microbatch"] for item in candidates],
+                "not_tested": list(accumulation_microbatches[len(candidates):]),
+                "criterion": "Fastest five-update post-warmup mean with ten-percent reserved-memory headroom.",
+                "larger_candidates": "Not run after the first genuine CUDA OOM.",
+            })
             write(root / "progress.json", {
-                "phase": "completed", "microbatch": 16, "gradient_accumulation": True,
-                "activation_checkpointing": False, "status": receipt["status"],
+                "phase": "completed", "microbatch": fastest["microbatch"],
+                "gradient_accumulation": True,
+                "activation_checkpointing": False, "status": "completed",
             })
             return
         if no_checkpointing_only:
@@ -160,11 +189,14 @@ def main():
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--no-checkpointing-only", action="store_true")
     parser.add_argument("--accumulation-only", action="store_true")
+    parser.add_argument("--accumulation-microbatch", type=int, action="append",
+                        choices=(16, 24, 32, 48, 64, 96, 128))
     args = parser.parse_args()
     try:
         if args.no_checkpointing_only and args.accumulation_only:
             raise ValueError("Choose one isolated execution-mode benchmark")
-        run(args.root, args.image, args.job_id, args.no_checkpointing_only, args.accumulation_only)
+        run(args.root, args.image, args.job_id, args.no_checkpointing_only,
+            args.accumulation_only, args.accumulation_microbatch or (16,))
     except Exception as error:
         write(args.root / "failure.json", {"error": str(error)})
         raise

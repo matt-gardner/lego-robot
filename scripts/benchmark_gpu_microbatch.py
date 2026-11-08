@@ -19,8 +19,8 @@ def main():
     parser.add_argument("--no-activation-checkpointing", action="store_true")
     parser.add_argument("--true-gradient-accumulation", action="store_true")
     args, training_args = parser.parse_known_args()
-    if args.microbatch not in (16, 32, 64, 128):
-        raise ValueError("Benchmark microbatch must be 16, 32, 64, or 128")
+    if args.microbatch <= 0 or args.microbatch > 128 or args.microbatch % 2:
+        raise ValueError("Benchmark microbatch must be positive, even, and at most 128")
     if args.true_gradient_accumulation:
         training_args += ["--gradient-accumulation", "--micro-batch-size", str(args.microbatch)]
     activation_checkpointing = not (args.no_activation_checkpointing or args.true_gradient_accumulation)
