@@ -245,7 +245,7 @@ async function legoLoad() {
     legoElement("error").textContent = "";
     const notices = result.release.qualification_notices;
     legoElement("catalog-note").textContent = legoExamples
-      ? "Original wrist and external recordings. Development diagnostics are not promoted to training data."
+      ? "Newest recorded generation dates first; undated legacy recordings follow in stable identity order. Original wrist and external recordings. Development diagnostics are not promoted to training data."
       : notices.length
       ? notices.map(notice => `${notice.status}: ${notice.reason}`).join(" ")
       : "Training ready means prepared for simulation-data generation, not proven robot graspability. Footprints follow the part description; they are not measured bounding boxes.";
@@ -284,6 +284,8 @@ async function legoLoad() {
         legoText("span", legoExamples ? row.target_label || row.id : `Part ${row.part_id || row.id}`, "part-id"),
         legoText("span", legoExamples ? `Split: ${row.split}` :
           row.readiness === "ready" ? "Training ready" : "Not training ready", "part-badge"));
+      if (legoExamples) info.append(legoText("span", row.generated_at
+        ? `Generated: ${row.generated_at}` : "Generation date not recorded"));
       button.append(info);
       button.addEventListener("click", () => legoOpen(release, row.id));
       return button;
@@ -299,7 +301,8 @@ async function legoRefresh() {
     const result = await legoFetch({});
     const usable = result.releases.filter(release => legoExamples ? release.kind === "examples" :
       release.kind === "parts" && release.validated_parts > 0 && !release.qualification_notices.length);
-    const latest = usable.sort((a, b) => b.publication_mtime_ns - a.publication_mtime_ns)[0];
+    const latest = legoExamples ? usable[0] :
+      usable.sort((a, b) => b.publication_mtime_ns - a.publication_mtime_ns)[0];
     legoRelease = latest?.id || "";
     if (!legoRelease) {
       legoElement("count").textContent = legoExamples ? "No published recordings yet." : "No usable parts catalog is available yet.";

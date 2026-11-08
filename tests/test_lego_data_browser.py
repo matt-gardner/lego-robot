@@ -8,6 +8,7 @@ from urllib.request import urlopen
 import pytest
 
 from so101.lego_data_browser import LegoDataBrowser
+from so101.generation_order import generation_order
 
 
 def catalog(tmp_path, version="v1"):
@@ -44,6 +45,63 @@ def episode_release(tmp_path):
             db.execute("INSERT INTO files VALUES (?,?,?,?)",
                        ("old/source", name, content, hashlib.sha256(content).hexdigest()))
     return path
+
+
+def test_generation_order_uses_dates_not_ids_copy_times_or_qualification(tmp_path):
+    releases = []
+    for name, generated_at in [
+        ("a-new", "2026-11-08T18:00:00Z"),
+        ("z-old", "2026-11-08T18:30:00+01:00"),
+        ("legacy", None),
+    ]:
+        (tmp_path / name).mkdir()
+        path = episode_release(tmp_path / name)
+        metadata = {"release_id": name, "generated_at": generated_at}
+        episodes = [
+            {"example_id": "z-new", "task": "grasp", "generated_at": "2026-11-08T18:00:00Z"},
+            {"example_id": "a-tie", "task": "grasp", "generated_at": "2026-11-08T18:00:00+00:00"},
+            {"example_id": "a-old", "task": "view", "generated_at": "2026-11-08T18:30:00+01:00"},
+            {"example_id": "legacy", "task": "grasp"},
+        ]
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE catalog SET content=?", (json.dumps(metadata).encode(),))
+            db.execute("DELETE FROM files")
+            for index, episode in enumerate(episodes):
+                content = json.dumps(episode).encode()
+                db.execute("INSERT INTO files VALUES (?,?,?,?)",
+                           (f"source-{index}", "episode.json", content,
+                            hashlib.sha256(content).hexdigest()))
+        releases.append(path)
+    # The older release is copied last, but that is not generation chronology.
+    releases[1].touch()
+    browser = LegoDataBrowser(tmp_path, episode_root=tmp_path)
+    discovered = browser.list({})["releases"]
+    assert [row["version"] for row in discovered] == ["a-new", "z-old", "legacy"]
+    query = {"release": discovered[0]["id"], "limit": "2"}
+    first = browser.list(query)
+    assert [row["id"] for row in first["items"]] == ["a-tie", "z-new"]
+    second = browser.list({**query, "offset": "2"})
+    assert [row["id"] for row in second["items"]] == ["a-old", "legacy"]
+    assert first["total"] == second["total"] == 4
+    filtered = browser.list({**query, "task": "grasp", "offset": "1"})
+    assert [row["id"] for row in filtered["items"]] == ["z-new", "legacy"]
+    detail = browser.list({"release": discovered[0]["id"], "item": "z-new"})
+    assert detail["item"]["source"] == "source-0"
+    assert detail["release"]["artifact_sha256"] == hashlib.sha256(releases[0].read_bytes()).hexdigest()
+    assert browser.list({})["releases"] == discovered
+    with sqlite3.connect(releases[1]) as db:
+        db.execute("UPDATE catalog SET content=?", (json.dumps({
+            "release_id": "z-old", "generated_at": "2026-11-09T00:00:00Z",
+        }).encode(),))
+    refreshed = browser.list({})["releases"]
+    assert refreshed[0]["version"] == "z-old"
+    assert refreshed[0]["id"] != discovered[1]["id"]
+
+
+@pytest.mark.parametrize("value", ["2026-11-08T18:00:00", "2026-02-30T00:00:00Z", 123, ""])
+def test_invalid_generation_timestamp_is_explicit(value):
+    with pytest.raises(ValueError, match="generated_at"):
+        generation_order({"id": "example", "generated_at": value})
 
 
 def test_parts_versions_filters_and_exact_identity(tmp_path):

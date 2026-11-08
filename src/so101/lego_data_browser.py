@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 from so101.episode_storage import EpisodeStorage
+from so101.generation_order import generation_order
 from so101.part_preview import thumbnail, visual_geometry
 
 
@@ -90,6 +91,7 @@ class LegoDataBrowser:
                         "id": key, "kind": kind, "version": version,
                         "path": relative, "catalog_sha256": digest,
                         "artifact_sha256": artifact_digest,
+                        "generated_at": metadata.get("generated_at") if kind == "examples" else None,
                         "validated_parts": (sum(row.get("status") == "verified" for row in metadata["parts"])
                                             if kind == "parts" else 0),
                     }
@@ -226,7 +228,7 @@ class LegoDataBrowser:
                 })
         if len({row["id"] for row in rows}) != len(rows):
             raise ValueError("Duplicate example identity in release")
-        return rows
+        return sorted(rows, key=generation_order)
 
     def geometry(self, query: dict[str, str]) -> dict:
         cached = self.preview_catalogs.get(query["release"])
@@ -305,9 +307,13 @@ class LegoDataBrowser:
 
     def list(self, query: dict[str, str]) -> dict:
         if not query.get("release"):
+            releases = list(self.releases().values())
+            releases = ([row for row in releases if row["kind"] == "parts"] +
+                        sorted((row for row in releases if row["kind"] == "examples"),
+                               key=generation_order))
             return {"releases": [
                 {key: value for key, value in release.items() if key != "metadata"}
-                for release in self.releases().values()
+                for release in releases
             ], "feedback": {"available": False,
                             "reason": "Authenticated request-monitor delivery is not configured."}}
         release = self.release(query["release"])

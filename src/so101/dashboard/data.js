@@ -8,7 +8,7 @@ let wristPlayback = null, playbackWanted = false;
 const limit = 24;
 const filters = ["view", "task", "difficulty", "usage", "outcome", "bucket"];
 const notes = {
-  examples: "Overview and wrist previews are source expert demonstrations, NOT policy rollouts. Policy usage includes discarded groups; expert success and policy success are separate.",
+  examples: "Newest recorded generation dates first; undated legacy examples follow in stable identity order. Overview and wrist previews are source expert demonstrations, NOT policy rollouts. Policy usage includes discarded groups; expert success and policy success are separate.",
   rollouts: "Newest policy rollout summaries first. Historical runs did not record actions/images. Future runs record the first rollout per training group, with sparse actual wrist frames and bounded retention; other rollouts remain summary-only.",
   solved: "One entry per source AND exact assistance level that previously passed every rollout. Membership is historical, not proof it remains solved or works unassisted. Counts below are for that assistance level.",
 };
@@ -47,6 +47,8 @@ function renderCard(item, view) {
   if (view === "rollouts" && item.evidence_status === "available") {
     images.append(preview(item, view, "0", "Actual policy wrist frame"));
   } else {
+    if (view === "examples") card.append(text("p", item.generated_at
+      ? `Generated: ${item.generated_at}` : "Generation date not recorded"));
     const source = {...item, id: item.example_id || item.id};
     images.append(preview(source, "examples", "overview", view === "rollouts"
       ? "Expert scene reference (NOT this rollout)"

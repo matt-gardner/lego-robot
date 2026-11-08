@@ -35,7 +35,7 @@ class Element {
   }
 }
 
-async function catalog(feedback = null, detail = null) {
+async function catalog(feedback = null, detail = null, examples = false) {
   const elements = new Map(), requests = [];
   const storage = new Map();
   const get = id => {
@@ -44,7 +44,8 @@ async function catalog(feedback = null, detail = null) {
   };
   get("lego-readiness").value = "ready";
   const context = vm.createContext({
-    document: {documentElement: {dataset: {basePath: "/lego-robot"}},
+    document: {documentElement: {dataset: {basePath: "/lego-robot", browserMode: examples ? "examples" : ""}},
+      querySelector: () => new Element(),
       getElementById: get, createElement: tag => new Element(tag)},
     URLSearchParams, console, setInterval, clearInterval,
     crypto: {randomUUID: () => "3699f611-928c-4329-a839-927c141cd123"},
@@ -58,7 +59,10 @@ async function catalog(feedback = null, detail = null) {
       }
       let value;
       if (!query.has("release")) value = {
-        releases: [
+        releases: examples ? [
+          {id: "generated-new", kind: "examples", generated_at: "2026-11-08T18:00:00Z", publication_mtime_ns: 1},
+          {id: "copied-old", kind: "examples", generated_at: "2026-11-08T17:00:00Z", publication_mtime_ns: 99},
+        ] : [
           {id: "old", version: "old", kind: "parts", validated_parts: 7, publication_mtime_ns: 1, qualification_notices: []},
           {id: "invalid", version: "bad", kind: "parts", validated_parts: 40, publication_mtime_ns: 9, qualification_notices: [{status: "invalidated"}]},
           {id: "latest", version: "current", kind: "parts", validated_parts: 29, publication_mtime_ns: 2, qualification_notices: []},
@@ -96,6 +100,13 @@ test("defaults to latest usable catalog and effective validated parts with image
   assert.equal(card.children[0].tagName, "img");
   assert.match(card.children[0].src, /^\/lego-robot\/api\/lego\?/);
   assert.match(card.children[0].src, /preview=image/);
+});
+
+test("recorded examples preserve generation order instead of selecting latest file copy", async () => {
+  const ui = await catalog(null, null, true);
+  assert.equal(ui.evaluate("legoRelease"), "generated-new");
+  assert.match(ui.get("lego-catalog-note").textContent, /undated legacy/);
+  assert.match(ui.get("lego-grid").textContent, /Generation date not recorded/);
 });
 
 test("type, footprint and decoration filters combine and reset pagination", async () => {

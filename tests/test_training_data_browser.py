@@ -70,6 +70,31 @@ def test_source_usage_outcomes_difficulty_and_exact_assistance_bucket(dataset):
     assert len(detail["source_history"]) == 3
 
 
+def test_source_generation_order_is_not_policy_usage_and_preserves_filters(dataset):
+    root, path, _, a, b, c = dataset
+    for source, timestamp in [
+        (a, "2026-11-08T17:00:00Z"),
+        (b, "2026-11-08T18:00:00+00:00"),
+    ]:
+        episode = root / source / "episode.json"
+        metadata = json.loads(episode.read_text())
+        metadata["generated_at"] = timestamp
+        episode.write_text(json.dumps(metadata))
+    browser = TrainingDataBrowser(root)
+    first = browser.list(path, {"limit": "1"})
+    assert first["items"][0]["source"] == b
+    assert first["items"][0]["last_step"] is None
+    assert browser.list(path, {"offset": "1", "limit": "1"})["items"][0]["source"] == a
+    legacy = browser.list(path, {"offset": "2", "limit": "1"})["items"][0]
+    assert legacy["source"] == c and legacy["generated_at"] is None
+    assert first["total"] == 3
+    assert browser.list(path, {"usage": "used"})["items"][0]["source"] == a
+    assert browser.list(path, {"usage": "unused", "limit": "1"})["items"][0]["source"] == b
+    assert browser.list(path, {"view": "rollouts", "limit": "1"})["items"][0]["step"] == 3
+    assert browser.detail(path, "examples", identifier(b))["metadata"]["generated_at"] == (
+        "2026-11-08T18:00:00+00:00")
+
+
 def test_sft_uses_its_collection_not_unrelated_historical_catalogs(dataset):
     root, path, log, a, b, c = dataset
     log.update(kind="sft", steps=[], solved_problems={})

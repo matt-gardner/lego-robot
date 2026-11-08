@@ -14,6 +14,17 @@ as supplemental dashboard examples. Search for `physical_preview_v3` to inspect
 the collision-correct preview; these examples are not marked as used by historical
 training runs. Incomplete previews are not shown.
 
+Both the training Data browser's source examples and Recorded examples sort by
+recorded `generated_at` completion timestamps, newest first, with stable identity
+ties before pagination. Recorded examples also select the newest dated episode
+release, not the most recently copied file. Undated legacy data follows dated
+data and is labeled "Generation date not recorded"; its chronology is unknown.
+`generated_at` is a timezone-qualified RFC3339 wall-clock timestamp captured by
+the producer at recording completion (collection completion for release metadata).
+Copies and storage conversions preserve it; qualification dates, seeds, protocol
+versions and file modification times are never substituted. Policy rollout and
+solved-entry ordering, part catalog selection and provenance are unchanged.
+
 Python 3.12, LeRobot 0.6.1, and the `core_scripts` and `feetech` extras.
 Includes calibration, motor setup, teleoperation, recording, replay, and
 camera discovery. Training and policy-specific extras are not installed.

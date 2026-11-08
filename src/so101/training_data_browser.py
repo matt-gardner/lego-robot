@@ -10,6 +10,8 @@ import time
 from concurrent.futures import Future
 from pathlib import Path
 
+from so101.generation_order import generation_order
+
 
 def identifier(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:20]
@@ -74,6 +76,7 @@ class TrainingDataBrowser:
                 difficulty = metadata.get("difficulty")
                 row = {
                     "id": identifier(source), "source": source, "task": metadata["task"],
+                    "generated_at": metadata.get("generated_at"),
                     "target": metadata.get("target_label", metadata.get("target")),
                     "destination": metadata.get("destination"), "seed": metadata["initial"]["seed"],
                     "difficulty": difficulty, "difficulty_level": difficulty["level"] if difficulty else "unrated",
@@ -190,7 +193,10 @@ class TrainingDataBrowser:
             if search and search not in f'{row["source"]} {row["target"]} {row.get("seed", "")}'.lower():
                 continue
             rows.append(row)
-        rows.sort(key=lambda row: (-(row.get("last_step") or -1), row["task"], row["source"], row["id"]))
+        if view == "examples":
+            rows.sort(key=generation_order)
+        else:
+            rows.sort(key=lambda row: (-(row.get("last_step") or -1), row["task"], row["source"], row["id"]))
         page = []
         for row in rows[offset:offset + limit]:
             value = {key: item for key, item in row.items() if key != "history"}
