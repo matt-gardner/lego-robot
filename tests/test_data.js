@@ -8,6 +8,7 @@ const vm = require("node:vm");
 function page() {
   const elements = new Map();
   const timers = new Map();
+  const storage = new Map();
   let now = 0, timerId = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
@@ -27,7 +28,8 @@ function page() {
   };
   const context = vm.createContext({
     document: {
-      documentElement: {dataset: {basePath: "/lego-robot"}}, getElementById: element,
+      documentElement: {dataset: {basePath: "/lego-robot", browserMode: "data"}}, getElementById: element,
+      createElement: tag => ({tagName: tag, value: "", textContent: ""}),
       createElementNS: () => ({setAttribute() {}}),
     },
     fetch: () => new Promise(() => {}),
@@ -40,11 +42,15 @@ function page() {
     clearTimeout: id => timers.delete(id),
     Date: class extends Date { static now() { return now; } },
     console, URLSearchParams,
+    crypto: {randomUUID: () => "3699f611-928c-4329-a839-927c141cd123"},
+    localStorage: {getItem: key => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
   });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/so101/dashboard/lego.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(
     process.env.DATA_BROWSER_SOURCE || path.join(__dirname, "../src/so101/dashboard/data.js"),
     "utf8"), context);
-  return {context, element, run: code => vm.runInContext(code, context),
+  return {context, element, storage, run: code => vm.runInContext(code, context),
     advance(ms) {
       now += ms;
       const callbacks = [...timers.values()];
@@ -58,6 +64,68 @@ function page() {
 const response = (status, body, type = "application/json", redirected = false) => ({
   ok: status >= 200 && status < 300, status, redirected,
   headers: {get: () => type}, json: async () => body,
+});
+
+test("data viewer comments reuse immutable archive identity and actual sparse frame with exact retry", async () => {
+  const p = page(), submissions = [];
+  p.context.fetch = async (route, options) => {
+    if (route.endsWith("/capabilities")) return response(200, {
+      supported_target_kinds: ["example"], issue_categories: ["task", "camera"],
+    });
+
+    submissions.push(JSON.parse(options.body));
+    return response(200, {request_id: "saved", status: "queued", owner_delivery: "queued", monitor_delivery: "delivered"});
+  };
+  await p.run(`legoFeedbackDataOpen({
+    release: {kind: "examples", id: "release-hash", artifact_sha256: "artifact-hash"},
+    item: {id: "original-example"},
+    frames: [{frame_index: 0, timestamp: 0, wrist: true},
+      {frame_index: 149, timestamp: 14.9, wrist: true, external: true}]
+  })`);
+  p.element("frame").value = "1";
+  p.element("lego-feedback-camera").value = "external";
+  p.element("lego-feedback-kind").value = "comment";
+  p.element("lego-feedback-text").value = "Only a few frames were recorded";
+  await p.element("lego-feedback-form").events.submit({preventDefault() {}});
+  assert.deepEqual(submissions[0].target, {kind: "example", id: "original-example",
+    release_id: "release-hash", artifact_sha256: "artifact-hash"});
+  assert.equal(submissions[0].frame_index, 149);
+  assert.equal(submissions[0].timestamp, 14.9);
+  assert.equal(submissions[0].camera, "external");
+  p.run("legoFeedbackDataOpen(null)");
+  assert.equal(p.element("lego-feedback-form").hidden, true);
+  assert.equal(p.element("lego-feedback-retry").hidden, false);
+  await p.element("lego-feedback-retry").events.click();
+  assert.deepEqual(submissions[1], submissions[0]);
+});
+
+test("original paired camera playback buffers slow images without skipping or canceling frames", async () => {
+  const p = page();
+  p.context.fetch = async () => response(200, {...recording("current"), movie_available: false,
+    original_recording: true, frames: [{step: 0}, {step: 1}, {step: 2}]});
+  await p.run('showDetail({id: "current"}, "examples")');
+  const wrist = p.element("detail-image"), external = p.element("detail-overview");
+  wrist.complete = false;
+  external.complete = false;
+  await p.run("playMovie()");
+  p.advance(5000);
+  assert.equal(p.element("frame").value, 0);
+  assert.ok(wrist.src.endsWith("image=0"));
+  assert.ok(external.src.endsWith("image=external%3A0"));
+  assert.match(p.element("movie-status").textContent, /Buffering.*no frames are skipped/);
+  wrist.complete = true;
+  p.advance(100);
+  assert.equal(p.element("frame").value, 0);
+  external.complete = true;
+  p.advance(100);
+  p.advance(100);
+  assert.equal(p.element("frame").value, 1);
+  p.advance(100);
+  assert.equal(p.element("frame").value, 2);
+  assert.ok(wrist.src.endsWith("image=2"));
+  assert.ok(external.src.endsWith("image=external%3A2"));
+  assert.equal(p.run("wristPlayback"), null);
+  assert.equal(p.element("play-movie").textContent, "Play recorded views");
 });
 
 test("HTML gateway and sign-in responses are not parsed as JSON", async () => {

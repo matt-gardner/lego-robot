@@ -433,6 +433,15 @@ update, GPU report age, and the last completed evaluation duration. A scheduled
 evaluation boundary awaiting a result is labeled pending/in progress, not a
 confirmed live phase; fresh explicit phase reports take precedence. Stale GPU
 reports make the current phase unknown rather than implying optimizer progress.
+Current curriculum recordings in the data viewer support comments and
+looks-wrong feedback on the whole example or selected original wrist/external
+frame. They reuse the authenticated Family transport, immutable archive identity,
+durable saved key, receipt checking and exact retries from the catalog viewer.
+Legacy directory demonstrations and policy recordings currently lack a supported
+immutable feedback target and are explicitly labeled unavailable.
+Original curriculum camera playback waits for both recorded views before advancing
+and retains the final frame. Slow image delivery buffers instead of skipping
+frames; the existing external recording needs no MuJoCo reconstruction.
 Frozen40 is used for tuning, not an independent final test set; pilot rankings
 need seed confirmation. The sweep does not automatically deploy a winner,
 restart RL, or provision cloud resources.

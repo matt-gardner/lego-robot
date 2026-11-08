@@ -132,6 +132,10 @@ def test_curriculum_archive_appears_with_creation_date_and_original_views(datase
     detail = browser.detail(None, "examples", row["id"])
     assert detail["original_recording"] and not detail["movie_available"]
     assert detail["frames"][0]["timestamp"] == 0
+    assert detail["feedback"]["release"]["id"] == row["archive_release"]
+    assert detail["feedback"]["release"]["artifact_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert detail["feedback"]["item"]["id"] == row["archive_item"]
+    assert detail["feedback"]["frames"][0]["frame_index"] == 0
     assert browser.media(None, "examples", row["id"], "initial") == (b"wrist", "image/jpeg")
     assert browser.media(None, "examples", row["id"], "external:0") == (b"external", "image/jpeg")
     (archive_root / "copy.sqlite").write_bytes(archive.read_bytes())

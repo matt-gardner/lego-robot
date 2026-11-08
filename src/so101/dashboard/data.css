@@ -39,3 +39,8 @@ dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; ma
   .data-filters select, .data-filters input { width: 100%; min-width: 0; }
   dialog { padding: 12px; }
 }
+.data-feedback { margin: 18px 0; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: #181a1e; }
+.data-feedback form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.data-feedback label { display: flex; flex-direction: column; gap: 6px; }
+.data-feedback label:has(textarea) { flex: 1 1 100%; }
+.data-feedback textarea { width: 100%; background: #101113; color: inherit; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font: inherit; }

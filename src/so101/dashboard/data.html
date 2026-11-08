@@ -1,11 +1,12 @@
 <!doctype html>
-<html lang="en" data-base-path="">
+<html lang="en" data-base-path="" data-browser-mode="data">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SO-101 Data Browser</title>
   <link rel="stylesheet" href="/dashboard.css">
   <link rel="stylesheet" href="/data.css">
+  <script src="/lego.js" defer></script>
   <script src="/data.js" defer></script>
 </head>
 <body>
@@ -56,6 +57,24 @@
     </div>
     <label id="frame-label">Frame <input id="frame" type="range" min="0" max="0" value="0"><output id="frame-value"></output></label>
     <p id="trace-note" class="hint"></p>
+    <section class="data-feedback" aria-label="Comment on this example">
+      <h3>Comment on this example</h3>
+      <p id="lego-feedback-status" role="status"></p>
+      <a href="/family" target="_blank" rel="noopener">Sign in with a Family identity to comment</a>
+      <form id="lego-feedback-form" hidden>
+        <p id="lego-feedback-target" class="hint"></p>
+        <label>Feedback type<select id="lego-feedback-kind"><option value="comment">Comment</option><option value="looks_wrong">Looks wrong</option></select></label>
+        <label>Issue category<select id="lego-feedback-category"></select></label>
+        <label id="lego-feedback-camera-label" hidden>Recorded context<select id="lego-feedback-camera"><option value="">Whole example (no frame)</option><option value="wrist">Current wrist frame</option><option value="external">Current external frame</option></select></label>
+        <label>Comment<textarea id="lego-feedback-text" required maxlength="8000" rows="3"></textarea></label>
+        <button type="submit">Send comment</button>
+      </form>
+      <button id="lego-feedback-check" type="button" hidden>Check original receipt</button>
+      <button id="lego-feedback-retry" type="button" hidden>Retry exact saved comment</button>
+      <button id="lego-feedback-new" type="button" hidden>Start another comment</button>
+      <p class="hint">Comments retain this example's immutable identity and selected recorded frame. Delivery means enqueued to the responsible worker, not acknowledged or fixed. Uncertain submissions are kept for receipt checking or exact retry.</p>
+      <pre id="lego-feedback-receipt"></pre>
+    </section>
     <svg id="action-plot" viewBox="0 0 800 180" role="img" aria-label="Five arm joint commanded positions over time"></svg>
     <pre id="detail-summary"></pre>
     <details><summary>Recent source training groups (up to 100)</summary><pre id="detail-history"></pre></details>

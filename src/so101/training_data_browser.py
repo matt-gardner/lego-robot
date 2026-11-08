@@ -269,6 +269,7 @@ class TrainingDataBrowser:
                 raise ValueError("Curriculum archive adapter is unavailable")
             archived = self.curriculum.list({"release": row["archive_release"], "item": row["archive_item"]})
             return {**row, "metadata": archived["item"], "example_id": row["id"],
+                    "feedback": {key: archived[key] for key in ("release", "item", "frames")},
                     "frames": [{"step": frame["frame_index"], **frame} for frame in archived["frames"]],
                     "actions": [], "movie_available": False, "original_recording": True,
                     "source_history": [], "recorded_trajectories": [], "source_rollout_total": 0,

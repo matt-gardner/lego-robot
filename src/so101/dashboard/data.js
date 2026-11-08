@@ -110,7 +110,8 @@ function showFrame(seek = true) {
   }
   $("frame-value").textContent = `${frame + 1}/${detail.frames.length} | policy/source step ${detail.frames[frame].step}`;
   if (detail.original_recording) {
-    $("detail-overview").src = image(detail, detail.view, `external:${frame}`);
+    const external = image(detail, detail.view, `external:${frame}`);
+    if ($("detail-overview").getAttribute("src") !== external) $("detail-overview").src = external;
     $("overview-caption").textContent = "Original external camera / same recorded frame";
   }
   if (seek && wristPlayback) {
@@ -125,7 +126,7 @@ function showFrame(seek = true) {
 function updatePlayButton() {
   const video = $("detail-movie"), combined = !!video.getAttribute("src");
   $("play-movie").disabled = combined ? !detail?.movie_available : !detail?.frames.length;
-  $("play-movie").textContent = `${playbackWanted ? "Pause" : "Play"} ${combined ? "combined view" : "wrist view"}`;
+  $("play-movie").textContent = `${playbackWanted ? "Pause" : "Play"} ${combined ? "combined view" : detail?.original_recording ? "recorded views" : "wrist view"}`;
 }
 function stopWristPlayback() {
   if (wristPlayback) clearTimeout(wristPlayback.timer);
@@ -144,6 +145,41 @@ function startWristPlayback() {
     originTime: Date.now(), originStep: selected.frames[Number($("frame").value)].step, timer: null,
   };
   wristPlayback = state;
+  if (selected.original_recording) {
+    function recordedTick() {
+      if (version !== detailRequest || !$("detail").open || wristPlayback !== state) return;
+      const frame = Number($("frame").value);
+      showFrame(false);
+      const images = [$("detail-image"), $("detail-overview")];
+      if (images.some(image => image.complete === false)) {
+        $("movie-status").textContent = `Buffering original camera views: frame ${frame + 1}/${selected.frames.length}. Playback waits for both cameras; no frames are skipped.`;
+        state.timer = setTimeout(recordedTick, 50);
+        return;
+      }
+      if (images.some(image => image.naturalWidth === 0)) {
+        stopWristPlayback();
+        playbackWanted = false;
+        $("movie-status").textContent = `Cannot load original camera frame ${frame + 1}. Retry playback or refresh the example.`;
+        updatePlayButton();
+        return;
+      }
+      $("movie-status").textContent = `Original wrist and external recordings: frame ${frame + 1}/${selected.frames.length}. No MuJoCo reconstruction is needed.`;
+      if (frame === selected.frames.length - 1) {
+        stopWristPlayback();
+        playbackWanted = false;
+        updatePlayButton();
+        return;
+      }
+      state.timer = setTimeout(() => {
+        if (wristPlayback !== state || version !== detailRequest) return;
+        $("frame").value = frame + 1;
+        recordedTick();
+      }, 1000 / fps);
+    }
+    recordedTick();
+    updatePlayButton();
+    return;
+  }
   function tick() {
     if (version !== detailRequest || !$("detail").open || wristPlayback !== state) return;
     const step = state.originStep + (Date.now() - state.originTime) * fps / 1000;
@@ -293,6 +329,7 @@ function plotActions(actions) {
 }
 async function showDetail(item, view) {
   const version = ++detailRequest;
+  legoFeedbackDataOpen(null);
   stopMovie();
   const result = await get(endpoint({view, item: item.id}));
   if (version !== detailRequest) return;
@@ -300,7 +337,9 @@ async function showDetail(item, view) {
   $("data-run").disabled = result.origin === "curriculum";
   renderTrajectoryNavigation();
   updatePlayButton();
-  $("movie-status").textContent = result.movie_available ? result.playback_description : "No retained trajectory recording is available for playback.";
+  $("movie-status").textContent = result.original_recording
+    ? `${result.frames.length} original wrist/external camera frames. Playback waits for both views; no MuJoCo reconstruction is needed.`
+    : result.movie_available ? result.playback_description : "No retained trajectory recording is available for playback.";
   $("detail-title").textContent = `${item.task} / ${item.target}`;
   $("detail-kind").textContent = view === "rollouts"
     ? result.evidence_status === "available" ? `ACTUAL POLICY ROLLOUT | Step ${item.step} | assistance ${percent(item.assistance)} | ${result.scope}`
@@ -320,12 +359,15 @@ async function showDetail(item, view) {
     $("frame").max = result.frames.length - 1; $("frame").value = 0; showFrame();
   } else $("detail-image").removeAttribute("src");
   plotActions(result.actions);
-  $("trace-note").textContent = result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. Play the recorded wrist view immediately while synchronized video prepares. The source overview stays static until the combined video is ready; playback then continues there at the selected position. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
+  $("trace-note").textContent = result.original_recording
+    ? "Both camera views are original recorded frames, not reconstructed MuJoCo views. Slow image delivery pauses playback instead of skipping ahead."
+    : result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. Play the recorded wrist view immediately while synchronized video prepares. The source overview stays static until the combined video is ready; playback then continues there at the selected position. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
   const {metadata, source_history, frames, actions, states, qpos, recorded_trajectories, ...summary} = result;
   $("detail-summary").textContent = JSON.stringify(summary, null, 2);
   $("detail-history").textContent = JSON.stringify(source_history, null, 2);
   $("detail-metadata").textContent = JSON.stringify(metadata, null, 2);
   if (!$("detail").open) $("detail").showModal();
+  legoFeedbackDataOpen(result.feedback || null);
   if (result.movie_available) prepareMovie();
 }
 filters.forEach(id => $(id).addEventListener("change", () => { offset = 0; load(); }));
@@ -337,7 +379,7 @@ $("previous").addEventListener("click", () => { offset = Math.max(0, offset - li
 $("next").addEventListener("click", () => { offset += limit; load(); });
 $("refresh-data").addEventListener("click", load);
 $("close-detail").addEventListener("click", () => $("detail").close());
-$("detail").addEventListener("close", () => { ++detailRequest; stopMovie(); });
+$("detail").addEventListener("close", () => { ++detailRequest; stopMovie(); legoFeedbackDataOpen(null); });
 $("previous-trajectory").addEventListener("click", () => {
   if (previousTrajectory) showDetail(previousTrajectory, previousTrajectory.view).catch(e => error(e.message));
 });

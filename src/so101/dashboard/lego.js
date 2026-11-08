@@ -3,7 +3,8 @@
 const legoElement = id => document.getElementById(`lego-${id}`);
 const legoBase = document.documentElement.dataset.basePath || "";
 const legoExamples = document.documentElement.dataset.browserMode === "examples";
-const legoViewer = new PartViewer(legoElement("geometry"));
+const legoData = document.documentElement.dataset.browserMode === "data";
+const legoViewer = legoData ? null : new PartViewer(legoElement("geometry"));
 let legoOffset = 0;
 let legoRequest = 0;
 let legoDetailRequest = 0;
@@ -109,7 +110,8 @@ async function legoFeedbackSubmit(event) {
       issue_category: legoElement("feedback-category").value};
     const camera = legoElement("feedback-camera").value;
     if (release.kind === "examples" && camera) {
-      const frame = frames.find(value => value.frame_index === Number(legoElement("frame").value));
+      const frame = legoData ? frames[Number(document.getElementById("frame").value)]
+        : frames.find(value => value.frame_index === Number(legoElement("frame").value));
       if (!frame?.[camera]) throw new Error("The selected camera is unavailable at this recorded frame.");
       payload.frame_index = frame.frame_index;
       if (frame.timestamp != null) payload.timestamp = frame.timestamp;
@@ -121,6 +123,23 @@ async function legoFeedbackSubmit(event) {
     await legoFeedbackRecover(true);
   } catch (error) {
     legoElement("feedback-status").textContent = error.message;
+  }
+}
+function legoFeedbackDataOpen(detail) {
+  ++legoDetailRequest;
+  legoFeedbackDetail = null;
+  legoElement("feedback-form").hidden = true;
+  legoElement("feedback-receipt").textContent = "";
+  for (const name of ["check", "retry", "new"]) legoElement(`feedback-${name}`).hidden = true;
+  if (detail) return legoFeedbackOpen(detail, legoDetailRequest);
+  legoElement("feedback-status").textContent =
+    "Comments are available for curriculum recordings. This legacy source or policy recording does not yet have a supported immutable feedback identity.";
+  try {
+    const pending = legoFeedbackPending();
+    for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = !pending;
+    if (pending) legoElement("feedback-status").textContent += " You can still check or retry your original saved comment.";
+  } catch (error) {
+    legoElement("feedback-status").textContent += ` Cannot read saved feedback: ${error.message}`;
   }
 }
 const legoMedia = query => `${legoBase}/api/lego?${new URLSearchParams(query)}`;
@@ -317,15 +336,17 @@ async function legoRefresh() {
     await legoLoad();
   } catch (error) { legoElement("error").textContent = error.message; }
 }
-for (const id of ["readiness", "family", "footprint", "decoration", "coverage"]) {
-  legoElement(id).addEventListener("change", () => { legoOffset = 0; legoLoad(); });
+if (!legoData) {
+  for (const id of ["readiness", "family", "footprint", "decoration", "coverage"]) {
+    legoElement(id).addEventListener("change", () => { legoOffset = 0; legoLoad(); });
+  }
+  legoElement("refresh").addEventListener("click", legoRefresh);
+  legoElement("previous").addEventListener("click", () => { legoOffset = Math.max(0, legoOffset - 24); legoLoad(); });
+  legoElement("next").addEventListener("click", () => { legoOffset += 24; legoLoad(); });
+  function legoStopPlayback() { clearInterval(legoPlayback); legoPlayback = null; ++legoDetailRequest; }
+  legoElement("close").addEventListener("click", () => { legoStopPlayback(); legoElement("detail").close(); });
+  legoElement("detail").addEventListener("cancel", legoStopPlayback);
 }
-legoElement("refresh").addEventListener("click", legoRefresh);
-legoElement("previous").addEventListener("click", () => { legoOffset = Math.max(0, legoOffset - 24); legoLoad(); });
-legoElement("next").addEventListener("click", () => { legoOffset += 24; legoLoad(); });
-function legoStopPlayback() { clearInterval(legoPlayback); legoPlayback = null; ++legoDetailRequest; }
-legoElement("close").addEventListener("click", () => { legoStopPlayback(); legoElement("detail").close(); });
-legoElement("detail").addEventListener("cancel", legoStopPlayback);
 legoElement("feedback-form").addEventListener("submit", legoFeedbackSubmit);
 legoElement("feedback-check").addEventListener("click", () => legoFeedbackRecover());
 legoElement("feedback-retry").addEventListener("click", () => legoFeedbackRecover(true));
@@ -336,8 +357,10 @@ legoElement("feedback-new").addEventListener("click", () => {
     legoFeedbackOpen(legoFeedbackDetail, legoDetailRequest);
   } catch (error) { legoElement("feedback-status").textContent = error.message; }
 });
-if (legoExamples) {
-  document.querySelector(".catalog-toolbar").hidden = true;
-  document.querySelector(".context").textContent = "Browse original recorded examples and their exact scene, command and acceptance evidence.";
+if (!legoData) {
+  if (legoExamples) {
+    document.querySelector(".catalog-toolbar").hidden = true;
+    document.querySelector(".context").textContent = "Browse original recorded examples and their exact scene, command and acceptance evidence.";
+  }
+  legoRefresh();
 }
-legoRefresh();
