@@ -10,6 +10,138 @@ independent shutdown, cleanup, private credentials, TLS and ownership checks.
 Future authorized non-host sessions must operate the approved workflow without
 depending on any current agent or per-job host-operator messages.
 
+## Authoritative final sweep handoff: November 8, 2026, 16:30 UTC
+
+**This section supersedes conflicting historical operating instructions below.**
+Matt ended the original operator session and released all its ownership.
+The Work Scheduler must **start a new session now to run the remaining sweep**,
+not wait for or contact an old agent. The new owner owns necessary remaining
+GPU integration, actual training, observation/recovery, artifacts and comparison.
+Data/dashboard work is independent; preserve other owners' source and outputs.
+
+**Keep one GPU instance running for all remaining sweep arms, then terminate it
+when the sweep is done. Do not stop/restart/reallocate the GPU between arms.**
+Run arms serially on that instance, unloading the previous policy before loading
+the next fresh model. Independent expiry and emergency cleanup remain required;
+never disable safety shutdown to implement instance reuse. The current fixed
+original304 recipe/lease is not a ready-made multi-arm executor: implement a
+durable whole-sweep runtime/lease and arm transitions before starting training.
+Recover a genuinely failed/expired instance only when necessary, not routinely
+at cell boundaries. Never clear or overwrite the original CPU304/STOP.
+
+### Sweep status and completion
+
+The approved grid below is six cells, each24,576 samples. B128/LR1e-5 is done.
+B64/LR1e-5 reached384 on GPU and its full model/Adam/RNG/log state was exported.
+Remaining, in order: B128/LR3e-6/192, B64/LR3e-6/384, B128/LR3e-5/192,
+B64/LR3e-5/384. No remaining arm has trained. Finish those four, integrate all
+six authentic results and required exports, produce the sample-matched comparison,
+and terminate the shared GPU. No extra grids, RL, winner deployment or robot motion.
+
+Original completed384 state:
+`/mnt/dockyard/lego-gpu-original-training-export/92df9f9e5f764b4180e73195090da6f9/training_state.pt`,
+SHA256 `54ab1f5cd97cdd137cc6fea3cb44da0ea69d385aa22e42fcea8c533cbca47867`.
+The historical sections below retain its S3 version/size and result provenance.
+Its separate model/config/metadata/final evaluation exports still need integration;
+do not rerun this completed arm or validate the original304 file as if it were384.
+
+### Installed self-service entrypoints and verified proof
+
+Published Dockyard commit `f70abe1d5e343308bdf630be783b1b24aec00106`
+automatically provisions private GPU connection files before container startup.
+Lego GPU changes through `823c2faeba4c68b6f7d9ca37869354c1b5ddeb9f` are installed
+in root runtime `/opt/lego-robot-control/runtime-823c2fa` (`runtime-current`).
+The Work Scheduler can launch a new non-host/container session with template
+`Lego robot - 6.1 sol`, cwd `/mnt/dockyard/lego-robot`. Its own private
+`~/.config/lego-robot/control.json` names the HTTPS endpoint, CA and token file.
+No old-agent message, manual per-job grant or AWS credential copy is needed
+for installed authorized recipes. Never print/copy capabilities into shared files.
+
+Preset `lego-approved-sweep` currently authorizes these equivalent original304
+recipes, differing only in launch-template ID and sharing a fallback family:
+
+| Spec | Canonical SHA256 |
+| --- | --- |
+| qualification-fast-on-demand-d-tmp-fix-attempt-2 | 6c04297e8e1aa9d2b17d40bb47de1f52bcfe90f0292a7c283cf82a3f3c3d9a7a |
+| qualification-fast-on-demand-b-tmp-fix-attempt-2 | 45fa607228b3f219ed3f7a87919afed097af4b75b35a1388de11dcd354398b95 |
+
+Root configuration: `/etc/lego-robot-control/{policy.json,session-presets.json,workflows.json,specs/}`.
+Maintained registration entrypoint: `/opt/lego-robot-control/session-register`;
+trusted updates share `/var/lib/lego-robot-control/session-registration.lock`.
+Scopes include catalog/prepare/submit/request/resume/status/logs/start/stop/recovery.
+AWS quota and account budget alerts replace software budget/count/inventory
+admission gates. Preserve ownership, TLS, idempotency and independent shutdown.
+
+New execution-only session `d78ef744-b125-438b-88f8-1a3ae1d071e7` genuinely
+completed lifecycle job `7d7d717032d04888926a984ceb965aa8` on
+`i-0d5c6f46cc61a4eef`. Persisted receipts:
+`outputs/gpu-jobs/fresh-session-lifecycle-proof-capacity-recovery-20261108/`
+contains submit-intent/job/provision/qualify/termination JSON. Matching
+`RUNTIME_PASS` proves L4/CUDA13.0/BF16/EGL, exact tiny next update, original304
+restoration and no advancement. Broker receipt is `stopped`; independent pinned
+controller-role AWS check confirmed `terminated`. ZoneD succeeded; installed
+zone fallback was **not exercised**. At final handoff, actual AWS inventory
+contained only CPU `i-0860eb23354785a2c` (`r6a.large`), no live GPU.
+
+This verified command is **lifecycle smoke only**, not the sweep runner:
+
+```sh
+cd /mnt/dockyard/lego-robot
+PYTHONPATH=src uv run python -m so101.gpu_smoke \
+  --spec-id qualification-fast-on-demand-d-tmp-fix-attempt-2 \
+  --state-dir outputs/gpu-jobs/NEW-UNIQUE-LIFECYCLE-DIRECTORY
+```
+
+Do not use smoke per arm: it terminates the instance in `finally`.
+Do not unnecessarily repeat the completed proof. Its stable allocation UUID,
+equivalent-zone fallback and preparation/reconciliation are maintained prior art
+for the whole-sweep executor. Never replay the first legacy unkeyed proof intent
+in `outputs/gpu-jobs/fresh-session-lifecycle-proof-20261108/`.
+
+### Remaining implementation and how to run the sweep
+
+There is **no installed one-command fresh-cell GPU sweep executor yet**.
+The new session must implement/activate the missing linked pieces, then run
+the approved sweep itself rather than stopping after setup:
+
+1. Freeze original data/split/physics and consistent source/image/input hashes.
+   Construct each arm with `sweep_entity_sft.trials(24576, ...)` and
+   `command(..., device="cuda")`: seed61000, microbatch16, frozen40 problems,
+   quarter-sample evaluations and fixed160-frame probe. Initialize every new
+   arm from public `lerobot/smolvla_base`, not the trained304/384 checkpoint.
+2. Install fresh-capable immutable runtime and whole-sweep spec/workflow.
+   Reuse one allocation across all arms with bounded total lease, independent
+   termination and per-arm fresh state/output/qualification/start/completion.
+   Old approval hardcodes304; never forge304 or reuse another job's PASS.
+   Preset authority must make the activated workflow self-service without
+   per-arm host messages. Containers must not receive cloud admin credentials.
+3. Observe real training/evaluation; export full state plus model/config/metadata,
+   full logs and retained evaluation checkpoints durably at arm boundaries
+   **without terminating the GPU**. Old publisher exports only full state.
+   Preserve version/size/SHA/fsynced downloads and provenance for derived exports.
+4. Verify continuous updates and sample-quarter evaluations, exact probes,
+   finite model/Adam/RNG and shared data/recipe. Use maintained sweep comparison
+   semantics for all six results, honest device/timing caveats and common-success
+   full-trajectory jerk. Then confirm actual EC2 termination and close the sweep.
+
+Do not invoke the local sweep subprocess loop on the CPU host as a GPU substitute.
+The local fresh image `lego-runtime-b1c9551-self-service:latest` exists but is
+**not pushed or activated in GPU specs**. Genuine B128/LR3e-6 CPU initialization:
+`/var/lib/lego-robot-image/fresh-self-service-states/b128-lr3e6/entity_smolvla_sft_b128_lr3e-06/`.
+Direct checks passed step0, empty Adam, finite model and persisted backend/
+sampling/Python/NumPy/Torch/device RNG. Detailed config/probe binding and GPU
+qualification remain pending; do not claim a ready fresh runtime from this alone.
+
+Protocol caveat: historical GPU continuation argv omitted
+`--obstacle-input-end-probability` (default0.5), while sweep builder explicitly
+sets1. Preserve actual argv/log evidence and disclose the discrepancy rather
+than silently rewriting history or claiming exact matched protocol.
+
+The new paid-run owner must maintain bounded observation/recovery; Scheduler is
+not the paid-run monitor. Delete finite watches after verified final termination.
+The removed retry cron stays removed. Original operator owns no continuing run,
+watch, implementation or runtime responsibility after this handoff.
+
 ## Project and code
 
 The project controls an SO-101 robot using LeRobot and the Copilot SDK.
@@ -239,7 +371,7 @@ necessary GPU integration, continuous monitoring, durable artifacts, and the
 sample-matched final comparison. Use one container implementation worker, not
 competing GPU operators. A bounded trusted host activation helper may install
 reviewed infrastructure/specification changes; it must not run a second sweep.
-The original operator is Dockyard session
+The historical original operator was Dockyard session
 `465a15cf-8e65-41d2-a3f2-a2a9e2339e10`. The Lego project is
 `3fd44373-a454-4f3f-8d48-d32ee0682e66`.
 
@@ -346,24 +478,18 @@ containing `hub`, not to `hf_cache/hub`. Never package HF tokens.
 ### Container control versus trusted host administration
 
 **A container can orchestrate GPU jobs through the host HTTPS broker. It is not
-an AWS administrator, and a new container is not already authorized.**
+an AWS administrator. Eligible new containers are now automatically provisioned.**
 The broker process remains on the CPU host; this does not require a continuously
 running host AI operator once the reviewed sweep path is installed.
 
 The private endpoint is `https://host.docker.internal:8766`
 (`172.17.0.1` on the existing Docker bridge). Verify its TLS certificate/SAN.
-An operator must issue a unique client ID and private0600 capability file for
-the new container, install the public CA, permit only that container's bridge
-IP, and reload the root-owned policy. Do not reuse another session's token,
-the host-operator token, or a broad bridge/network allow rule.
-
-The current container client has only `dashboard.status`/`dashboard.restart`.
-Only the historical host principal has GPU submit/status/logs/stop/recovery;
-`training_authorized_specs` is empty. Merely selecting the Lego container
-template does not grant GPU control. Issue only the new worker's necessary
-GPU lifecycle scopes, including `gpu.start` and, if implemented, `gpu.resume`.
-The exact registered spec needs a separate training grant after genuine
-current-worker approval. Preserve job ownership under that new principal.
+Dockyard now registers a unique full-container-bound client and installs its
+private capability/CA before agent startup; the authenticated private Docker
+bridge transport accepts dynamically assigned container IPs. Do not reuse
+another session's token or the host-operator token. Installed preset start
+authority does not require separate manual per-job training grants. New
+fresh-cell/whole-sweep specs still require durable trusted activation.
 
 Once provisioned with its own private files, the container uses:
 
@@ -399,7 +525,7 @@ Each remaining cell must initialize from the approved public base and seed,
 not from the trained B64/1e-5 checkpoint. Implement and exercise a reviewed
 fresh-state path (including correct step0/initial optimizer semantics), per-cell
 immutable manifest/spec/recipe, provisioning, actual runtime qualification,
-aggregate approval and separate exact-spec training grants. Derive and check
+bound qualification and installed preset start authority. Derive and check
 the actual state's step/configuration; do not forge a304 report, reuse another
 job's PASS, or relax identity checks to make a fresh trial pass. Changes to
 pinned worker code/documents/templates/images require corresponding reviewed
@@ -437,8 +563,7 @@ that broker admission ceiling in favor of AWS account budget alerts, which
 notify rather than cap spending. Historical reconciliation is not a launch
 prerequisite. Preserve all audit rows, paid history, idempotent intents and
 independent deadlines; do not reset the ledger or shorten leases to evade
-accounting. Install the current maintained broker changes before relying on
-the new admission behavior; an old deployed broker still has the old checks.
+accounting. Current maintained admission behavior is installed in runtime-823c2fa.
 
 For every fresh allocation, verify the independent one-shot AWS termination
 schedule and the actual guest self-expiry guard before long work. Persist job,
@@ -461,8 +586,9 @@ exit alone is insufficient. The completed run had a controller grace-expiry
 cleanup warning despite actual stop SUCCESS and independently verified export;
 inspect actual receipts rather than treating either warning or status as proof.
 
-Directly verify EC2 `terminated` and empty relevant GPU inventory before the
-next cell. The worker owns bounded watches and failure recovery; the Work
+Preserve the same running GPU across arms; directly verify EC2 `terminated`
+after the whole sweep or necessary failure cleanup, not at each cell boundary.
+The worker owns bounded watches and failure recovery; the Work
 Scheduler does not monitor paid runs. Do not add the removed retry cron.
 Continue the next approved cell automatically when safe, and keep the sweep
 Work item active until the entire grid/comparison is genuinely finished.
