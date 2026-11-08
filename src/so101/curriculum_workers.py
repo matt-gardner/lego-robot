@@ -114,10 +114,13 @@ def supervise(root: Path, catalog: Path, appearance: Path, part_ids: list[str],
                 residents = [rss for _, _, rss in active]
                 slots = worker_slots(cpus=len(os.sched_getaffinity(0)),
                                      available_bytes=memory["available_bytes"], peak_bytes=peak,
-                                     resident_bytes=residents, pressure=memory["pressure"])
+                                     resident_bytes=residents,
+                                     pressure=memory["pressure"] and bool(active))
                 reserved_growth = sum(max(0, peak - rss) for rss in residents)
-                if memory["pressure"] or reserved_growth > memory["available_bytes"]:
-                    candidates = [row for row in active if row[1]["status"] != "stopping"]
+                running = [row for row in active if row[1]["status"] != "stopping"]
+                if ((memory["pressure"] and len(running) > 1)
+                        or reserved_growth > memory["available_bytes"]):
+                    candidates = running
                     if candidates:
                         _, worker, _ = candidates[-1]
                         os.kill(worker["pid"], signal.SIGTERM)

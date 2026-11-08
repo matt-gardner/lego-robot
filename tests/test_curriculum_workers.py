@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import pytest
 
 from so101.curriculum_workers import supervise, worker_slots
 
@@ -18,14 +19,17 @@ def test_pressure_prevents_admission_and_affinity_bounds_parallelism():
                         resident_bytes=[1000], pressure=False) == 1
 
 
-def test_supervisor_fans_out_after_matching_measurement_and_stops_children(tmp_path, monkeypatch):
+@pytest.mark.parametrize("pressure,expected_workers", [(False, 2), (True, 1)])
+def test_supervisor_fans_out_after_matching_measurement_and_stops_children(
+    tmp_path, monkeypatch, pressure, expected_workers
+):
     commands, processes, killed = [], {}, []
     monkeypatch.setattr("so101.curriculum_workers.recipe",
                         lambda *args: {"source_sha256": "pinned"})
     monkeypatch.setattr("so101.curriculum_workers.shutil.which", lambda name: "/usr/bin/ionice")
     monkeypatch.setattr("so101.curriculum_workers.os.sched_getaffinity", lambda pid: {0, 1})
     monkeypatch.setattr("so101.curriculum_workers.memory_state",
-                        lambda: {"available_bytes": 8 * 1024**2, "pressure": False})
+                        lambda: {"available_bytes": 8 * 1024**2, "pressure": pressure})
     monkeypatch.setattr("so101.curriculum_workers.process_state", lambda pid: processes.get(pid))
     monkeypatch.setattr("so101.curriculum_workers.os.kill", lambda pid, sig: killed.append(pid))
     class Child:
@@ -54,11 +58,11 @@ def test_supervisor_fans_out_after_matching_measurement_and_stops_children(tmp_p
     root = tmp_path / "supervisor"
     supervise(root, tmp_path / "catalog", tmp_path / "appearance", ["3005"],
               7, 15, 1024, Stop())
-    assert len(commands) == 2
+    assert len(commands) == expected_workers
     assert all(command[:3] == ["/usr/bin/ionice", "-c", "3"] for command in commands)
     assert all(command[command.index("--ledger") + 1] == str(root / "ledger.sqlite")
                for command in commands)
-    assert sorted(killed) == [8000, 8001]
+    assert sorted(killed) == list(range(8000, 8000 + expected_workers))
     state = json.loads((root / "supervisor.json").read_bytes())
     assert state["active_workers"] == 0
     assert state["shutdown_requested"] is True

@@ -237,8 +237,10 @@ and inactive-file cache, reserves each worker's growth toward the observed peak,
 and updates that peak from actual receipts. Inactive file cache is treated as
 reclaimable, not resident model memory. New-source expansion waits for a matching
 full paired recording/reader measurement; prior measured peaks remain
-conservative startup estimates. Host/cgroup memory pressure or insufficient
-reserved growth headroom requests graceful attempt-boundary worker retirement.
+conservative startup estimates. Host/cgroup memory pressure prevents auxiliary
+admission and retires auxiliary workers at attempt boundaries; it does not
+churn the sole idle-priority worker when measured memory headroom is ample.
+Insufficient reserved growth headroom can retire the primary worker as well.
 This is predictive backpressure, not a guaranteed memory cap; unexpected worker
 errors remain explicit. Source changes require a separate recorded rollout root.
 Existing datasets and historical timestamps are not rewritten.
