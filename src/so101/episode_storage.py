@@ -31,6 +31,7 @@ class EpisodeStorage:
             self._local.connection = sqlite3.connect(
                 self.path.as_uri() + "?mode=ro&immutable=1", uri=True
             )
+            self._local.connection.execute("PRAGMA cache_size=-16384")
             self._local.pid = os.getpid()
         return self._local.connection
 

@@ -29,6 +29,11 @@ and supports indexed byte reads without extraction or per-image file opens.
 Only mount genuinely immutable completed copies; never modify a mounted
 container. `verify()` explicitly checks all stored bytes. Bind deployments
 to the container's whole-file SHA-256 and format version, not its filename.
+Each process/thread reuses its own connection with a 16 MiB SQLite page-cache
+target (not a process-memory cap). The trainer's main-thread training and
+frozen-probe datasets therefore have two connections, with a combined 32 MiB
+cache target. Worker copies reopen independently after fork or pickling.
+No whole-file memory mapping or decoded-image cache is introduced.
 
 The optional trainer `--episode-storage FILE` retains the existing
 `--collection` catalog directory, working directory, frozen validation split

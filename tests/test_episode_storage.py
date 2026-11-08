@@ -1,8 +1,10 @@
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import pickle
 from pathlib import Path
 import sqlite3
+import threading
 
 import pytest
 
@@ -85,3 +87,23 @@ def test_destination_cannot_enter_original_episode(tmp_path):
     with pytest.raises(ValueError, match="outside original"):
         consolidate(root, source / "v1.sqlite")
     assert not list(source.glob(".episode-storage-*"))
+
+
+def test_worker_connections_read_concurrently_and_close_independently(tmp_path):
+    root, source = collection(tmp_path)
+    destination = tmp_path / "v1.sqlite"
+    consolidate(root, destination)
+    barrier = threading.Barrier(2)
+    with EpisodeStorage(destination) as storage:
+        expected = (source / "wrist/0.jpg").read_bytes()
+
+        def read_window(_):
+            barrier.wait(timeout=5)
+            contents = [storage.read(source, "wrist/0.jpg") for _ in range(20)]
+            storage.close()
+            return contents
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            for contents in workers.map(read_window, range(2)):
+                assert contents == [expected] * 20
+        assert storage.read(source, "wrist/0.jpg") == expected
