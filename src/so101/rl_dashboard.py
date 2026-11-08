@@ -440,6 +440,28 @@ class RunStore:
             return run
 
 
+def dashboard_header(path: str) -> str:
+    pages = {
+        "/": ("TRAINING", '<span id="observatory-title">RL Observatory</span>'),
+        "/data": ("DATA", "Data browser"),
+        "/lego": ("PARTS", "LEGO parts"),
+        "/examples": ("RECORDINGS", "Recorded examples"),
+    }
+    section, title = pages[path]
+    links = "".join(
+        f'<a href="{route}"' + (' aria-current="page"' if route == path else "") + f'>{label}</a>'
+        for route, label in (("/lego", "Parts"), ("/data", "Data"),
+                             ("/examples", "Recorded examples"), ("/", "Training"))
+    )
+    status = ('<div class="connection"><span id="connection">Connecting</span>'
+              '<span id="updated"></span></div>') if path == "/" else ""
+    return (
+        f'<header class="dashboard-header"><div><span class="eyebrow">SO-101 / {section}</span>'
+        f'<h1>{title}<span class="accent">.</span></h1></div>'
+        f'<nav class="dashboard-nav" aria-label="Dashboard navigation">{links}</nav>{status}</header>'
+    )
+
+
 def make_server(root: Path, host: str, port: int, base_path: str = "",
                 notice: str = "", lego_catalog_root: Path | None = None,
                 lego_episode_root: Path | None = None) -> ThreadingHTTPServer:
@@ -546,9 +568,9 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                     page = body.decode().replace(
                         'data-base-path=""', f'data-base-path="{base_path}"',
                     )
+                    page = page.replace("<!-- dashboard-header -->", dashboard_header(path))
                     if path == "/examples":
                         page = page.replace('data-browser-mode="parts"', 'data-browser-mode="examples"')
-                        page = page.replace("<h1>LEGO parts</h1>", "<h1>Recorded examples</h1>")
                     # Family authentication lives at the origin root, not the dashboard mount.
                     page = re.sub(r'href="/(?!family(?:/|"))', f'href="{base_path}/', page)
                     page = page.replace('src="/', f'src="{base_path}/')

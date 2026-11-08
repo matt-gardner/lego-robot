@@ -10,18 +10,12 @@
   <script src="/data.js" defer></script>
 </head>
 <body>
-  <header class="data-header">
-    <div><span class="eyebrow">SO-101 / DATA</span><h1>Data browser<span class="accent">.</span></h1></div>
-    <nav class="data-nav" aria-label="Dashboard navigation">
-      <a href="/lego">Parts</a><a href="/data" aria-current="page">Data</a>
-      <a href="/examples">Recorded examples</a><a href="/">Training</a>
-    </nav>
-  </header>
+  <!-- dashboard-header -->
   <main class="data-main">
     <div id="error" role="alert" hidden></div>
     <div class="data-filters">
       <label>Task<select id="task"><option value="all">All tasks</option><option value="grasp">Grasp</option><option value="view">Look at target</option><option value="push">Push</option><option value="place">Place</option></select></label>
-      <label>Scene difficulty<select id="difficulty"><option value="all">All difficulties</option><option value="0">0 - Easy</option><option value="1">1 - Standard</option><option value="2">2 - Hard</option><option value="3">3 - Challenge</option><option value="unrated">Unrated legacy</option></select></label>
+      <label>Scene difficulty<select id="difficulty"><option value="all">All difficulties</option><option value="0">0 - Easy</option><option value="1">1 - Standard</option><option value="2">2 - Hard</option><option value="3">3 - Challenge</option><option value="unrated">Difficulty not recorded</option></select></label>
       <label>Objects in scene<select id="object_count"><option value="all">Any number</option></select></label>
       <label>Demonstration result<select id="expert_outcome"><option value="all">All results</option></select></label>
       <label>Demonstration quality<select id="expert_acceptance"><option value="all">All qualities</option></select></label>

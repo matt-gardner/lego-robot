@@ -442,6 +442,11 @@ immutable feedback target and are explicitly labeled unavailable.
 Original curriculum camera playback waits for both recorded views before advancing
 and retains the final frame. Slow image delivery buffers instead of skipping
 frames; the existing external recording needs no MuJoCo reconstruction.
+Curriculum cards show the task/target, generation category, object count, part mix,
+creation date and recording length instead of legacy difficulty or redundant
+acceptance labels. Category identifies the proposal recipe, not measured difficulty.
+Parts, data, recordings and training share one server-rendered navigation header
+and stylesheet, with the current page highlighted and mount-prefixed links.
 Frozen40 is used for tuning, not an independent final test set; pilot rankings
 need seed confirmation. The sweep does not automatically deploy a winner,
 restart RL, or provision cloud resources.

@@ -37,8 +37,14 @@ function preview(item, view, frame, caption) {
 }
 function renderCard(item, view) {
   const card = document.createElement("button"); card.className = "data-example";
-  const difficulty = item.difficulty ? `${item.difficulty.level} - ${item.difficulty.name}` : "Unrated legacy";
-  card.append(text("h3", `${item.task} / ${item.target}`), text("p", `${difficulty} | ${item.object_count} objects`));
+  const curriculum = item.origin === "curriculum";
+  const task = ({view: "Look at", grasp: "Grasp", push: "Push", place: "Place"})[item.task] || item.task;
+  const category = ({separated: "Separated", cluster: "Cluster", overlap: "Overlap", pile: "Pile"})[item.tags?.category || item.category];
+  const difficulty = item.difficulty ? `${item.difficulty.level} - ${item.difficulty.name}` : "Difficulty not recorded";
+  card.append(text("h3", curriculum ? `${task} ${item.target}` : `${item.task} / ${item.target}`));
+  const scene = text("p", `${curriculum ? category ? `${category} recipe` : "Scene category not recorded" : difficulty} | ${item.object_count} objects`);
+  if (curriculum) scene.title = "Generation recipe, not measured settled difficulty.";
+  card.append(scene);
   const images = document.createElement("div"); images.className = "previews";
   if (view === "rollouts" && item.evidence_status === "available") {
     images.append(preview(item, view, "0", "Actual policy wrist frame"));
@@ -50,18 +56,33 @@ function renderCard(item, view) {
       created.className = "data-created";
       created.title = item.generated_at || "Historical creation time is not inferred from file modification.";
       card.append(created);
-      if (item.origin === "curriculum") card.append(text("p", `Curriculum example / ${item.split}`));
+      if (curriculum) {
+        const scope = text("p", item.split === "development" ? "Generated example · Development only" : `Generated example · ${item.split || "Split not recorded"}`);
+        scope.title = "Generated examples are not automatically promoted to training data.";
+        card.append(scope);
+      }
     }
     const source = {...item, id: item.example_id || item.id};
     images.append(preview(source, "examples", "overview", view === "rollouts"
       ? "Expert scene reference (NOT this rollout)"
-      : item.difficulty?.provenance === "task-difficulty-v1" ? "Initial scene overview" : "Expert diagnostic overview"));
-    if (view !== "rollouts") images.append(preview(source, "examples", "initial", "Source initial wrist view"));
+      : curriculum ? "Recorded external view" : item.difficulty?.provenance === "task-difficulty-v1" ? "Initial scene overview" : "Expert diagnostic overview"));
+    if (view !== "rollouts") images.append(preview(source, "examples", "initial", curriculum ? "Recorded wrist view" : "Source initial wrist view"));
   }
   card.append(images);
   if (view === "rollouts") {
     card.append(text("p", `Step ${item.step} | ${item.success ? "PASS" : "FAIL"} | ${item.bucket} | assistance ${percent(item.assistance)}${item.discarded ? item.jerk_regularizer_applied ? " | task-policy group skipped; jerk loss applied" : " | discarded group" : ""}`));
     card.append(text("p", `Jerk ${Number(item.rms_jerk).toFixed(3)} | ${item.steps} policy steps | ${item.evidence_status === "available" ? "Recorded policy trajectory" : item.evidence_status === "expired" ? "Recording expired; summary retained" : "Summary only: no policy images/actions recorded"}`));
+  } else if (curriculum) {
+    const families = (item.tags?.families || []).map(value => ({brick: "Bricks", plate: "Plates", tile: "Tiles"})[value] || value);
+    const parts = item.tags?.part_ids || [];
+    if (families.length || parts.length) card.append(text("p", [
+      families.join(", "), parts.length ? `Parts ${parts.slice(0, 6).join(", ")}${parts.length > 6 ? ` +${parts.length - 6} more` : ""}` : "",
+    ].filter(Boolean).join(" | ")));
+    const recording = [
+      Number.isFinite(item.duration) ? `${item.duration.toFixed(1)} seconds` : "",
+      Number.isFinite(item.frames) ? `${item.frames} recorded frames` : "",
+    ].filter(Boolean);
+    if (recording.length) card.append(text("p", recording.join(" | ")));
   } else {
     card.append(text("p", `Demonstration: ${item.expert_outcome}`));
     if (item.expert_acceptance) card.append(text("p", item.expert_acceptance === "single-pass-v1"

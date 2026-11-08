@@ -557,7 +557,7 @@ def test_prefixed_pages_assets_data_boundaries_and_migration_notice(tmp_path):
     worker.start()
     origin = f"http://127.0.0.1:{server.server_port}"
     try:
-        for route in ("/so101/", "/so101/data"):
+        for route in ("/so101/", "/so101/data", "/so101/lego", "/so101/examples"):
             with urlopen(origin + route) as response:
                 body = response.read().decode()
                 assert 'data-base-path="/so101"' in body
@@ -565,6 +565,15 @@ def test_prefixed_pages_assets_data_boundaries_and_migration_notice(tmp_path):
                 assert 'src="/so101/' in body
                 assert "Awaiting verified migration; no results loaded &lt;test&gt;" in body
                 assert 'href="/api' not in body
+                assert '<header class="dashboard-header">' in body
+                assert 'aria-label="Dashboard navigation"' in body
+                assert "<!-- dashboard-header -->" not in body
+                assert body.count('aria-current="page"') == 1
+                assert f'href="{route}" aria-current="page"' in body
+                for target in ("/", "/data", "/lego", "/examples"):
+                    assert f'href="/so101{target}"' in body
+                if route == "/so101/":
+                    assert 'id="observatory-title"' in body and 'id="connection"' in body
         with urlopen(origin + "/so101") as response:
             assert response.url == origin + "/so101/"
         for asset in ("dashboard.js", "dashboard.css", "data.js", "data.css"):
