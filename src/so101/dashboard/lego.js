@@ -30,25 +30,60 @@ async function legoFeedbackFetch(path, options = {}) {
   }
   return value;
 }
-function legoFeedbackPending() {
+function legoFeedbackRecords() {
   const saved = localStorage.getItem(legoFeedbackStorage);
-  return saved ? JSON.parse(saved) : null;
+  if (!saved) return {version: 2, entries: []};
+  const value = JSON.parse(saved);
+  const records = value.idempotency_uuid ? {version: 2, entries: [{payload: value}]} : value;
+  if (records.version !== 2 || !Array.isArray(records.entries) || !records.entries.every(entry =>
+    entry.payload?.idempotency_uuid && entry.payload.target &&
+    ["kind", "id", "release_id", "artifact_sha256"].every(key => typeof entry.payload.target[key] === "string"))) {
+    throw new Error("Saved feedback has an invalid identity. It has not been discarded.");
+  }
+  return records;
 }
-function legoFeedbackReceipt(receipt) {
+function legoFeedbackTarget() {
+  if (!legoFeedbackDetail) return null;
+  const {release, item} = legoFeedbackDetail;
+  return {kind: release.kind === "parts" ? "part" : "example", id: item.id,
+    release_id: release.id, artifact_sha256: release.artifact_sha256};
+}
+function legoFeedbackPending() {
+  const target = legoFeedbackTarget();
+  if (!target) return null;
+  return [...legoFeedbackRecords().entries].reverse().find(entry =>
+    Object.keys(target).every(key => entry.payload.target[key] === target[key]))?.payload || null;
+}
+function legoFeedbackSave(payload) {
+  const records = legoFeedbackRecords();
+  if (records.entries.some(entry => entry.payload.idempotency_uuid === payload.idempotency_uuid)) {
+    throw new Error("This feedback key is already saved. Check its original receipt instead of replacing it.");
+  }
+  records.entries.push({payload});
+  localStorage.setItem(legoFeedbackStorage, JSON.stringify(records));
+}
+function legoFeedbackReceipt(receipt, pending, show = true) {
   if (!receipt.request_id || !["queued", "delivered", "failed"].includes(receipt.status)) {
     throw new Error("Feedback returned an invalid receipt; keep the saved key and check again.");
   }
+  const records = legoFeedbackRecords();
+  records.entries = records.entries.filter(entry => entry.payload.idempotency_uuid !== pending.idempotency_uuid);
+  if (records.entries.length) localStorage.setItem(legoFeedbackStorage, JSON.stringify(records));
+  else localStorage.removeItem(legoFeedbackStorage);
+  if (!show) return;
   legoElement("feedback-status").textContent =
-    `Saved request ${receipt.request_id}. Owner: ${receipt.owner_delivery}; monitor: ${receipt.monitor_delivery}. ` +
-    (receipt.error || receipt.monitor_error || "Enqueue is not acknowledgment or resolution.") +
-    " The previous comment's original target and context are preserved. Choose Write a new comment to comment on the open item.";
-  legoElement("feedback-receipt").textContent = JSON.stringify({feedback: legoFeedbackPending(), receipt}, null, 2);
+    `Comment saved. Owner: ${receipt.owner_delivery}; monitor: ${receipt.monitor_delivery}. ` +
+    (receipt.error || receipt.monitor_error || "");
+  legoElement("feedback-receipt").textContent = JSON.stringify(receipt, null, 2);
   legoElement("feedback-signin").hidden = true;
-  legoElement("feedback-new").hidden = false;
+  for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = true;
+  legoElement("feedback-text").value = "";
+  legoElement("feedback-form").hidden = false;
 }
-async function legoFeedbackRecover(retry = false) {
+async function legoFeedbackRecover(retry = false, show = true) {
   if (legoFeedbackBusy) return;
   legoFeedbackBusy = true;
+  const request = legoDetailRequest;
   try {
     const pending = legoFeedbackPending();
     if (!pending) throw new Error("No saved feedback key. Open the part or example again.");
@@ -56,8 +91,11 @@ async function legoFeedbackRecover(retry = false) {
     const receipt = retry
       ? await legoFeedbackFetch("", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(pending)})
       : await legoFeedbackFetch(`/${pending.idempotency_uuid}`);
-    legoFeedbackReceipt(receipt);
+    if (request !== legoDetailRequest) return;
+    legoFeedbackReceipt(receipt, pending, show);
+    return true;
   } catch (error) {
+    if (request !== legoDetailRequest) return;
     if (error.status === 401) legoElement("feedback-signin").hidden = false;
     legoElement("feedback-status").textContent = `${error.message} Saved feedback has not been discarded. Check the original receipt or retry the exact payload; do not create a duplicate.`;
   } finally {
@@ -71,19 +109,33 @@ async function legoFeedbackOpen(detail, request) {
   legoElement("feedback-status").textContent = "Checking authenticated feedback availability...";
   legoElement("feedback-signin").hidden = true;
   try {
-    const pending = legoFeedbackPending();
-    for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = !pending;
-    legoElement("feedback-new").hidden = true;
+    for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = true;
     const capabilities = await legoFeedbackFetch("/capabilities");
     if (request !== legoDetailRequest) return;
     const kind = detail.release.kind === "parts" ? "part" : "example";
     if (!capabilities.supported_target_kinds?.includes(kind) || !capabilities.issue_categories?.length) {
       throw new Error("Feedback for this target is unavailable.");
     }
+    const saved = localStorage.getItem(legoFeedbackStorage);
+    const legacy = saved ? JSON.parse(saved) : null;
+    const target = legoFeedbackTarget();
+    if (legacy?.idempotency_uuid && !Object.keys(target).every(key => legacy.target[key] === target[key])) {
+      try {
+        const receipt = await legoFeedbackFetch(`/${legacy.idempotency_uuid}`);
+        legoFeedbackReceipt(receipt, legacy, false);
+      } catch (error) {
+        console.error("Earlier unconfirmed feedback could not be checked; keeping only its retry payload.", error);
+      }
+      if (request !== legoDetailRequest) return;
+    }
+    const pending = legoFeedbackPending();
     if (pending) {
+      for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = false;
       legoElement("feedback-receipt").textContent = JSON.stringify(pending, null, 2);
-      await legoFeedbackRecover();
-      return;
+      await legoFeedbackRecover(false, false);
+      if (request !== legoDetailRequest || legoFeedbackPending()) return;
+      for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = true;
+      legoElement("feedback-receipt").textContent = "";
     }
     legoElement("feedback-category").replaceChildren(...capabilities.issue_categories.map(category => {
       const option = legoText("option", category);
@@ -126,7 +178,7 @@ async function legoFeedbackSubmit(event) {
       if (frame.timestamp != null) payload.timestamp = frame.timestamp;
       payload.camera = camera;
     }
-    localStorage.setItem(legoFeedbackStorage, JSON.stringify(payload));
+    legoFeedbackSave(payload);
     legoElement("feedback-form").hidden = true;
     for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = false;
     await legoFeedbackRecover(true);
@@ -137,19 +189,13 @@ async function legoFeedbackSubmit(event) {
 function legoFeedbackDataOpen(detail) {
   ++legoDetailRequest;
   legoFeedbackDetail = null;
+  legoElement("feedback-signin").hidden = true;
   legoElement("feedback-form").hidden = true;
   legoElement("feedback-receipt").textContent = "";
-  for (const name of ["check", "retry", "new"]) legoElement(`feedback-${name}`).hidden = true;
+  for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = true;
   if (detail) return legoFeedbackOpen(detail, legoDetailRequest);
   legoElement("feedback-status").textContent =
     "Comments are available for curriculum recordings. This legacy source or policy recording does not yet have a supported immutable feedback identity.";
-  try {
-    const pending = legoFeedbackPending();
-    for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = !pending;
-    if (pending) legoElement("feedback-status").textContent += " You can still check or retry your original saved comment.";
-  } catch (error) {
-    legoElement("feedback-status").textContent += ` Cannot read saved feedback: ${error.message}`;
-  }
 }
 const legoMedia = query => `${legoBase}/api/lego?${new URLSearchParams(query)}`;
 async function legoFetch(query) {
@@ -170,7 +216,7 @@ async function legoOpen(release, item) {
   const request = ++legoDetailRequest;
   legoFeedbackDetail = null;
   legoElement("feedback-form").hidden = true;
-  for (const name of ["check", "retry", "new"]) legoElement(`feedback-${name}`).hidden = true;
+  for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = true;
   legoElement("feedback-status").textContent = "";
   legoElement("feedback-receipt").textContent = "";
   legoElement("geometry").hidden = true;
@@ -359,13 +405,6 @@ if (!legoData) {
 legoElement("feedback-form").addEventListener("submit", legoFeedbackSubmit);
 legoElement("feedback-check").addEventListener("click", () => legoFeedbackRecover());
 legoElement("feedback-retry").addEventListener("click", () => legoFeedbackRecover(true));
-legoElement("feedback-new").addEventListener("click", () => {
-  if (legoFeedbackBusy || !legoFeedbackDetail) return;
-  try {
-    localStorage.removeItem(legoFeedbackStorage);
-    legoFeedbackOpen(legoFeedbackDetail, legoDetailRequest);
-  } catch (error) { legoElement("feedback-status").textContent = error.message; }
-});
 if (!legoData) {
   if (legoExamples) {
     document.querySelector(".catalog-toolbar").hidden = true;

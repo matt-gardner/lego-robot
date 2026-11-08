@@ -439,10 +439,10 @@ frame. They reuse the authenticated Family transport, immutable archive identity
 durable saved key, receipt checking and exact retries from the catalog viewer.
 Legacy directory demonstrations and policy recordings currently lack a supported
 immutable feedback target and are explicitly labeled unavailable.
-Opening an item checks any saved comment's original receipt automatically without
-resubmitting it. A confirmed receipt exposes Write a new comment; uncertain
-delivery keeps the original key and payload. Sign-in is shown only when the
-authenticated feedback endpoint actually rejects the session.
+Opening an item shows a fresh comment form. Only unconfirmed sends retain their
+exact key and payload for retry, scoped to their original item/version; a durable
+intake receipt clears browser storage. Confirmed comments are not kept as history
+or shown on other examples. Sign-in appears only on an actual authentication rejection.
 Original curriculum recordings use cached native H.264 video combining both
 recorded cameras at their recorded frame rate, without MuJoCo reconstruction.
 Preparation uses the existing bounded movie worker and byte-range serving; the

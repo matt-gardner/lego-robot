@@ -157,7 +157,7 @@ test("feedback requires Family identity instead of assuming website login", asyn
   assert.match(ui.get("lego-feedback-status").textContent, /Family identity/);
 });
 
-test("uncertain submission retains exact payload and key; checking and replay do not create duplicates", async () => {
+test("uncertain submission retains exact payload for retry and clears it after confirmed intake", async () => {
   let posts = 0;
   const ui = await catalog(async (route, options) => {
     if (route.endsWith("/capabilities")) return feedbackResponse(capabilities);
@@ -169,17 +169,17 @@ test("uncertain submission retains exact payload and key; checking and replay do
   ui.get("lego-feedback-text").value = "Geometry looks wrong";
   await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
   assert.match(ui.get("lego-feedback-status").textContent, /Saved feedback has not been discarded/);
-  const saved = JSON.parse([...ui.storage.values()][0]);
+  const saved = JSON.parse([...ui.storage.values()][0]).entries[0].payload;
   assert.equal(saved.target.id, "3005");
   assert.equal(saved.target.release_id, "a".repeat(64));
   assert.equal(saved.target.artifact_sha256, "b".repeat(64));
-  await ui.get("lego-feedback-check").events.click();
-  assert.match(ui.get("lego-feedback-status").textContent, /Owner: queued; monitor: delivered/);
   await ui.get("lego-feedback-retry").events.click();
+  assert.match(ui.get("lego-feedback-status").textContent, /Owner: queued; monitor: delivered/);
   const bodies = ui.requests.filter(request => request.options?.method === "POST").map(request => request.options.body);
   assert.equal(bodies.length, 2);
   assert.equal(bodies[0], bodies[1]);
-  assert.equal(ui.storage.size, 1);
+  assert.equal(ui.storage.size, 0);
+  assert.equal(ui.get("lego-feedback-form").hidden, false);
 });
 
 test("example feedback pins actual selected frame, timestamp and camera; missing cameras cannot submit", async () => {
@@ -196,7 +196,7 @@ test("example feedback pins actual selected frame, timestamp and camera; missing
   assert.match(ui.get("lego-feedback-status").textContent, /unavailable/);
   ui.get("lego-feedback-camera").value = "wrist";
   await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
-  const saved = JSON.parse([...ui.storage.values()][0]);
+  const saved = JSON.parse(ui.requests.find(request => request.options?.method === "POST").options.body);
   assert.equal(saved.target.kind, "example");
   assert.equal(saved.frame_index, 0);
   assert.equal(saved.timestamp, 0.15);
@@ -213,11 +213,11 @@ for (const status of [401, 403, 404, 409, 422, 503]) {
     await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
     assert.match(ui.get("lego-feedback-status").textContent, /Rejected/);
     assert.equal(ui.storage.size, 1);
-    assert.equal(ui.get("lego-feedback-new").hidden, true);
+    assert.equal(ui.get("lego-feedback-retry").hidden, false);
   });
 }
 
-test("delivered and failed receipts distinguish owner enqueue from resolution and retain errors", async () => {
+test("confirmed intake clears the retry payload even when owner delivery reports an error", async () => {
   const ui = await catalog(async route => feedbackResponse(route.endsWith("/capabilities") ? capabilities :
     {request_id: "tracked", status: "failed", owner_delivery: "failed", monitor_delivery: "delivered", error: "Owner unavailable"}));
   await ui.get("lego-grid").children[0].events.click();
@@ -225,11 +225,11 @@ test("delivered and failed receipts distinguish owner enqueue from resolution an
   ui.get("lego-feedback-text").value = "Check this";
   await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
   assert.match(ui.get("lego-feedback-status").textContent, /Owner: failed.*Owner unavailable/);
-  ui.evaluate('legoFeedbackReceipt({request_id: "tracked", status: "delivered", owner_delivery: "delivered", monitor_delivery: "queued"})');
-  assert.match(ui.get("lego-feedback-status").textContent, /not acknowledgment or resolution/);
+  assert.equal(ui.storage.size, 0);
+  assert.equal(ui.get("lego-feedback-form").hidden, false);
 });
 
-test("storage failure prevents sending, and navigating preserves a saved comment's original target", async () => {
+test("storage failure prevents sending and a confirmed old catalog comment does not block another item", async () => {
   const ui = await catalog(async route => feedbackResponse(route.endsWith("/capabilities") ? capabilities : queuedReceipt));
   await ui.get("lego-grid").children[0].events.click();
   await flush();
@@ -238,14 +238,15 @@ test("storage failure prevents sending, and navigating preserves a saved comment
   await ui.get("lego-feedback-form").events.submit({preventDefault() {}});
   assert.match(ui.get("lego-feedback-status").textContent, /Storage blocked/);
   assert.equal(ui.requests.filter(request => request.options?.method === "POST").length, 0);
-  const pending = {idempotency_uuid: "saved", target: {id: "prior-part"}, text: "Prior comment"};
+  const pending = {idempotency_uuid: "saved", target: {kind: "part", id: "prior-part",
+    release_id: "old-release", artifact_sha256: "old-hash"}, text: "Prior comment"};
   ui.storage.set("lego-feedback-pending-v1", JSON.stringify(pending));
   await ui.get("lego-grid").children[0].events.click();
   await flush();
-  assert.equal(ui.get("lego-feedback-form").hidden, true);
-  assert.match(ui.get("lego-feedback-receipt").textContent, /prior-part/);
-  assert.match(ui.get("lego-feedback-status").textContent, /original target and context are preserved/);
+  assert.equal(ui.get("lego-feedback-form").hidden, false);
+  assert.equal(ui.storage.size, 0);
+  assert.doesNotMatch(ui.get("lego-feedback-status").textContent, /previous|Saved request/);
   assert.ok(ui.requests.some(request => request.route === "/family/api/lego/feedback/saved"));
   assert.equal(ui.get("lego-feedback-signin").hidden, true);
-  assert.equal(ui.get("lego-feedback-new").hidden, false);
+  assert.equal(ui.get("lego-feedback-retry").hidden, true);
 });

@@ -66,7 +66,7 @@ const response = (status, body, type = "application/json", redirected = false) =
   headers: {get: () => type}, json: async () => body,
 });
 
-test("data viewer comments reuse immutable archive identity and actual sparse frame with exact retry", async () => {
+test("data viewer comments use immutable archive identity and actual sparse frame without keeping confirmed history", async () => {
   const p = page(), submissions = [];
   p.context.fetch = async (route, options) => {
     if (route.endsWith("/capabilities")) return response(200, {
@@ -94,9 +94,44 @@ test("data viewer comments reuse immutable archive identity and actual sparse fr
   assert.equal(submissions[0].camera, "external");
   p.run("legoFeedbackDataOpen(null)");
   assert.equal(p.element("lego-feedback-form").hidden, true);
-  assert.equal(p.element("lego-feedback-retry").hidden, false);
-  await p.element("lego-feedback-retry").events.click();
-  assert.deepEqual(submissions[1], submissions[0]);
+  assert.equal(p.element("lego-feedback-retry").hidden, true);
+  assert.equal(p.storage.size, 0);
+});
+
+test("an old delivered catalog comment disappears rather than appearing on a new example", async () => {
+  const p = page(), routes = [];
+  p.storage.set("lego-feedback-pending-v1", JSON.stringify({idempotency_uuid: "old-comment",
+    target: {kind: "part", id: "11211", release_id: "catalog-release", artifact_sha256: "catalog-hash"},
+    text: "An earlier catalog request"}));
+  p.context.fetch = async route => {
+    routes.push(route);
+    return response(200, route.endsWith("/capabilities")
+      ? {supported_target_kinds: ["example"], issue_categories: ["task"]}
+      : {request_id: "earlier-request", status: "delivered", owner_delivery: "delivered", monitor_delivery: "delivered"});
+  };
+  await p.run('legoFeedbackDataOpen({release:{kind:"examples",id:"new-release",artifact_sha256:"new-hash"},item:{id:"new-example"},frames:[]})');
+  assert.ok(routes.includes("/family/api/lego/feedback/old-comment"));
+  assert.equal(p.element("lego-feedback-form").hidden, false);
+  assert.equal(p.element("lego-feedback-retry").hidden, true);
+  assert.equal(p.element("lego-feedback-receipt").textContent, "");
+  assert.doesNotMatch(p.element("lego-feedback-status").textContent, /earlier-request|previous|saved/i);
+  assert.equal(p.storage.size, 0);
+});
+
+test("unconfirmed feedback stays with its exact version and does not block a different version", async () => {
+  const p = page();
+  p.context.fetch = async route => response(200, {supported_target_kinds: ["example"], issue_categories: ["task"]});
+  await p.run('legoFeedbackDataOpen({release:{kind:"examples",id:"release-A",artifact_sha256:"hash-A"},item:{id:"same-example"},frames:[]})');
+  p.element("lego-feedback-text").value = "Unconfirmed comment";
+  p.context.fetch = async route => route.endsWith("/capabilities")
+    ? response(200, {supported_target_kinds: ["example"], issue_categories: ["task"]})
+    : response(503, {detail: "Unavailable"});
+  await p.element("lego-feedback-form").events.submit({preventDefault() {}});
+  const pending = p.storage.get("lego-feedback-pending-v1");
+  await p.run('legoFeedbackDataOpen({release:{kind:"examples",id:"release-B",artifact_sha256:"hash-B"},item:{id:"same-example"},frames:[]})');
+  assert.equal(p.element("lego-feedback-form").hidden, false);
+  assert.equal(p.element("lego-feedback-retry").hidden, true);
+  assert.equal(p.storage.get("lego-feedback-pending-v1"), pending);
 });
 
 test("original paired camera playback buffers slow images without skipping or canceling frames", async () => {
