@@ -208,7 +208,6 @@ class TrainingDataBrowser:
                 seen = set()
                 for release in sorted((row for row in curriculum_releases.values() if row["kind"] == "examples"),
                                       key=generation_order):
-                    release = self.curriculum.release(release["id"])
                     for archived in self.curriculum.rows(release):
                         if archived["id"] in seen:
                             continue

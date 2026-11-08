@@ -104,7 +104,7 @@ def test_data_first_browser_without_any_training_log(dataset):
         worker.join()
 
 
-def test_curriculum_archive_appears_with_creation_date_and_original_views(dataset):
+def test_curriculum_archive_appears_with_creation_date_and_original_views(dataset, monkeypatch):
     root, _, _, _, _, _ = dataset
     archive_root = root / "data" / "curriculum"
     archive_root.mkdir()
@@ -124,12 +124,25 @@ def test_curriculum_archive_appears_with_creation_date_and_original_views(datase
             db.execute("INSERT INTO files VALUES (?,?,?,?)",
                        ("logical/source", name, content, hashlib.sha256(content).hexdigest()))
     browser = TrainingDataBrowser(root, LegoDataBrowser(root, episode_root=archive_root))
+    release_lookups = []
+    original_release = browser.curriculum.release
+
+    def track_release(release_id):
+        release_lookups.append(release_id)
+        return original_release(release_id)
+
+    monkeypatch.setattr(browser.curriculum, "release", track_release)
     result = browser.list(None, {})
+    assert release_lookups == []
     assert result["total"] == 4
     assert result["curriculum_example_count"] == 1
     row = result["items"][0]
     assert row["origin"] == "curriculum" and row["generated_at"] == metadata["generated_at"]
     assert row["split"] == "development"
+    revision, checked, _ = browser.cache[None]
+    browser.cache[None] = (revision, checked - 31, browser.cache[None][2])
+    assert browser.list(None, {})["total"] == result["total"]
+    assert release_lookups == []
     detail = browser.detail(None, "examples", row["id"])
     assert detail["original_recording"] and detail["movie_available"]
     assert detail["frames"][0]["timestamp"] == 0
