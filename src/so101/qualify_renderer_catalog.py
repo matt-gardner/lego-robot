@@ -26,7 +26,12 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                     appearance: WristAppearanceV2 | None = None,
                     diagnostic_unqualified_separator: bool = False,
                     wrist_height_m: float | None = None,
-                    gripper_fraction: float = .3) -> None:
+                    gripper_fraction: float = .3,
+                    reference_scene: str | None = None) -> None:
+    if reference_scene not in (None, "wrist_current", "autopilot_scene_wrist"):
+        raise ValueError("Unknown molded reference scene")
+    if reference_scene is not None and reference_assembly:
+        raise ValueError("Select either molded reference scene or separator assembly")
     if not np.isfinite(gripper_fraction) or not 0 <= gripper_fraction <= 1:
         raise ValueError("Render fixture gripper fraction must lie between zero and one")
     if wrist_height_m is not None and (
@@ -35,6 +40,10 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
     catalog = load_catalog(manifest)
     parts = {part.part_id: part for part in catalog.parts}
     required = {"3003", "96874", "3702"} if reference_assembly else {"3003", "3022", "3700"}
+    if reference_scene == "wrist_current":
+        required = {"3022"}
+    elif reference_scene == "autopilot_scene_wrist":
+        required = {"3003", "3700"}
     diagnostic = None
     if diagnostic_unqualified_separator:
         if not reference_assembly:
@@ -79,6 +88,10 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                         ("orange_plate", "3022", "orange"),
                         ("gray_technic", "3700", "gray"),
                     )
+        if reference_scene == "wrist_current":
+            selected = (("green_plate", "3022", "green"),)
+        elif reference_scene == "autopilot_scene_wrist":
+            selected = (("orange_brick", "3003", "orange"), ("gray_technic", "3700", "gray"))
         objects = [{"instance_id": name, "part_id": part_id, "color": color,
                     "position_relative_to_scene_m": [.8, .5 + index * .1, .1],
                     "yaw_rad": 0} for index, (name, part_id, color) in enumerate(selected)]
@@ -128,10 +141,23 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
             for index, name in enumerate(OBJECT_NAMES):
                 address = sim.model.joint(f"{name}_free").qposadr[0]
                 sim.data.qpos[address:address + 3] = [.8, .5 + index * .2, .1]
+            for index, name in enumerate(sim.distractors):
+                joint = sim.model.body_jntadr[sim.model.body(name).id]
+                address = sim.model.jnt_qposadr[joint]
+                sim.data.qpos[address:address + 3] = [.8, 1.5 + index * .2, .1]
+            for name in sim.destination_geoms:
+                body = root.find(f".//body[@name='{name}']")
+                if body is None:
+                    raise ValueError(f"Missing fixture destination body: {name}")
+                body.set("pos", "0 0 -1")
             mujoco.mj_forward(sim.model, sim.data)
             centers = ((.30, .02), (.50, .76), (.31, .76), (.69, .76), (.93, .52)) if reference_assembly else (
                 (.30, .02), (.99, .39), (.52, .76),
             )
+            if reference_scene == "wrist_current":
+                centers = ((1.03, .82),)
+            elif reference_scene == "autopilot_scene_wrist":
+                centers = ((.99, .38), (1.00, .57))
             for obj, center in zip(objects, centers, strict=True):
                 name = obj["instance_id"]
                 part = parts[obj["part_id"]]
@@ -147,7 +173,7 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                 low, high = bounds.min(axis=0), bounds.max(axis=0)
                 yaw = 0.
                 surface = TABLE_Z
-                if reference_assembly:
+                if reference_assembly or reference_scene is not None:
                     camera = sim.model.camera("wrist_cam").id
                     camera_rotation = sim.data.cam_xmat[camera].reshape(3, 3)
                     yaw = float(np.arctan2(camera_rotation[1, 0], camera_rotation[0, 0]))
@@ -159,7 +185,7 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                         surface += .0096
                         yaw += np.pi - .7
                 xyz = table_point(sim, center, surface - low[2])
-                if reference_assembly:
+                if reference_assembly or reference_scene is not None:
                     xyz = table_point(sim, center, surface + (high[2] - low[2]) / 2)
                     xyz[2] = surface - low[2]
                     offset = (low + high) / 2
@@ -236,9 +262,11 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                           "assembled_xml_sha256": hashlib.sha256(final_xml.encode()).hexdigest(),
                           "mujoco_version": mujoco.__version__, "gl_renderer": backend,
                           "qpos": data.qpos.tolist(), "labels": labels,
+                          "legacy_context_out_of_frame": [*OBJECT_NAMES, *sim.distractors],
                           "fixture_wrist_height_m": float(grasp[2]),
                           "fixture_gripper_fraction": gripper_fraction,
                           "reference_assembly_hypothesis": reference_assembly,
+                          "molded_reference_scene_hypothesis": reference_scene,
                           "reference_composition_notes": (
                               "Three distinct 3702 instances supply gray context without scaling "
                               "or pretending a single verified longer part. "
@@ -253,8 +281,12 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                           "Hand-composed render-only poses; no settling/expert success "
                           "claim. Cable is explicitly non-contact visual context. Jaw outer housings "
                           "are uncalibrated cosmetic geometry; original inner contacts unchanged."}
-                reference = Path("data/real_robot/wrist_camera/target_teal_current_wrist.jpg")
-                if reference_assembly:
+                reference = Path("data/real_robot/wrist_camera") / (
+                    f"{reference_scene}.jpg" if reference_scene else "target_teal_current_wrist.jpg")
+                if reference_assembly or reference_scene is not None:
+                    reference_hash = hashlib.sha256(reference.read_bytes()).hexdigest()
+                    if reference_hash != profile.config["reference_sha256"][reference.name]:
+                        raise ValueError(f"Reference hash mismatch: {reference.name}")
                     reference_image = cv2.imread(str(reference))
                     if reference_image is None:
                         raise OSError(f"Cannot read reference image: {reference}")
@@ -263,7 +295,7 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                         cv2.cvtColor(image, cv2.COLOR_RGB2BGR)), axis=1)
                     if not cv2.imwrite(str(output / "reference_vs_simulation.png"), comparison):
                         raise OSError("Failed to save reference comparison")
-                    report["reference_sha256"] = hashlib.sha256(reference.read_bytes()).hexdigest()
+                    report["reference_sha256"] = reference_hash
                 (output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
             finally:
                 renderer.close()
@@ -282,13 +314,15 @@ def main() -> None:
     parser.add_argument("--diagnostic-unqualified-separator", action="store_true")
     parser.add_argument("--wrist-height-m", type=float)
     parser.add_argument("--gripper-fraction", type=float, default=.3)
+    parser.add_argument("--reference-scene", choices=("wrist_current", "autopilot_scene_wrist"))
     args = parser.parse_args()
     qualify_catalog(args.catalog, args.output, reference_assembly=args.reference_assembly,
                     appearance=(WristAppearanceV4() if args.appearance == "v4" else
                                 WristAppearanceV3() if args.appearance == "v3" else None),
                     diagnostic_unqualified_separator=args.diagnostic_unqualified_separator,
                     wrist_height_m=args.wrist_height_m,
-                    gripper_fraction=args.gripper_fraction)
+                    gripper_fraction=args.gripper_fraction,
+                    reference_scene=args.reference_scene)
 
 
 if __name__ == "__main__":

@@ -123,6 +123,15 @@ def test_render_fixture_rejects_invalid_gripper_fraction(tmp_path, fraction):
     assert not (tmp_path / "render").exists()
 
 
+def test_molded_reference_scene_rejects_unknown_or_conflicting_selection(tmp_path):
+    for selection, assembly in (("unknown", False), ("wrist_current", True)):
+        with pytest.raises(ValueError, match="reference scene"):
+            qualify_renderer_catalog.qualify_catalog(
+                tmp_path / "absent.json", tmp_path / "render",
+                reference_scene=selection, reference_assembly=assembly)
+    assert not (tmp_path / "render").exists()
+
+
 @pytest.mark.parametrize("invalid", ["status", "frame", "hash", "mjcf"])
 def test_unqualified_diagnostic_rejects_unsafe_source(tmp_path, monkeypatch, invalid):
     source = tmp_path / "part.xml"
