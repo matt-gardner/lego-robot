@@ -428,6 +428,11 @@ optimizer step, aligning different batch sizes at equal training exposure.
 Frozen-set supervised loss includes the zero-sample baseline. Tooltips retain
 optimizer step for diagnosis; historical points without sample counts are
 omitted explicitly, not estimated from batch size. RL plots keep their step axis.
+Timing distinguishes optimizer-only duration from elapsed time since the reported
+update, GPU report age, and the last completed evaluation duration. A scheduled
+evaluation boundary awaiting a result is labeled pending/in progress, not a
+confirmed live phase; fresh explicit phase reports take precedence. Stale GPU
+reports make the current phase unknown rather than implying optimizer progress.
 Frozen40 is used for tuning, not an independent final test set; pilot rankings
 need seed confirmation. The sweep does not automatically deploy a winner,
 restart RL, or provision cloud resources.

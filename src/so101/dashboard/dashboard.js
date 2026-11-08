@@ -122,15 +122,36 @@ function updateStepCounters() {
     const run = state.runs.get(summary.id);
     const elapsed = finite(run?.last_step_at) ? Date.now() / 1000 - run.last_step_at : null;
     const prefix = selected.length > 1 ? `${shortName(summary)} · ` : "";
+    const remote = summary.remote;
+    const reportAge = finite(remote?.observed_at) ? Math.max(0, Date.now() / 1000 - remote.observed_at) : null;
+    const freshReport = finite(reportAge) && reportAge <= 90 && remote.state !== "stale";
+    const phaseAge = finite(remote?.phase_observed_at) ? Date.now() / 1000 - remote.phase_observed_at : null;
+    const interval = run?.config?.run_config?.validation_interval;
+    const latestStep = run?.latest_train?.step;
+    const evaluationDue = state.kind === "sft" && finite(interval) && interval > 0
+      && finite(latestStep) && latestStep > 0 && latestStep % interval === 0
+      && (run.latest_eval?.step ?? -1) < latestStep;
+    let phase = summary.active === true ? "Running; current phase not reported" : "Not running";
+    if (remote && !freshReport) phase = "GPU report stale; current phase unknown";
+    else if (freshReport && finite(phaseAge) && phaseAge >= -30 && phaseAge <= 90
+      && ["training", "evaluating", "checkpointing"].includes(remote.phase)) {
+      phase = `Reported phase: ${remote.phase}`;
+    } else if (summary.active === true && evaluationDue) {
+      phase = `Evaluation pending / in progress at step ${latestStep}`;
+    }
     const since = summary.active === true
-      ? `Since last step: ${run?.last_step_time_estimated ? "~" : ""}${duration(elapsed)}`
-      : "Not running";
+      ? `Since reported optimizer update: ${run?.last_step_time_estimated ? "~" : ""}${duration(elapsed)}`
+      : "";
     const counter = text("span",
-      `${prefix}Last step time: ${duration(run?.latest_train?.step_seconds)} · ${since}`);
+      `${prefix}${phase} · Optimizer update: ${duration(run?.latest_train?.step_seconds)} (excludes evaluation/checkpointing)` +
+      (since ? ` · ${since}` : "") +
+      (remote ? ` · GPU report age: ${duration(reportAge)}` : "") +
+      (finite(run?.latest_eval?.evaluation_seconds) ? ` · Last completed evaluation: ${duration(run.latest_eval.evaluation_seconds)}` : ""));
     counter.title = `Latest loaded step: ${run?.latest_train?.step ?? "none"}. ` +
       (run?.last_step_time_estimated
         ? "Estimated from the log write time; this run has no completion timestamp."
-        : "Elapsed since the recorded training-step completion.");
+        : "Elapsed since the recorded optimizer completion, not the duration of the current phase.") +
+      " Evaluation status is inferred from a scheduled boundary awaiting its result unless an explicit fresh phase is reported. GPU report age is separate from optimizer progress.";
     return counter;
   }));
 }

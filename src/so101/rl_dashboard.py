@@ -224,6 +224,7 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
                     point["samples_seen"] = row.get("samples_seen")
                     if task == "all":
                         point["supervised_loss"] = row.get("supervised_loss")
+                        point["evaluation_seconds"] = row.get("evaluation_seconds")
                 series[("eval", task)].append(point)
     normalized_series = [
         {"phase": phase, "task": task, "points": sorted(points, key=lambda p: p["step"])}

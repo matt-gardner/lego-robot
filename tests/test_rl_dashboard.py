@@ -77,12 +77,13 @@ def sft_log():
 def test_sft_exposure_preserves_logged_train_and_evaluation_counts():
     data = sft_log()
     data["steps"][0].update(samples_seen=128)
-    data["validation"][0].update(samples_seen=0, supervised_loss=2.5,
+    data["validation"][0].update(samples_seen=0, supervised_loss=2.5, evaluation_seconds=198,
                                  by_task={"grasp": {"success_rate": 0.5}})
     normalized = normalize_log(data)
     assert normalized["latest_train"]["samples_seen"] == 128
     assert normalized["latest_eval"]["samples_seen"] == 0
     assert normalized["latest_eval"]["supervised_loss"] == 2.5
+    assert normalized["latest_eval"]["evaluation_seconds"] == 198
     task_eval = next(row for row in normalized["series"] if row["phase"] == "eval" and row["task"] == "grasp")
     assert task_eval["points"][0]["samples_seen"] == 0
     del data["steps"][0]["samples_seen"]

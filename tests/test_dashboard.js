@@ -301,7 +301,7 @@ test("RL/SFT interaction preserves RL selection, zoom and metrics; SFT uses loss
   assert.equal(rows[1].children[3].textContent, "50.0%");
   assert.equal(page.eval("seriesFor(sftSections[0].metrics[0])[0].values[0].raw"), 0.4);
   assert.equal(page.eval("seriesFor(sftSections[1].metrics[2])[0].values[0].raw"), 3);
-  assert.match(page.elements.get("step-timing").textContent, /Last step time: 2s · Since last step:/);
+  assert.match(page.elements.get("step-timing").textContent, /Optimizer update: 2s \(excludes evaluation\/checkpointing\).*Since reported optimizer update:/);
   assert.equal(page.eval("state.charts.filter(c => !c.section.hidden).every(c => !c.canvas.events.wheel)"), true);
   assert.equal(page.eval("state.charts.filter(c => c.section.dataset.kind === 'rl').every(c => c.section.hidden)"), true);
   await page.elements.get("tab-rl").events.click();
@@ -332,6 +332,36 @@ test("a newly discovered SFT run defaults before validation without altering RL"
   assert.equal(page.storage.get("sft-selected-runs"), "[]");
   await page.elements.get("tab-rl").events.click();
   assert.equal(page.eval("chosen()[0].id"), rl.id);
+});
+
+test("timing separates evaluation boundaries from reporting delay and stale phase evidence", async () => {
+  const sft = run("22222222", "sft", true);
+  sft.config = {run_config: {validation_interval: 48}};
+  sft.latest_train.step = 96;
+  sft.latest_train.step_seconds = 13.68;
+  sft.latest_eval.step = 48;
+  sft.latest_eval.evaluation_seconds = 198;
+  sft.last_step_at = Date.now() / 1000 - 150;
+  sft.remote = {state: "running", observed_at: Date.now() / 1000 - 5};
+  const page = await dashboard([sft]);
+  await page.elements.get("tab-sft").events.click();
+  const timing = page.elements.get("step-timing");
+  assert.match(timing.textContent, /Evaluation pending \/ in progress at step 96/);
+  assert.match(timing.textContent, /Optimizer update: 13s \(excludes evaluation\/checkpointing\)/);
+  assert.match(timing.textContent, /Since reported optimizer update: 2m 30s/);
+  assert.match(timing.textContent, /GPU report age: 5s/);
+  assert.match(timing.textContent, /Last completed evaluation: 3m 18s/);
+  sft.remote.observed_at -= 200;
+  page.eval("updateStepCounters()");
+  assert.match(timing.textContent, /GPU report stale; current phase unknown/);
+  assert.doesNotMatch(timing.textContent, /Evaluation pending/);
+  sft.remote = {state: "running", phase: "evaluating", observed_at: Date.now() / 1000,
+    phase_observed_at: Date.now() / 1000};
+  page.eval("updateStepCounters()");
+  assert.match(timing.textContent, /Reported phase: evaluating/);
+  sft.remote.phase_observed_at -= 200;
+  page.eval("updateStepCounters()");
+  assert.doesNotMatch(timing.textContent, /Reported phase: evaluating/);
 });
 
 test("SFT loss plots use log-log coordinates, positive gaps and logarithmic interaction", async () => {
