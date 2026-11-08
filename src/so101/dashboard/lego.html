@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-base-path="">
+<html lang="en" data-base-path="" data-browser-mode="parts">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,7 +11,7 @@
   <script src="/lego.js" defer></script>
 </head>
 <body>
-  <header><h1>LEGO parts</h1><a href="/data">Training data browser</a></header>
+  <header><h1>LEGO parts</h1><a href="/lego">Parts</a><a href="/examples">Recorded examples</a><a href="/data">Training data browser</a></header>
   <main class="data-main">
     <p class="context">Browse parts for simulation training. Select a part to inspect its geometry and print or sticker variants.</p>
     <p id="lego-error" role="alert"></p>
@@ -33,6 +33,8 @@
         <div><p id="lego-part-summary"></p><h3>Print and sticker variants</h3><p id="lego-variant-note"></p><div id="lego-variants" class="part-variants"></div></div>
       </div>
       <div id="lego-recording">
+      <p id="lego-example-scope"></p>
+      <button id="lego-play-frames">Play recorded views</button>
       <label>Recorded frame<select id="lego-frame"></select></label>
       <p id="lego-frame-identity"></p>
       <div class="detail-previews"><img id="lego-wrist" alt="Recorded wrist frame" hidden><img id="lego-external" alt="Recorded external frame" hidden></div>

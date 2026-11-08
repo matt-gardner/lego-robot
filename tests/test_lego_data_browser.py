@@ -269,6 +269,24 @@ def test_readiness_type_footprint_decoration_filters(tmp_path):
     assert browser.list({"release": release, "readiness": "not_ready"})["total"] == 1
 
 
+def test_external_recordings_use_logical_keys_and_hash_bound_receipt(tmp_path):
+    (tmp_path / "published").mkdir()
+    path = episode_release(tmp_path / "published")
+    receipt = path.parent / "qualification.json"
+    receipt.write_text(json.dumps({
+        "storage_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "scope": "development diagnostic, not training",
+    }))
+    browser = LegoDataBrowser(tmp_path / "workspace", episode_root=path.parent)
+    release = browser.list({})["releases"][0]
+    assert "development diagnostic" in release["qualification"]["scope"]
+    row = browser.list({"release": release["id"]})["items"][0]
+    assert browser.media({"release": release["id"], "item": row["id"], "frame": "0"})[0] == b"recorded-image"
+    receipt.write_text('{"storage_sha256":"wrong"}')
+    with pytest.raises(ValueError, match="receipt"):
+        browser.list({})
+
+
 def test_dashboard_prefix_and_lego_api(tmp_path):
     from so101.rl_dashboard import make_server
 

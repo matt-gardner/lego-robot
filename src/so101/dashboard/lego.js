@@ -2,11 +2,13 @@
 
 const legoElement = id => document.getElementById(`lego-${id}`);
 const legoBase = document.documentElement.dataset.basePath || "";
+const legoExamples = document.documentElement.dataset.browserMode === "examples";
 const legoViewer = new PartViewer(legoElement("geometry"));
 let legoOffset = 0;
 let legoRequest = 0;
 let legoDetailRequest = 0;
 let legoRelease = "";
+let legoPlayback = null;
 const legoMedia = query => `${legoBase}/api/lego?${new URLSearchParams(query)}`;
 async function legoFetch(query) {
   const response = await fetch(legoMedia(query));
@@ -21,6 +23,8 @@ function legoText(tag, text, className = "") {
   return node;
 }
 async function legoOpen(release, item) {
+  clearInterval(legoPlayback);
+  legoPlayback = null;
   const request = ++legoDetailRequest;
   legoElement("geometry").hidden = true;
   legoElement("recording").hidden = true;
@@ -60,6 +64,8 @@ async function legoOpen(release, item) {
     } else {
       legoElement("preview-status").textContent = "Recorded example";
       legoElement("recording").hidden = false;
+      legoElement("example-scope").textContent = `Split: ${row.split}. ${row.expert_acceptance}. ` +
+        (detail.release.qualification?.scope || "Training membership is not inferred from success.");
       legoElement("frame").replaceChildren(...detail.frames.map(frame => {
         const option = legoText("option", `${frame.frame_index} / timestamp ${frame.timestamp ?? "not recorded"}`);
         option.value = frame.frame_index;
@@ -79,6 +85,26 @@ async function legoOpen(release, item) {
         }
       };
       legoElement("frame").onchange = showFrame;
+      legoElement("play-frames").onclick = () => {
+        if (legoPlayback) {
+          clearInterval(legoPlayback);
+          legoPlayback = null;
+          legoElement("play-frames").textContent = "Play recorded views";
+          return;
+        }
+        legoElement("play-frames").textContent = "Pause";
+        legoPlayback = setInterval(() => {
+          const index = Number(legoElement("frame").value) + 1;
+          if (index >= detail.frames.length) {
+            clearInterval(legoPlayback);
+            legoPlayback = null;
+            legoElement("play-frames").textContent = "Play recorded views";
+            return;
+          }
+          legoElement("frame").value = String(index);
+          showFrame();
+        }, 1000 / (row.fps || 10));
+      };
       showFrame();
     }
   } catch (error) {
@@ -90,13 +116,17 @@ async function legoLoad() {
   try {
     const release = legoRelease;
     if (!release) return;
-    const result = await legoFetch({release, readiness: legoElement("readiness").value,
-      family: legoElement("family").value, footprint: legoElement("footprint").value,
-      decoration: legoElement("decoration").value, offset: legoOffset});
+    const query = legoExamples ? {release, offset: legoOffset} :
+      {release, readiness: legoElement("readiness").value,
+        family: legoElement("family").value, footprint: legoElement("footprint").value,
+        decoration: legoElement("decoration").value, offset: legoOffset};
+    const result = await legoFetch(query);
     if (request !== legoRequest) return;
     legoElement("error").textContent = "";
     const notices = result.release.qualification_notices;
-    legoElement("catalog-note").textContent = notices.length
+    legoElement("catalog-note").textContent = legoExamples
+      ? "Original wrist and external recordings. Development diagnostics are not promoted to training data."
+      : notices.length
       ? notices.map(notice => `${notice.status}: ${notice.reason}`).join(" ")
       : "Training ready means prepared for simulation-data generation, not proven robot graspability. Footprints follow the part description; they are not measured bounding boxes.";
     for (const [field, all] of [["family", "All types"], ["footprint", "All footprints"], ["decoration", "All decorations"]]) {
@@ -112,15 +142,17 @@ async function legoLoad() {
       }));
       legoElement(field).value = selected;
     }
-    legoElement("count").textContent = `${result.total} parts`;
+    legoElement("count").textContent = `${result.total} ${legoExamples ? "recorded examples" : "parts"}`;
     legoElement("grid").replaceChildren(...result.items.map(row => {
       const button = document.createElement("button");
       button.className = "part-card";
-      if (row.mjcf) {
+      if (row.mjcf || legoExamples) {
         const image = document.createElement("img");
         image.loading = "lazy";
-        image.alt = `${row.description || row.part_id} visual geometry`;
-        image.src = legoMedia({release, item: row.id, preview: "image"});
+        image.alt = legoExamples ? `Original wrist image: ${row.target_label || row.task}` :
+          `${row.description || row.part_id} visual geometry`;
+        image.src = legoMedia(legoExamples ? {release, item: row.id, frame: 0, camera: "wrist"} :
+          {release, item: row.id, preview: "image"});
         image.onerror = () => {
           image.replaceWith(legoText("span", "Preview unavailable", "part-placeholder"));
           legoElement("error").textContent = `Unable to load geometry preview for part ${row.part_id}`;
@@ -129,8 +161,9 @@ async function legoLoad() {
       } else button.append(legoText("span", "No prepared geometry", "part-placeholder"));
       const info = legoText("span", "", "part-info");
       info.append(legoText("strong", row.description || row.task || row.id),
-        legoText("span", `Part ${row.part_id || row.id}`, "part-id"),
-        legoText("span", row.readiness === "ready" ? "Training ready" : "Not training ready", "part-badge"));
+        legoText("span", legoExamples ? row.target_label || row.id : `Part ${row.part_id || row.id}`, "part-id"),
+        legoText("span", legoExamples ? `Split: ${row.split}` :
+          row.readiness === "ready" ? "Training ready" : "Not training ready", "part-badge"));
       button.append(info);
       button.addEventListener("click", () => legoOpen(release, row.id));
       return button;
@@ -144,12 +177,12 @@ async function legoLoad() {
 async function legoRefresh() {
   try {
     const result = await legoFetch({});
-    const usable = result.releases.filter(release => release.kind === "parts" &&
-      release.validated_parts > 0 && !release.qualification_notices.length);
+    const usable = result.releases.filter(release => legoExamples ? release.kind === "examples" :
+      release.kind === "parts" && release.validated_parts > 0 && !release.qualification_notices.length);
     const latest = usable.sort((a, b) => b.publication_mtime_ns - a.publication_mtime_ns)[0];
     legoRelease = latest?.id || "";
     if (!legoRelease) {
-      legoElement("count").textContent = "No usable parts catalog is available yet.";
+      legoElement("count").textContent = legoExamples ? "No published recordings yet." : "No usable parts catalog is available yet.";
       legoElement("grid").replaceChildren();
       return;
     }
@@ -167,6 +200,11 @@ for (const id of ["readiness", "family", "footprint", "decoration"]) {
 legoElement("refresh").addEventListener("click", legoRefresh);
 legoElement("previous").addEventListener("click", () => { legoOffset = Math.max(0, legoOffset - 24); legoLoad(); });
 legoElement("next").addEventListener("click", () => { legoOffset += 24; legoLoad(); });
-legoElement("close").addEventListener("click", () => { ++legoDetailRequest; legoElement("detail").close(); });
-legoElement("detail").addEventListener("cancel", () => { ++legoDetailRequest; });
+function legoStopPlayback() { clearInterval(legoPlayback); legoPlayback = null; ++legoDetailRequest; }
+legoElement("close").addEventListener("click", () => { legoStopPlayback(); legoElement("detail").close(); });
+legoElement("detail").addEventListener("cancel", legoStopPlayback);
+if (legoExamples) {
+  document.querySelector(".catalog-toolbar").hidden = true;
+  document.querySelector(".context").textContent = "Browse original recorded examples and their exact scene, command and acceptance evidence.";
+}
 legoRefresh();

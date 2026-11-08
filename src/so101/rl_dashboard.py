@@ -436,13 +436,14 @@ class RunStore:
 
 
 def make_server(root: Path, host: str, port: int, base_path: str = "",
-                notice: str = "", lego_catalog_root: Path | None = None) -> ThreadingHTTPServer:
+                notice: str = "", lego_catalog_root: Path | None = None,
+                lego_episode_root: Path | None = None) -> ThreadingHTTPServer:
     base_path = base_path.rstrip("/")
     if not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*", base_path):
         raise ValueError("Base path must contain only slash-separated letters, digits, _ or -")
     store = RunStore(root)
     browser = TrainingDataBrowser(root.resolve().parent)
-    lego_browser = LegoDataBrowser(root.resolve().parent, lego_catalog_root)
+    lego_browser = LegoDataBrowser(root.resolve().parent, lego_catalog_root, lego_episode_root)
     assets = {
         "/": ("index.html", "text/html; charset=utf-8"),
         "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -451,6 +452,7 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
         "/data.js": ("data.js", "text/javascript; charset=utf-8"),
         "/data.css": ("data.css", "text/css; charset=utf-8"),
         "/lego": ("lego.html", "text/html; charset=utf-8"),
+        "/examples": ("lego.html", "text/html; charset=utf-8"),
         "/lego.js": ("lego.js", "text/javascript; charset=utf-8"),
         "/lego.css": ("lego.css", "text/css; charset=utf-8"),
         "/part-viewer.js": ("part-viewer.js", "text/javascript; charset=utf-8"),
@@ -534,6 +536,9 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                     page = body.decode().replace(
                         'data-base-path=""', f'data-base-path="{base_path}"',
                     )
+                    if path == "/examples":
+                        page = page.replace('data-browser-mode="parts"', 'data-browser-mode="examples"')
+                        page = page.replace("<h1>LEGO parts</h1>", "<h1>Recorded examples</h1>")
                     page = page.replace('href="/', f'href="{base_path}/')
                     page = page.replace('src="/', f'src="{base_path}/')
                     if notice:
@@ -614,13 +619,15 @@ def main() -> None:
     parser.add_argument("--notice", default="", help="Deployment status shown on both pages")
     parser.add_argument("--lego-catalog-root", type=Path,
                         help="Read-only directory containing versioned LEGO catalog releases")
+    parser.add_argument("--lego-episode-root", type=Path,
+                        help="Read-only directory containing immutable episode SQLite releases")
     args = parser.parse_args()
     if not args.root.is_dir():
         parser.error(f"Run directory does not exist: {args.root}")
     logging.basicConfig(level=logging.INFO)
     try:
         server = make_server(args.root, args.host, args.port, args.base_path, args.notice,
-                             args.lego_catalog_root)
+                             args.lego_catalog_root, args.lego_episode_root)
     except ValueError as error:
         parser.error(str(error))
     print(f"RL dashboard: http://{args.host}:{server.server_port}{args.base_path.rstrip('/')}/",

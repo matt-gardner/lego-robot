@@ -45,7 +45,7 @@ async function catalog() {
   const context = vm.createContext({
     document: {documentElement: {dataset: {basePath: "/lego-robot"}},
       getElementById: get, createElement: tag => new Element(tag)},
-    URLSearchParams, console,
+    URLSearchParams, console, setInterval, clearInterval,
     fetch: async route => {
       const query = new URL(route, "http://localhost").searchParams;
       requests.push({route, query});

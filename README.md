@@ -228,6 +228,13 @@ parsed from explicit dimension pairs in part descriptions, not inferred from
 measured bounding boxes; unlabelled parts remain "not specified". Historical
 snapshots and qualification labels remain accessible through the read-only API
 and technical part details, not browsing controls.
+`/examples` provides a separate original-recording browser. Use
+`--lego-episode-root /path/to/lego_curriculum` to discover externally published
+immutable SQLite recordings without extracting logical source paths. A release's
+`qualification.json`, when present, must match the container byte hash and is
+shown without upgrading development diagnostics to training data. Wrist/external
+frames play as a synchronized recorded-image sequence; no legacy simulation
+reset or compiled-model download is used.
 Cards show hash-verified visual-mesh thumbnails. Clicking a
 part opens a drag-to-rotate, scroll-to-zoom viewer (arrow keys also rotate).
 Previews use embedded visual MJCF meshes, not collision hulls, and need no GPU,

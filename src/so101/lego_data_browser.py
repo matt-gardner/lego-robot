@@ -13,9 +13,11 @@ from so101.part_preview import thumbnail, visual_geometry
 
 
 class LegoDataBrowser:
-    def __init__(self, workspace: Path, catalog_root: Path | None = None):
+    def __init__(self, workspace: Path, catalog_root: Path | None = None,
+                 episode_root: Path | None = None):
         self.root = workspace.resolve() / "data"
         self.catalog_root = catalog_root.absolute() if catalog_root else self.root
+        self.episode_root = episode_root.absolute() if episode_root else self.root
         self.fingerprints: dict[Path, tuple[tuple[int, int, int, int], str]] = {}
         self.lock = threading.RLock()
         self.preview_catalogs: dict[str, dict] = {}
@@ -52,7 +54,7 @@ class LegoDataBrowser:
         releases = {}
         notices = self.notices()
         for pattern, kind in (("**/catalog.json", "parts"), ("**/*.sqlite", "examples")):
-            root = self.catalog_root if kind == "parts" else self.root
+            root = self.catalog_root if kind == "parts" else self.episode_root
             for path in sorted(root.glob(pattern)):
                 if any(component.startswith(".") for component in path.relative_to(root).parts):
                     continue
@@ -77,6 +79,12 @@ class LegoDataBrowser:
                             "SELECT content FROM catalog"
                         ).fetchone()[0]
                     version = metadata.get("release_id", path.stem)
+                qualification = None
+                if kind == "examples" and (path.parent / "qualification.json").is_file():
+                    receipt_path = self.contained(path.parent / "qualification.json", root)
+                    qualification = json.loads(receipt_path.read_bytes())
+                    if qualification.get("storage_sha256") != artifact_digest:
+                        raise ValueError("Episode qualification receipt storage hash mismatch")
                 digest = hashlib.sha256(content).hexdigest()
                 releases[key] = {
                     "id": key, "kind": kind, "version": version,
@@ -90,6 +98,7 @@ class LegoDataBrowser:
                         and notice["catalog_id"] == version
                         and notice["catalog_sha256"] == digest
                     ],
+                    "qualification": qualification,
                 }
                 if selected is not None:
                     releases[key]["metadata"] = metadata
@@ -167,7 +176,7 @@ class LegoDataBrowser:
                      "effective_status": qualification if qualification != "not_invalidated"
                      else row["status"]} for row in rows]
         rows = []
-        with EpisodeStorage(self.contained(self.root / release["path"])) as storage:
+        with EpisodeStorage(self.contained(self.episode_root / release["path"], self.episode_root)) as storage:
             for source, content, digest in storage.connection.execute(
                 "SELECT source,content,sha256 FROM files WHERE name='episode.json' ORDER BY source"
             ):
@@ -176,6 +185,7 @@ class LegoDataBrowser:
                 metadata = json.loads(content)
                 rows.append({
                     **metadata,
+                    "category": metadata.get("category", metadata.get("tags", {}).get("category")),
                     "id": metadata.get("example_id", hashlib.sha256(source.encode()).hexdigest()),
                     "source": source,
                     "expert_acceptance": metadata.get(
@@ -239,7 +249,7 @@ class LegoDataBrowser:
         frame_index = int(query["frame"])
         if frame_index < 0:
             raise ValueError("Frame must be nonnegative")
-        with EpisodeStorage(self.contained(self.root / release["path"])) as storage:
+        with EpisodeStorage(self.contained(self.episode_root / release["path"], self.episode_root)) as storage:
             frames = storage.read(Path(row["source"]), "frames.jsonl").splitlines()
             if frame_index >= len(frames):
                 raise FileNotFoundError("Recorded frame not found")
@@ -283,7 +293,7 @@ class LegoDataBrowser:
                             (row.get("part_id") if row.get("decoration") == "undecorated" else None))
             frames = []
             if release["kind"] == "examples":
-                with EpisodeStorage(self.contained(self.root / release["path"])) as storage:
+                with EpisodeStorage(self.contained(self.episode_root / release["path"], self.episode_root)) as storage:
                     found = storage.connection.execute(
                         "SELECT content,sha256 FROM files WHERE source=? AND name='frames.jsonl'",
                         (row["source"],),
@@ -293,7 +303,8 @@ class LegoDataBrowser:
                             raise ValueError("Frame metadata checksum mismatch")
                         for index, line in enumerate(found[0].splitlines()):
                             frame = json.loads(line)
-                            frames.append({"frame_index": index, "timestamp": frame.get("timestamp"),
+                            frames.append({"frame_index": index,
+                                           "timestamp": frame.get("timestamp", frame.get("elapsed")),
                                            "wrist": "image" in frame,
                                            "external": "external_image" in frame})
             return {"item": row, "frames": frames,
