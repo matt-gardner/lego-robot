@@ -86,3 +86,40 @@ blur; the default retains the inspectable pinhole view rather than
 assuming unmeasured optics. Further substantial gains require actual
 rounded visual geometry and material/optical measurements, not heavier
 blur or arbitrary noise.
+
+## Archived curriculum wrist rerenders
+
+`python -m so101.pathtrace_recordings --root <curriculum-root> --since
+2026-11-08T08:00:00+00:00 --output <new-derived-root>` creates separate CPU
+appearance derivatives of qualified archives. `--inventory-only` measures the
+population without rendering. Eligibility requires both paired commands to
+have recorded generation dates after Pacific midnight; unknown dates are
+reported as exclusions. Attempt/release copies and format migrations are
+deduplicated by release identity, not directory timestamps.
+
+The backend reads immutable `EpisodeStorage` containers, including recordings
+whose original directories no longer exist. Each image uses its complete saved
+`qpos` and the recorded wrist-camera geometry, without physics stepping, robot
+translation, trajectory replay or scene resettling. Original CAD jaw visuals
+replace cosmetic sleeves; all hidden collision-display groups stay hidden.
+Lighting and rough-plastic parameters come from the accepted pathtrace profile,
+at the original 320 by 240 recording resolution and 1024 samples per pixel.
+Command boxes, visibility and camera depth are recomputed with the same visual
+geometry and camera using the existing label helpers.
+
+Each new container retains original model/state, metadata, frames, external
+images, splits and historical acceptance provenance. `render_model.xml` and
+`render_model.mjb` identify actual new visual geometry;
+`appearance_rerender` identifies actual image production separately from the
+historical `initial.renderer`. These are appearance derivatives, not newly
+recorded or training-promoted episodes. External views are retained original
+images, not claimed rerenders. Consumers must use the derivative image/label
+identity rather than interpreting the historical model as the new visual model.
+No historical acceptance defect is corrected by changing appearance.
+
+`inventory.json`, per-release `progress.json`, image/label checksums and
+`completion.json` distinguish queued, partial and verified completed work.
+Rerunning the exact same implementation/profile checks completed outputs and
+restarts an incomplete episode from its saved poses; it never changes originals.
+Mitsuba and the normal MuJoCo/OpenCV runtime are optional rendering dependencies;
+use an isolated environment, not a host-mounted virtual environment.
