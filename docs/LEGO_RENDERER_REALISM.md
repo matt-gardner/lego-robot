@@ -116,6 +116,19 @@ shows a more recognizable molded separator than the earlier proxy. Composition,
 orientation and jaw occlusion still differ from the photo. This diagnostic
 cannot enter the verified-only curriculum loader or establish expert acceptance.
 
+The later, separately verified
+`/mnt/dockyard/lego-robot-data/data/lego-renderer/b887f204-reference-verified-v4/`
+uses the new 43-entry catalog v4, including its newly table-qualified 96874,
+without the static diagnostic override. Qualification SHA is
+`06d7d88e88fd06026b2b4019427a75cd063ebc632ef489572fe020d55d3ea2b7`;
+comparison SHA is
+`bdba00fb22aa41355cb4e0399ee6ccfafebb5a5279883c1db1589a63ccd1c312`.
+The source catalog uses a new matched 2 ms part/table contact profile and only
+qualifies three low-drop tabletop orientations, not robot grasping or clutch.
+This does not change the earlier v3 failure/static labels. The new composition
+still is a hand-composed render, with imperfect photo orientation, crop and
+jaw occlusion rather than calibrated real-robot transfer evidence.
+
 ## Evidence and boundaries
 
 Render representative matched compositions, including near-field jaw occlusion

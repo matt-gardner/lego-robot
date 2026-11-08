@@ -38,6 +38,7 @@ class Catalog:
     manifest_sha256: str
     parts: tuple[Part, ...]
     root: Path
+    manifest_path: Path | None = None
 
 
 def _text(value: object, name: str) -> str:
@@ -125,7 +126,7 @@ def load_catalog(manifest: Path) -> Catalog:
     if not parts:
         raise CatalogUnavailable(f"No verified LEGO parts in catalog {catalog_id}")
     return Catalog(catalog_id, hashlib.sha256(raw).hexdigest(),
-                   tuple(sorted(parts, key=lambda part: part.part_id)), root)
+                   tuple(sorted(parts, key=lambda part: part.part_id)), root, manifest.resolve())
 
 
 def visual_audit_due(*, category: str, accepted_count: int, seed: int) -> bool:

@@ -84,7 +84,10 @@ and external pre-action images, actions and entity labels. `complete` requires
 both commands to pass independently from the same saved state; one successful
 command is not a qualified pair. Source hashes, exact compiled `model.mjb`,
 `model.xml`, scene plan and integration state are archived inside each episode,
-using contained hardlinks within the new attempt directory. Existing
+using contained hardlinks within the new attempt directory. Source archives
+also retain the exact hash-checked parts manifest, including LDraw attribution,
+licenses, source dependencies and qualification limits. Release IDs bind the
+scene, generator, renderer and exact scene archive hashes. Existing
 `EpisodeStorage` can therefore retain all scene/source artifacts alongside
 original JPEGs without parent-directory media addressing. Compiled replay needs
 the recorded MuJoCo version and validated model/state hashes; legacy playback

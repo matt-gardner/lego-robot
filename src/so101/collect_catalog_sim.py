@@ -98,6 +98,13 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
     source = output / "source"
     source.mkdir()
     source_hashes = {}
+    if sim.catalog.manifest_path is None:
+        raise ValueError("Recording requires the original parts catalog manifest")
+    catalog_bytes = sim.catalog.manifest_path.read_bytes()
+    if hashlib.sha256(catalog_bytes).hexdigest() != sim.catalog.manifest_sha256:
+        raise ValueError("Parts catalog manifest changed before recording")
+    (source / "parts_catalog.json").write_bytes(catalog_bytes)
+    source_hashes["parts_catalog.json"] = sim.catalog.manifest_sha256
     for name in ("catalog_sim.py", "lego_scene.py", "lego_curriculum.py",
                  "robot_sim.py", "collect_catalog_sim.py", "simulation_corpus.py"):
         content = Path(__file__).with_name(name).read_bytes()
@@ -142,6 +149,10 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         "scene_archive_sha256": archive_hashes,
         "tags": sim.plan["tags"], "attempts": [], "successful_episodes": [],
     }
+    report["release_id"] = hashlib.sha256(json.dumps(
+        [report["scene_id"], report["generator_sha256"], report["renderer"], archive_hashes],
+        sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
     atomic_json(output / "collection.json", report)
     candidates = []
     for index, command in enumerate(sim.plan["commands"]):
@@ -157,6 +168,7 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
             "simulation": True, "task": command["task"],
             "pair_id": sim.plan["pair_id"], "scene_seed": sim.plan["seed"],
             "example_id": command["command_id"], "command_id": command["command_id"],
+            "release_id": report["release_id"],
             "scene_id": sim.plan["scene_id"], "initial": sim.initial,
             "target": command["object_instance_id"],
             "target_label": sim.target_labels[command["object_instance_id"]],
