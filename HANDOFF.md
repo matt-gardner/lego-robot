@@ -1,7 +1,10 @@
 # SO-101 project handoff
 
-Updated November 2, 2026. This is a handoff, not permission to launch training,
-spend money, or move the physical robot.
+Updated November 8, 2026. Matt explicitly reaffirmed continuing the whole
+approved learning-rate sweep, not stopping after one recovered trial. See
+the GPU operating handoff below for current state and execution boundaries.
+This document does not authorize additional grids, increased spending limits,
+or physical robot motion.
 
 ## Project and code
 
@@ -22,9 +25,9 @@ uv run --locked pytest -q
 ```
 
 Recreate environments on Linux; never copy the Mac virtual environment.
-The lockfile deliberately selects CPU Torch on Linux. CUDA training needs a
-separately qualified CUDA environment. No training environment on the AWS host
-has been qualified by this handoff.
+The lockfile deliberately selects CPU Torch on Linux. Do not use that environment
+for GPU training. The digest-pinned CUDA runtime described below has now run
+the original SFT workload successfully on a real NVIDIA L4.
 
 ## Recent completed work
 
@@ -75,11 +78,21 @@ The original dataset catalog is
 | B128/LR1e-5, final 24,576 samples | 9/40 | 0.737404 | 0.814388 |
 | B128/LR1e-5, 18,432 samples | 8/40 | 0.799415 | 0.698405 |
 | B64/LR1e-5, 18,432 samples | 10/40 | 0.700926 | 0.767045 |
+| B64/LR1e-5, final 24,576 samples, GPU continuation | 11/40 | 0.661915 | 0.541894 |
 
 The first trial's final passes were view7/push2/grasp0/place0.
 The second trial's latest evaluation passed view7/push2/grasp1/place0.
-Its 10/40 is an intermediate evaluation, not its final result.
+Its 10/40 is an intermediate evaluation, not its final result. The November 8
+GPU continuation completed update384 and its final frozen40 evaluation.
 The remaining four grid cells have not started.
+
+**The goal is all six cells and their sample-matched comparison.** Completing
+B64/LR1e-5, publishing a checkpoint, or shutting down one GPU is an intermediate
+milestone, not permission to stop the sweep. Continue the four remaining cells
+in the table's order, serially. Stop only when the whole approved pilot and
+comparison are complete, Matt explicitly pauses it, or a concrete safety or
+authority blocker prevents progress. Surface a blocker and its next action;
+do not silently park, declare a winner, or mark the sweep Done after one cell.
 
 These are single-seed pilots on a tuning set, not an independent final test.
 Do not declare or deploy a winner yet. Compare per-command success, fixed
@@ -89,6 +102,13 @@ Equal samples approximate compute, not exact FLOPs/wall time; unchanged Adam
 betas also imply different momentum half-lives in samples across batch sizes.
 
 ## Current stop and recovery state
+
+The paragraphs about update304 below are historical recovery context. The
+original CPU/MPS checkpoint and STOP marker remain preserved, but the GPU copy
+completed304->384 on November 8. Its complete state and authentic log are now
+durable; use the distinct exported GPU checkpoint identified below. Do not
+overwrite the original304 checkpoint or clear its local STOP marker merely to
+make the local sweep driver accept completion.
 
 The user explicitly stopped local training and requested future runs move to
 AWS. Local training is stopped; do not restart it automatically.
@@ -160,19 +180,19 @@ On successful assembly/extraction/full file verification, the pipeline writes:
 Check the receipt (`status=verified`) and actual files before claiming the
 migration complete. The model-cache location is the future `HF_HOME`.
 The separately copied `code` directory is distinct from this full snapshot.
-Local originals are retained. Nothing has been launched for training on AWS.
+Local originals are retained. This last sentence described the November 2 transfer state. AWS GPU training
+has since completed the second cell; current receipts and boundaries follow.
 
 ## Next steps and guardrails
 
 1. Keep the authoritative checkout separate from persistent datasets, outputs,
    and model caches. Preserve results, full resumable state, frozen splits,
    normalization, evaluation snapshots, and recovery accounting.
-2. Resolve and qualify the execution target before resuming. The CPU host is
-   suitable for coding agents/orchestration, not a GPU worker. AWS Spot quota
-   approval is not a GPU-launch or spending authorization. The controller's
-   GPU-launch permissions, trusted credential broker, cost/hour bounds,
-   interruption recovery, and independent shutdown backstop are not ready.
-   Review `docs/AWS_SPOT_OPERATIONS.md` before implementing those pieces.
+2. Use the qualified GPU architecture below, not the CPU host for training.
+   The original continuation is finished, but fresh-cell GPU orchestration,
+   registration, and container authority still need explicit integration.
+   Read `docs/CONTAINER_CONTROL.md` and `docs/AWS_SPOT_OPERATIONS.md`; older
+   statements that no AWS runtime is qualified are historical.
 3. Qualify cross-device continuation explicitly. `sweep_entity_sft.py` accepts
    `--device cuda` while retaining MPS as the default and preserving the recipe.
    Both SFT and RL require `--allow-device-rng-migration --device-rng-seed SEED`
@@ -183,11 +203,12 @@ Local originals are retained. Nothing has been launched for training on AWS.
    device RNG is explicitly seeded and the non-bitwise migration is recorded.
    Source support is not CUDA recovery qualification. Do not clear original
    STOP or restart training without the runtime qualification/handoff above.
-4. Only after runtime qualification and launch approval, explicitly clear
-   `STOP` and resume the second trial from update304, then finish the approved
-   grid serially. Do not silently change samples, batch, microbatch, learning
-   rate, seeds, guards, or evaluation protocol. No RL, automatic winner
-   deployment, or additional sweeps are currently approved.
+4. Verify the two completed cells, integrate the exported GPU result without
+   altering the original stopped CPU state, then finish the remaining four
+   cells serially through the broker. Never restart the completed second cell
+   from304 or clear the original STOP as a bookkeeping shortcut. Do not change
+   samples, batch, microbatch, learning rate, seeds, guards, or evaluation
+   protocol. No RL, automatic winner deployment, or additional grids.
 
 Never launch a second loaded training policy concurrently. On the Mac,
 preserve MPS high/low watermark ratios0.65/0.5 and OMP threads2; never disable
@@ -204,3 +225,240 @@ mode, host networking, host credentials, or EC2 metadata access.
 Use roles and temporary credentials, not AWS root or permanent access keys.
 The Mac's private machine certificate keys are not in this project and must
 not be copied into agent workspaces.
+
+## GPU operating handoff: November 8
+
+### Ownership and completion condition
+
+Matt requested a new worker to own the **entire remaining sweep**, including
+necessary GPU integration, continuous monitoring, durable artifacts, and the
+sample-matched final comparison. Use one container implementation worker, not
+competing GPU operators. A bounded trusted host activation helper may install
+reviewed infrastructure/specification changes; it must not run a second sweep.
+The original operator is Dockyard session
+`465a15cf-8e65-41d2-a3f2-a2a9e2339e10`. The Lego project is
+`3fd44373-a454-4f3f-8d48-d32ee0682e66`.
+
+Do not finish this assignment after one cell, a qualification PASS, a loss row,
+checkpoint publication, or VM shutdown. Continue to the next approved cell.
+After all six cells, verify the fixed probes, full exposure, durable states and
+retained evaluation artifacts, update comparison results, and terminate the
+last GPU. No unapproved additional search or winner deployment.
+
+### Actual completed GPU run and authoritative artifacts
+
+The second cell ran on an On-Demand `g6.2xlarge` NVIDIA L4 in `us-west-2d`:
+job `92df9f9e5f764b4180e73195090da6f9`, instance `i-02671f30f7db3b6fb`.
+Original304->384 training and the final40-problem evaluation completed.
+All384 authentic log rows and final evaluation are served by the existing
+dashboard, `/lego-robot/`, run ID `bf3598f0d7a5f5c9`.
+
+The complete model/Adam/RNG/log checkpoint is **not** the original CPU file:
+
+```text
+/mnt/dockyard/lego-gpu-original-training-export/92df9f9e5f764b4180e73195090da6f9/training_state.pt
+s3://so101-training-133961745003-us-west-2/runs/lego-robot/92df9f9e5f764b4180e73195090da6f9/step_000000384/54ab1f5cd97cdd137cc6fea3cb44da0ea69d385aa22e42fcea8c533cbca47867.pt
+version: KLG1fO.6BEcnqwiQVeorJbWBoQ6rv3m7
+SHA256: 54ab1f5cd97cdd137cc6fea3cb44da0ea69d385aa22e42fcea8c533cbca47867
+bytes: 1242249483
+```
+
+Its exact version, size, entire SHA, fsynced CPU copy, finite model/Adam state,
+RNG, continuous384-step history and unchanged original304-prefix were verified.
+The live chart now contains its authentic full `state["log"]`, not fabricated
+interpolated rows. The pre-GPU chart backup is beside `sft_training.json`, named
+`sft_training.pre-gpu-92df9f9e5f764b4180e73195090da6f9.json`.
+
+The original CPU `training_state.pt`, `STOP`, data and old evaluation snapshots
+are preserved. The worker's separate `model.pt`/metadata and retained384
+evaluation snapshot were not included in the standard state-only S3 export.
+Do not claim those individual artifacts were exported. Integrate/derive needed
+exports from the verified full state with provenance, preserving existing
+files; do not blindly call the local driver's `verify_state()` against the
+still-original304 file or rerun this completed cell.
+
+The actual GPU was directly observed EC2 `terminated` at08:21:10 UTC, with
+empty GPU inventory confirmed again during this handoff. All previous GPUs are
+terminated. Temporary training grants and the operator's added `gpu.start`
+scope were revoked; there is no running sweep or retry cron.
+
+Combined result receipt:
+
+```text
+/mnt/dockyard/service-home/.copilot/session-state/a3f8c707-2054-46f0-88bf-72046bf0d460/files/completed-original-gpu-training.json
+/var/lib/lego-robot-image/qualification-fast-on-demand-d-tmp-fix-attempt-2/
+```
+
+The latter root-owned directory contains the manifest/plan, runtime qualification,
+installed aggregate-approval invocation, original stop/export, dashboard and
+actual termination receipts. A host helper can provide reviewed nonsecret
+copies; a container should not assume it can read root-private files.
+
+### Qualified runtime and immutable inputs
+
+Published Docker recipe fixes are in commit
+`767c2c00470dc1a40e7e3e6660dced4c83925b43`. The actual frozen worker source is
+`e923bc147a332027b129a836cea277a006f86196`, archive SHA
+`b1b5ec888e7c321e9aff4f829ababe3dccb8aaccd95ccf5b2c58c8d3b05b2a5a`.
+Do not mistake the recipe commit for a different source archive or relabel an
+old image. The qualified image is:
+
+```text
+133961745003.dkr.ecr.us-west-2.amazonaws.com/lego-robot-runtime@sha256:33aea54ba958d439aad43a596fc0814cce7a5ef2b627fc66d9991c5c82055179
+```
+
+It has a real UID/GID1001 passwd identity, `HOME=/tmp`, and temporary storage
+for read-only CPU validators. The training launcher uses its explicit writable
+tmpfs. Real CUDA13/L4/BF16/EGL, original full-state restoration and unchanged
+trial qualification succeeded. Controlled1.242GB checkpoint publication took
+38.74s; complete CPU export, cold-GPU exact next-model/Adam update, independently
+scheduled termination and isolated guest self-expiry were genuinely exercised.
+The scheduled termination test also had concurrent broker expiry; it was not
+an isolated scheduler-only shutdown or a real Spot interruption.
+
+Use `/var/lib/lego-robot-image/registration/consolidated-assets/bundle-tmp-fix.json`
+as the operator's immutable input/runtime index. Seven inputs totaled
+10,171,367,419 bytes for the completed continuation. Stage at most four exact
+versioned objects concurrently to local EBS; verify every version/size/fullSHA
+before committing the population receipt. Do not re-extract315k episode files.
+
+The episode SQLite SHA is
+`e7fdb523d29c815fafbd54502545b02d5ed1f3cb5643e613be6ca8be903f9ea9`,
+size5,968,420,864, version `dpFCeimVpHDmGmiPNjZLkV7_PC5MPHz`.
+Mount it read-only at `/opt/so101/data/episodes.sqlite`, retaining the original
+collection catalog, ordering, pairing, normalization and split. Equality was
+verified for2103 training episodes/304198 samples plus frozen40/160 probes.
+Keep `--episode-storage` outside the saved recipe configuration.
+
+The simulation model is also required before the first full SFT update:
+original `model.tar`, SHA
+`618ab54829ab92f7b38f1343460a7890e3c1832086ed5281b65fadbc396ee122`,
+version `9NUSwDrszi20MJArEhwdqAgTNJISk9y6`, 17,459,200 bytes.
+Extract its22 members to `data_model`, then mount `data_model/model` read-only
+at `/opt/so101/data/simulation/model`. Also preserve the exact frozen split,
+collection JSON and HF archive; `HF_HOME` points to extracted `hf_cache`
+containing `hub`, not to `hf_cache/hub`. Never package HF tokens.
+
+### Container control versus trusted host administration
+
+**A container can orchestrate GPU jobs through the host HTTPS broker. It is not
+an AWS administrator, and a new container is not already authorized.**
+The broker process remains on the CPU host; this does not require a continuously
+running host AI operator once the reviewed sweep path is installed.
+
+The private endpoint is `https://host.docker.internal:8766`
+(`172.17.0.1` on the existing Docker bridge). Verify its TLS certificate/SAN.
+An operator must issue a unique client ID and private0600 capability file for
+the new container, install the public CA, permit only that container's bridge
+IP, and reload the root-owned policy. Do not reuse another session's token,
+the host-operator token, or a broad bridge/network allow rule.
+
+The current container client has only `dashboard.status`/`dashboard.restart`.
+Only the historical host principal has GPU submit/status/logs/stop/recovery;
+`training_authorized_specs` is empty. Merely selecting the Lego container
+template does not grant GPU control. Issue only the new worker's necessary
+GPU lifecycle scopes, including `gpu.start` and, if implemented, `gpu.resume`.
+The exact registered spec needs a separate training grant after genuine
+current-worker approval. Preserve job ownership under that new principal.
+
+Once provisioned with its own private files, the container uses:
+
+```sh
+PYTHONPATH=src python -m so101.control_broker call gpu.submit \
+  --url https://host.docker.internal:8766 \
+  --token-file ~/.config/lego-robot/control.token \
+  --ca-file ~/.config/lego-robot/control-ca.crt \
+  --body '{"spec_id":"OPERATOR_REGISTERED_CELL","spec_sha256":"EXACT_CANONICAL_SHA256"}'
+```
+
+Use the returned `job_id` with `gpu.status`, `gpu.logs`, `gpu.start`,
+`gpu.stop`, and `gpu.recover`; `gpu.resume` additionally needs a newly verified
+registered resume spec and `parent`. Never instantiate a separate
+`Broker.submit()` process: its process-local lock raced the live expiry watcher
+and previously killed a just-launched VM. All admission/start/stop mutations
+must use the existing live HTTPS broker.
+
+Containers cannot register arbitrary specs, change IAM/templates/documents,
+stage/publish new immutable inputs using host credentials, install aggregate
+approval, edit root training policy, or run general SSM shell commands.
+These are bounded trusted activation responsibilities, not reasons to give
+the worker sudo, Docker socket, host network, metadata access or AWS secrets.
+
+### Required integration before the four fresh cells
+
+The existing operator scripts and fixed approval document were deliberately
+bound to the original304 continuation. `approve-gpu-qualification.py` checks
+`original_step == 304`; the existing manifest contains that trial's state.
+They are **not a ready-made fresh-cell sweep executor**.
+
+Each remaining cell must initialize from the approved public base and seed,
+not from the trained B64/1e-5 checkpoint. Implement and exercise a reviewed
+fresh-state path (including correct step0/initial optimizer semantics), per-cell
+immutable manifest/spec/recipe, provisioning, actual runtime qualification,
+aggregate approval and separate exact-spec training grants. Derive and check
+the actual state's step/configuration; do not forge a304 report, reuse another
+job's PASS, or relax identity checks to make a fresh trial pass. Changes to
+pinned worker code/documents/templates/images require corresponding reviewed
+publication and trusted activation, not mismatched source/image labels.
+
+Use `sweep_entity_sft.py` for the approved grid, argument construction,
+sample-aligned verification and comparison semantics; integrate GPU execution
+and artifact ownership rather than invoking its local subprocess loop on the
+CPU host. Reconcile recorded recipes/driver arguments, including obstacle
+schedule flags not fully represented in old `run_config`, before constructing
+new manifests. Do not silently change experimental conditions.
+
+The current publisher exports one complete stopped state, not automatically
+all `model.pt`, metadata and retained evaluation checkpoints. Include those
+required sweep artifacts in durable export/verification, with explicit
+provenance for anything reconstructed from a verified full state. Preserve
+real device migration/replayed-update/startup/evaluation timing caveats; the
+first cell was MPS and the second crosses MPS/CUDA, not a clean same-device
+wall-time comparison.
+
+### Lease, capacity, budget and continuous monitoring
+
+Keep at most one actual GPU and one loaded training policy. Existing A10G Spot
+capacity attempts were explicitly rejected; conditional On-Demand L4 was
+authorized. The proven L4 rate is $0.9776/hour. The prior full jobs had two-hour
+leases; use only operator-approved templates, purchase options and bounds.
+Capacity changes by zone: zoneB was rejected before the successful zoneD run.
+Do not assume availability, repeatedly replay tokens, or claim a rejection is
+unallocated without actual AWS error/inventory evidence.
+
+The root policy still limits lifetime reservations to $20. At this handoff the
+ledger reserves $19.3972, leaving $0.6028, insufficient for another two-hour
+$1.9552 reservation. Reservations include historical failed/shortened attempts
+and are not actual billed spend. Reconcile only provably unallocated attempts
+or conservatively accounted, actually terminated usage using preserved AWS
+receipts. Never reset the ledger, erase paid history, shorten a lease merely
+to evade accounting, or raise the limit silently. If supported reconciliation
+cannot provide the remaining sweep's bounded allowance, surface the precise
+budget decision needed from Matt, not a new experiment-choice question.
+
+For every fresh allocation, verify the independent one-shot AWS termination
+schedule and the actual guest self-expiry guard before long work. Persist job,
+instance, spec, deadline and command intents. Observe fixed SSM commands to
+terminal status; SSM online can precede installation of `early.py`. The old
+successful path waited three minutes for cloud-final. Retry a missing-handler
+provision only after exact FAILED/empty-stdout/never-executed proof. Do not
+replay accepted or ambiguous start, approval or stop commands.
+
+Verify real training rows/configuration and full update progress, not optimistic
+broker status. Mirror only actual rows while preserving original logs, then
+prefer the verified full checkpoint's authentic log. Local checkpoint interval
+does **not** imply off-GPU S3 persistence. Request normal checkpoint publication
+with enough time for evaluation, validation, upload and full export before the
+hard lease; retain all previous durable checkpoints.
+
+After publication, verify exact S3 version/size/SHA, complete CPU download/fsync,
+full model/optimizer/RNG/log and required sweep artifacts. A clean container
+exit alone is insufficient. The completed run had a controller grace-expiry
+cleanup warning despite actual stop SUCCESS and independently verified export;
+inspect actual receipts rather than treating either warning or status as proof.
+
+Directly verify EC2 `terminated` and empty relevant GPU inventory before the
+next cell. The worker owns bounded watches and failure recovery; the Work
+Scheduler does not monitor paid runs. Do not add the removed retry cron.
+Continue the next approved cell automatically when safe, and keep the sweep
+Work item active until the entire grid/comparison is genuinely finished.
