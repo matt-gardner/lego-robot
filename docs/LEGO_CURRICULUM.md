@@ -93,6 +93,16 @@ original JPEGs without parent-directory media addressing. Compiled replay needs
 the recorded MuJoCo version and validated model/state hashes; legacy playback
 must not interpret `simulation_backend=catalog-v1` as a legacy reset recipe.
 
+Future accepted episode metadata records `generated_at` as a timezone-aware
+UTC RFC3339 wall-clock timestamp, captured after clean recording validation and
+frame-file completion, immediately before publishing `episode.json`. A complete
+collection records its own `generated_at` after both independent commands pass,
+immediately before publishing the completed catalog. Failed episodes and
+incomplete collections have no generation-completion timestamp. These dates
+are not simulated elapsed time, qualification time, or storage-copy time.
+Immutable conversion preserves them byte-for-byte; historical undated episodes
+remain undated. Seeds, scene/protocol versions and IDs are not recency clocks.
+
 The one-pair CLI is not a continuous producer, an immutable release publisher,
 an audit service or a claim of full SFT reader qualification. Those interfaces
 remain separate implementation work. Example CPU qualification invocation:

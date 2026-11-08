@@ -1,4 +1,5 @@
 import hashlib
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,6 +90,7 @@ def test_recovered_success_never_enters_clean_pair(tmp_path, monkeypatch):
     report = record_pair(fixture_sim(tmp_path, recovered=True), output)
     assert report["status"] == "incomplete"
     assert report["successful_episodes"] == []
+    assert "generated_at" not in report
     assert all(attempt["outcome"] == "failed" for attempt in report["attempts"])
     for index in range(2):
         metadata = json.loads((output / f"command_{index}" / "episode.json").read_text())
@@ -96,6 +98,31 @@ def test_recovered_success_never_enters_clean_pair(tmp_path, monkeypatch):
         assert "retry" in metadata["verification"]["reason"]
         assert (output / f"command_{index}" / "frames.jsonl").exists()
         assert metadata["failure_state"] == "failure_state.json"
+        assert "generated_at" not in metadata
+
+
+def test_generation_dates_capture_successful_completion_and_survive_storage(tmp_path, monkeypatch):
+    moments = [
+        datetime(2026, 11, 8, 18, 0, second, tzinfo=timezone.utc)
+        for second in (1, 2, 3)
+    ]
+    clock = iter(moments)
+    def now(zone):
+        assert zone is timezone.utc
+        return next(clock)
+    monkeypatch.setattr("so101.collect_catalog_sim.datetime", SimpleNamespace(now=now))
+    output = tmp_path / "pair"
+    report = record_pair(fixture_sim(tmp_path), output)
+    assert report["generated_at"] == moments[2].isoformat()
+    for index, source in enumerate(report["successful_episodes"]):
+        metadata = json.loads((Path(source) / "episode.json").read_bytes())
+        assert metadata["generated_at"] == moments[index].isoformat()
+    container = tmp_path / "pair.sqlite"
+    consolidate(output, container)
+    with EpisodeStorage(container) as storage:
+        assert storage.catalog["generated_at"] == report["generated_at"]
+        for source in report["successful_episodes"]:
+            assert storage.read(Path(source), "episode.json") == (Path(source) / "episode.json").read_bytes()
 
 
 @pytest.mark.parametrize("field,value", [

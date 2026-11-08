@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import datetime, timezone
 import hashlib
 import inspect
 import json
@@ -205,6 +206,8 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         with (root / "frames.jsonl").open("w") as stream:
             for row in sim.rows:
                 stream.write(json.dumps(row, allow_nan=False) + "\n")
+        if metadata["outcome"] == "success":
+            metadata["generated_at"] = datetime.now(timezone.utc).isoformat()
         atomic_json(root / "episode.json", metadata)
         if metadata["outcome"] == "success":
             candidates.append(str(root.resolve()))
@@ -216,6 +219,7 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
     if len(candidates) == 2:
         report["successful_episodes"] = candidates
         report["status"] = "complete"
+        report["generated_at"] = datetime.now(timezone.utc).isoformat()
     else:
         report["status"] = "incomplete"
     atomic_json(output / "collection.json", report)
