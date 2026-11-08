@@ -143,6 +143,13 @@ list retains the eight newest parts publications plus required v17; complete
 release/parts counts, the selection rule and omitted-parts count are explicit.
 This inspection does not modify or remove any catalog history.
 
+Managed dashboard status also inspects fixed read-only `/api/data/all` and
+`task=grasp` listings, verifies served data navigation and data asset hashes
+against the deployed manifest, and reports up to eight run summaries with
+explicit omitted counts. Training-context controls must be inside item details.
+Failures are explicit; none of these checks accept URLs, credentials or perform
+training actions.
+
 ## Immutable GPU jobs
 
 The AWS CLI adapter is implemented, but **GPU provisioning is disabled until

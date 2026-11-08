@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -30,9 +31,32 @@ class DeploymentTests(unittest.TestCase):
             with patch.object(Path, "read_bytes", return_value=b"PYTHONPATH=/opt/lego-dashboard/releases/test/src"):
                 with patch.object(Path, "read_text", return_value=json.dumps({"sha256": {}})):
                     with patch.object(deploy, "trusted"):
-                        with patch.object(deploy, "catalog_api", side_effect=responses) as api:
+                        with patch.object(deploy, "catalog_api", side_effect=responses) as api, \
+                                patch.object(deploy, "data_evidence", return_value={}):
                             result = deploy.status()
         return result, api
+
+    def test_data_evidence_checks_live_features_task_filter_and_asset_bytes(self):
+        html = (b'aria-label="Dashboard navigation" id="object_count" id="expert_outcome" '
+                b'id="expert_acceptance" <dialog id="detail"><select id="data-run"></dialog>')
+        listing = {"total": 2, "limit": 1, "unavailable_source_count": 1,
+                   "items": [{"id": "example", "task": "grasp"}]}
+        publication = {"sha256": {f"src/so101/dashboard/{name}": hashlib.sha256(name.encode()).hexdigest()
+                                  for name in ("data.js", "data.css")}}
+        replies = [json.dumps(listing).encode(), json.dumps({**listing, "total": 1}).encode(),
+                   html, b"data.js", b"data.css", b'{"runs": []}']
+        with patch.object(deploy, "live_bytes", side_effect=replies):
+            result = deploy.data_evidence(publication)
+        self.assertEqual(result["listings"]["all"]["total"], 2)
+        self.assertEqual(result["listings"]["grasp"]["total"], 1)
+        self.assertTrue(result["page"]["training_context_in_details"])
+        for bad in (html + b'id="usage"', html.replace(b'<dialog id="detail">', b"")):
+            with patch.object(deploy, "live_bytes", side_effect=[replies[0], replies[1], bad]):
+                with self.assertRaises(ValueError):
+                    deploy.data_evidence(publication)
+        with patch.object(deploy, "live_bytes", side_effect=replies[:3] + [b"stale javascript"]):
+            with self.assertRaisesRegex(ValueError, "differs from deployed"):
+                deploy.data_evidence(publication)
 
     def test_status_returns_live_filtered_counts_and_hashes_without_restart(self):
         result, api = self.invoke_status(self.status_responses())

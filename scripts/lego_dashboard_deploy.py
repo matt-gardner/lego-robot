@@ -128,6 +128,13 @@ class NoRedirect(HTTPRedirectHandler):
 
 def catalog_api(query: dict[str, str] | None = None) -> dict:
     url = CATALOG_URL + ("?" + urlencode(query) if query else "")
+    result = json.loads(live_bytes(url))
+    if not isinstance(result, dict) or "error" in result:
+        raise ValueError("Live catalog did not return a successful JSON object")
+    return result
+
+
+def live_bytes(url: str) -> bytes:
     opener = build_opener(ProxyHandler({}), NoRedirect())
     with opener.open(url, timeout=4) as response:
         if response.status != 200:
@@ -135,10 +142,61 @@ def catalog_api(query: dict[str, str] | None = None) -> dict:
         body = response.read(API_LIMIT + 1)
     if len(body) > API_LIMIT:
         raise ValueError("Live catalog response exceeds 2 MiB")
-    result = json.loads(body)
-    if not isinstance(result, dict) or "error" in result:
-        raise ValueError("Live catalog did not return a successful JSON object")
-    return result
+    return body
+
+
+def data_evidence(publication: dict) -> dict:
+    base = "http://127.0.0.1:8765/lego-robot"
+    pages = {}
+    for name, query in (("all", "limit=1"), ("grasp", "task=grasp&limit=1")):
+        value = json.loads(live_bytes(f"{base}/api/data/all?{query}"))
+        if (not isinstance(value, dict) or "error" in value or value.get("limit") != 1
+                or type(value.get("total")) is not int or value["total"] < 0
+                or not isinstance(value.get("items"), list) or len(value["items"]) > 1):
+            raise ValueError("Invalid live data listing evidence")
+        if name == "grasp" and any(row.get("task") != "grasp" for row in value["items"]):
+            raise ValueError("Live data task filter did not match")
+        pages[name] = {
+            "total": value["total"], "unavailable_source_count": value.get("unavailable_source_count"),
+            "sample": [{key: row.get(key) for key in
+                        ("id", "task", "source", "difficulty_level", "object_count", "expert_outcome")}
+                       for row in value["items"]],
+        }
+    if pages["grasp"]["total"] > pages["all"]["total"]:
+        raise ValueError("Filtered data population exceeds full population")
+    html = live_bytes(f"{base}/data")
+    page = html.decode()
+    expected = ('aria-label="Dashboard navigation"', 'id="object_count"',
+                'id="expert_outcome"', 'id="expert_acceptance"')
+    if any(marker not in page for marker in expected):
+        raise ValueError("Live data page is missing data-feature navigation")
+    if any(f'id="{field}"' in page for field in ("usage", "bucket", "outcome", "view", "data-search")):
+        raise ValueError("Live data page still exposes run-oriented top-level filters")
+    if not page.index('<dialog id="detail">') < page.index('id="data-run"') < page.index("</dialog>"):
+        raise ValueError("Training context must be inside item details")
+    hashes = {"data.html_served": hashlib.sha256(html).hexdigest()}
+    for asset in ("data.js", "data.css"):
+        digest = hashlib.sha256(live_bytes(f"{base}/{asset}")).hexdigest()
+        if digest != publication["sha256"].get(f"src/so101/dashboard/{asset}"):
+            raise ValueError(f"Live data asset differs from deployed source: {asset}")
+        hashes[asset] = digest
+    runs = json.loads(live_bytes(f"{base}/api/runs"))
+    if not isinstance(runs, dict) or not isinstance(runs.get("runs"), list):
+        raise ValueError("Invalid live training run inventory")
+    summaries = []
+    for row in runs["runs"][:8]:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid live run entry")
+        summaries.append({
+            "id": row.get("id"), "path": row.get("path"), "kind": row.get("kind"),
+            "active": row.get("active"), "error": row.get("error"),
+            "latest_step": (row.get("latest_train") or {}).get("step"),
+            "remote_state": (row.get("remote") or {}).get("state"),
+        })
+    return {"listings": pages, "page": {"data_features_verified": True,
+                                      "training_context_in_details": True, "sha256": hashes},
+            "runs": summaries, "run_count": len(runs["runs"]),
+            "omitted_runs": max(0, len(runs["runs"]) - len(summaries))}
 
 
 def status() -> dict:
@@ -214,6 +272,7 @@ def status() -> dict:
                   "verification_attempts": counts["verified"] + counts["unavailable"],
                   "verification_attempts_definition": "verified + unavailable",
               }}
+    result["data_evidence"] = data_evidence(publication)
     if len(json.dumps(result).encode()) > STATUS_LIMIT:
         raise ValueError("Managed status response exceeds native 16 KiB receipt limit")
     return result
