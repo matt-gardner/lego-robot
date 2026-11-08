@@ -446,6 +446,14 @@ class BrokerTests(unittest.TestCase):
         self.broker.status("session", job["id"])
         self.assertTrue(any("terminate-instances" in args for args in self.calls))
 
+    def test_installed_session_preset_authorizes_start_without_per_job_operator_grant(self):
+        self.policy["clients"][0]["actions"].append("gpu.start")
+        self.policy["clients"][0]["spec_sha256"] = [self.digest()]
+        job = self.broker.submit("session", "approved", self.digest())
+        self.assertNotIn(job["digest"], self.policy.get("training_authorized_specs", []))
+        result = self.broker.start("session", job["id"])
+        self.assertEqual(result["status"], "start-requested")
+
     def test_expired_stop_terminates_even_if_ssm_unavailable(self):
         job = self.broker.submit("session", "approved", self.digest())
         self.broker.stop("session", job["id"])

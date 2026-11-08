@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec /opt/lego-robot-control/runtime-current/bin/python -I -m so101.control_session "$@"

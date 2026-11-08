@@ -4,6 +4,42 @@
 remote shell. Container clients receive neither AWS credentials, sudo access,
 the Docker socket, nor permission to replace the host service implementation.
 
+## Automatic session access and GPU preparation
+
+Once the host integration is installed, the saved Lego container template
+automatically receives its own private capability, public CA, and
+`~/.config/lego-robot/control.json` before the agent starts. Do not contact a
+current agent or request a per-job grant. The installed root preset grants
+routine lifecycle access; AWS quota and account budget alerts are the admission
+controls, not a second software lifetime budget or inventory gate.
+
+`gpu.catalog` lists this session's installed immutable job specifications.
+`gpu.prepare` accepts only an owned job ID and `provision`, `qualify`, or
+`approve`; the broker obtains all executable document versions and parameters
+from root-installed `workflows.json`. Accepted SSM commands and dispatch intents
+are persisted. Repeating a request observes the accepted command rather than
+dispatching it twice. An uncertain response is reconciled against AWS command
+history, never assumed to mean nothing happened.
+
+For the end-to-end CUDA lifecycle check, from the repository root:
+
+```sh
+PYTHONPATH=src uv run --no-project python -m so101.gpu_smoke \
+  --spec-id SPEC_ID_FROM_CATALOG --state-dir outputs/gpu-lifecycle-check
+```
+
+This allocates a real GPU, stages the registered inputs, executes CUDA/BF16/EGL
+and exact-state recovery checks, then requests stop and observes actual
+termination. It does **not** train a sweep cell or claim the sweep is complete.
+Its receipts are retained in the chosen state directory. Do not reuse a
+directory with an uncertain submission intent to allocate another machine.
+Automatic EC2 lease termination remains active if the client disappears.
+
+The installation instructions and historical qualifications below are host
+setup/reference material, not instructions to message an existing session.
+Fresh-cell training and complete sweep exports require their own installed
+workflow; passing the CUDA lifecycle check alone does not prove those ready.
+
 ## Dashboard deployment
 
 The host operator installs **copies** of `src/so101/control_broker.py` and

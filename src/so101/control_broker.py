@@ -70,7 +70,7 @@ def validate_policy(policy: dict) -> None:
     allowed = {
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
         "gpu.start", "gpu.status", "gpu.logs", "gpu.stop",
-        "gpu.recover", "gpu.recover_qualification",
+        "gpu.recover", "gpu.recover_qualification", "gpu.catalog", "gpu.prepare",
     }
     identifiers = set()
     hashes = set()
@@ -484,7 +484,12 @@ class Broker:
             job = self.status(owner, job_id)
             if job["status"] != "idle" or time.time() >= job["deadline"]:
                 raise ValueError("Only an idle, unexpired attempt may start training")
-            if job["digest"] not in self.policy.get("training_authorized_specs", []):
+            preset_authorized = any(
+                client["id"] == owner and job["digest"] in client.get("spec_sha256", [])
+                and "gpu.start" in client["actions"] for client in self.policy["clients"]
+            )
+            if (job["digest"] not in self.policy.get("training_authorized_specs", [])
+                    and not preset_authorized):
                 raise PermissionError("This job has no separate operator training authorization")
             instance = self.owned_instance(job)
             if instance["State"]["Name"] != "running":
@@ -610,11 +615,17 @@ class Broker:
             "gpu.start": {"job_id"},
             "gpu.recover": {"job_id"},
             "gpu.recover_qualification": {"job_id"},
+            "gpu.catalog": set(), "gpu.prepare": {"job_id", "phase"},
         }
         if action not in fields or set(body) != fields[action]:
             raise ValueError("Unknown action or unexpected request fields")
         if action.startswith("dashboard."):
             return self.dashboard(action.endswith(".restart"))
+        if action in {"gpu.catalog", "gpu.prepare"}:
+            from so101.control_workflow import catalog, prepare
+            if action == "gpu.catalog":
+                return catalog(self, owner)
+            return prepare(self, owner, body["job_id"], body["phase"])
         if action in {"gpu.submit", "gpu.resume"}:
             return self.submit(owner, body["spec_id"], body["spec_sha256"], body.get("parent"))
         return getattr(self, action.split(".")[1])(owner, body["job_id"])
@@ -683,6 +694,7 @@ def main() -> None:
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
         "gpu.status", "gpu.logs", "gpu.stop", "gpu.start", "gpu.recover",
         "gpu.recover_qualification",
+        "gpu.catalog", "gpu.prepare",
     ])
     call.add_argument("--url", required=True)
     call.add_argument("--token-file", type=Path, required=True)
