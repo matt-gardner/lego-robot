@@ -10,6 +10,7 @@ import logging
 import math
 import re
 import shlex
+import sqlite3
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ from typing import Any
 from urllib.parse import urlsplit, parse_qs
 
 from so101.training_data_browser import TrainingDataBrowser
+from so101.lego_data_browser import LegoDataBrowser
 
 
 ASSETS = Path(__file__).with_name("dashboard")
@@ -434,12 +436,13 @@ class RunStore:
 
 
 def make_server(root: Path, host: str, port: int, base_path: str = "",
-                notice: str = "") -> ThreadingHTTPServer:
+                notice: str = "", lego_catalog_root: Path | None = None) -> ThreadingHTTPServer:
     base_path = base_path.rstrip("/")
     if not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*", base_path):
         raise ValueError("Base path must contain only slash-separated letters, digits, _ or -")
     store = RunStore(root)
     browser = TrainingDataBrowser(root.resolve().parent)
+    lego_browser = LegoDataBrowser(root.resolve().parent, lego_catalog_root)
     assets = {
         "/": ("index.html", "text/html; charset=utf-8"),
         "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -447,6 +450,8 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
         "/data": ("data.html", "text/html; charset=utf-8"),
         "/data.js": ("data.js", "text/javascript; charset=utf-8"),
         "/data.css": ("data.css", "text/css; charset=utf-8"),
+        "/lego": ("lego.html", "text/html; charset=utf-8"),
+        "/lego.js": ("lego.js", "text/javascript; charset=utf-8"),
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -460,7 +465,23 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                     self.respond(404, {"error": "Not found"})
                     return
                 path = path[len(base_path):]
-            if path.startswith("/api/data/"):
+            if path == "/api/lego":
+                query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
+                try:
+                    if "frame" in query:
+                        body, content_type = lego_browser.media(query)
+                        self.send_body(200, body, content_type)
+                    else:
+                        self.respond(200, lego_browser.list(query))
+                except FileNotFoundError as error:
+                    self.respond(404, {"error": str(error)})
+                except (ValueError, KeyError, TypeError) as error:
+                    LOGGER.warning("Invalid LEGO catalog request or metadata: %s", error)
+                    self.respond(400, {"error": str(error)})
+                except (OSError, sqlite3.Error) as error:
+                    LOGGER.exception("Cannot read LEGO catalog")
+                    self.respond(500, {"error": str(error)})
+            elif path.startswith("/api/data/"):
                 query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
                 log_path = store.path_for(path.removeprefix("/api/data/"))
                 if log_path is None:
@@ -584,12 +605,15 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--base-path", default="", help="Reverse-proxy prefix, e.g. /lego-robot")
     parser.add_argument("--notice", default="", help="Deployment status shown on both pages")
+    parser.add_argument("--lego-catalog-root", type=Path,
+                        help="Read-only directory containing versioned LEGO catalog releases")
     args = parser.parse_args()
     if not args.root.is_dir():
         parser.error(f"Run directory does not exist: {args.root}")
     logging.basicConfig(level=logging.INFO)
     try:
-        server = make_server(args.root, args.host, args.port, args.base_path, args.notice)
+        server = make_server(args.root, args.host, args.port, args.base_path, args.notice,
+                             args.lego_catalog_root)
     except ValueError as error:
         parser.error(str(error))
     print(f"RL dashboard: http://{args.host}:{server.server_port}{args.base_path.rstrip('/')}/",
