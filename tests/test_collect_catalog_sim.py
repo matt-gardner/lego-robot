@@ -262,3 +262,66 @@ def test_catalog_view_preflights_equivalent_heading_before_recorded_motion(monke
     monkeypatch.setattr(BeamSimulation, "demonstrate_view", demonstrate)
     assert sim.demonstrate_view("target") == {"success": True}
     assert calls[-1][0] == pytest.approx([.21, -.01, .065])
+
+
+@pytest.mark.parametrize("unreachable_retreat", [False, True])
+def test_catalog_push_preflights_retreat_before_recorded_motion(monkeypatch, unreachable_retreat):
+    sim = CatalogSimulation.__new__(CatalogSimulation)
+    sim.position = lambda name: np.array([.22, .10 if name == "goal" else 0., .003])
+    sim.data = SimpleNamespace(qpos=np.zeros(6))
+    sim.qadr = np.arange(6)
+    calls = []
+    motions = []
+
+    def ik(position, roll):
+        calls.append(position.copy())
+        if unreachable_retreat and position[2] == .065:
+            raise RuntimeError("Unreachable retreat")
+        return np.zeros(6)
+
+    sim.push_ik = ik
+
+    def demonstrate(instance, target, destination):
+        assert len(calls) == 4
+        motions.append((target, destination))
+        return {"success": True}
+
+    monkeypatch.setattr(BeamSimulation, "demonstrate_push", demonstrate)
+    if unreachable_retreat:
+        with pytest.raises(RuntimeError, match="Unreachable retreat"):
+            sim.demonstrate_push("target", "goal")
+        assert not motions
+    else:
+        assert sim.demonstrate_push("target", "goal") == {"success": True}
+        assert motions == [("target", "goal")]
+
+
+def test_catalog_place_checks_destination_before_selecting_grasp_heading():
+    sim = CatalogSimulation.__new__(CatalogSimulation)
+    sim.data = SimpleNamespace(body=lambda name: SimpleNamespace(xmat=np.eye(3)))
+    sim.object_metadata = {"target": {"part_id": "part"}}
+    sim.part_metadata = {"part": SimpleNamespace(dimensions_m=[.008, .008, .01])}
+    sim.position = lambda name: np.array([.22, .10 if name == "goal" else 0., .003])
+    sim.object_yaw = lambda name: 0.
+    sim.command_phrase = "place"
+    sim.command_entities = [("target", "object"), ("goal", "destination")]
+    sim.yaws = {}
+    sim.limits = np.array([[0., 1.]] * 6)
+    sim.contacts = lambda name: set()
+    calls = []
+
+    def ik(position, heading):
+        calls.append((position.copy(), heading))
+        if position[1] == .10 and heading < math.pi:
+            raise RuntimeError("First heading cannot carry to destination")
+        return np.zeros(6)
+
+    def move(joints, phase):
+        assert len(calls) == 10
+
+    sim.ik = ik
+    sim.move = move
+    _, result = sim._grasp("target")
+    assert not result["success"]
+    assert sim.yaws["target"] == pytest.approx(math.pi)
+    assert calls[-1][0] == pytest.approx([.22, .10, .080])

@@ -159,7 +159,7 @@ def prepare_scene(
     if not catalog.parts:
         raise CatalogUnavailable("No verified LEGO parts")
     identity = {
-        "generator": "lego-scene-plan-v5", "catalog_sha256": catalog.manifest_sha256,
+        "generator": "lego-scene-plan-v6", "catalog_sha256": catalog.manifest_sha256,
         "seed": seed, "sequence": sequence, "category": category,
         "task": task, "object_count": object_count,
         "sampleable_part_ids": sorted(part.part_id for part in catalog.parts),
@@ -212,8 +212,8 @@ def prepare_scene(
         "requires_physical_settling": True,
         "objects": objects,
         "destinations": [
-            {"destination_id": "destination_0", "position_relative_to_scene_m": [-.12, 0., 0.]},
-            {"destination_id": "destination_1", "position_relative_to_scene_m": [.12, 0., 0.]},
+            {"destination_id": "destination_0", "position_relative_to_scene_m": [0., -.10, 0.]},
+            {"destination_id": "destination_1", "position_relative_to_scene_m": [0., .10, 0.]},
         ] if task in ("push", "place") else [],
         "pair_id": f"{scene_id}:{task}", "commands": commands,
         "tags": {

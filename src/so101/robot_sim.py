@@ -941,8 +941,14 @@ class BeamSimulation:
                 )
         raise RuntimeError(f"No vertical IK solution for {position.tolist()}, best position error {best:.4f} m")
 
-    def push_ik(self, position: np.ndarray, wrist_roll: float) -> np.ndarray:
+    def push_ik(
+        self, position: np.ndarray, wrist_roll: float, *,
+        position_tolerance: float = .0015, rotation_tolerance: float = .12,
+    ) -> np.ndarray:
         """Reach a push point while keeping wrist roll fixed and tool axis vertical."""
+        if any(not math.isfinite(value) or value <= 0
+               for value in (position_tolerance, rotation_tolerance)):
+            raise ValueError("Push IK tolerances must be positive and finite")
         best = math.inf
         desired_axis = np.array([0., 0., 1.])
         for attempt in range(8):
@@ -960,8 +966,8 @@ class BeamSimulation:
                 error_rot = np.cross(current[:, 2], desired_axis)
                 best = min(best, float(np.linalg.norm(error_pos)))
                 if (
-                    np.linalg.norm(error_pos) < .0015
-                    and np.linalg.norm(error_rot) < .12
+                    np.linalg.norm(error_pos) < position_tolerance
+                    and np.linalg.norm(error_rot) < rotation_tolerance
                 ):
                     return self.scratch.qpos[self.qadr].copy()
                 jac_pos = np.zeros((3, self.model.nv))

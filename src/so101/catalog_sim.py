@@ -181,6 +181,10 @@ class CatalogSimulation(BeamSimulation):
         return super().ik(position, yaw, rng=rng,
                           position_tolerance=.0002, rotation_tolerance=.01)
 
+    def push_ik(self, position: np.ndarray, wrist_roll: float) -> np.ndarray:
+        return super().push_ik(position, wrist_roll,
+                               position_tolerance=.0002, rotation_tolerance=.01)
+
     def step(self, target: np.ndarray, phase: str):
         if self.episode_root is None:
             return super().step(target, phase)
@@ -205,11 +209,22 @@ class CatalogSimulation(BeamSimulation):
         center = self.position(target)
         half_height = float(np.sum(np.abs(rotation[2]) * dimensions) / 2)
         contact_height = center[2] + half_height + .0024
+        destination_xy = None
+        if self.command_phrase == "place":
+            destinations = [name for name, role in self.command_entities
+                            if role == "destination"]
+            if len(destinations) != 1:
+                raise ValueError("Catalog place requires exactly one destination")
+            destination_xy = self.position(destinations[0])[:2]
         failures = []
         for heading in (yaw, yaw + math.pi):
             try:
                 hover = self.ik(np.r_[center[:2], max(.065, contact_height + .05)], heading)
                 grasp = self.ik(np.r_[center[:2], contact_height], heading)
+                self.ik(np.r_[center[:2], max(lift_height, contact_height + .06)], heading)
+                if destination_xy is not None:
+                    for height in (.070, .018, .080):
+                        self.ik(np.r_[destination_xy, height], heading)
             except RuntimeError as error:
                 failures.append(str(error))
                 continue
@@ -249,6 +264,19 @@ class CatalogSimulation(BeamSimulation):
             self.yaws[target] = heading - math.pi / 2
             return super().demonstrate_view(target)
         raise RuntimeError("No reachable two-pose view heading: " + "; ".join(failures))
+
+    def demonstrate_push(self, target: str, destination: str) -> dict:
+        current = self.position(target)
+        finish_xy = self.position(destination)[:2]
+        direction = finish_xy - current[:2]
+        distance = float(np.linalg.norm(direction))
+        if distance > .055:
+            behind = current[:2] - direction / distance * .025
+            wrist_roll = float(self.data.qpos[self.qadr[4]])
+            for position in (np.r_[behind, .055], np.r_[behind, TABLE_Z + .014],
+                             np.r_[finish_xy, TABLE_Z + .014], np.r_[finish_xy, .065]):
+                self.push_ik(position, wrist_roll)
+        return super().demonstrate_push(target, destination)
 
     def demonstrate_scene_command(self, command: dict) -> dict:
         if command["task"] != self.plan["task"]:

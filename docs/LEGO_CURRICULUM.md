@@ -36,6 +36,14 @@ envelopes are not exact concave geometry, collision clearance or occlusion
 qualification. They allow audits to distinguish an overlap proposal that
 settled apart from genuinely overlapping data without relabeling old episodes.
 
+Plan v6 uses lateral destinations 10 cm either side of the scene center, replacing
+the unreachable longitudinal endpoints observed in catalog push/place attempts.
+Catalog push IK uses 0.2 mm position and 0.01 axis-error tolerances while legacy
+defaults remain unchanged. Push preflights all four waypoints before recorded
+motion; grasp/place heading selection also checks lift and placement waypoints.
+Reachable IK does not establish contact-valid, successful paired supervision:
+the existing physical and single-pass acceptance checks still apply.
+
 SFT is one command at a time: grasp, push, place and view. Generate meaningful
 alternate target/destination commands from the same saved scene for paired
 examples. Many physical objects do not require many command entities. Use
