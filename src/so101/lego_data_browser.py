@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -21,6 +22,7 @@ class LegoDataBrowser:
         self.fingerprints: dict[Path, tuple[tuple[int, int, int, int], str]] = {}
         self.lock = threading.RLock()
         self.preview_catalogs: dict[str, dict] = {}
+        self.release_summaries: dict[str, dict] = {}
 
     def artifact_hash(self, path: Path) -> str:
         stat = path.stat()
@@ -53,9 +55,9 @@ class LegoDataBrowser:
     def releases(self, selected: str | None = None) -> dict[str, dict]:
         releases = {}
         notices = self.notices()
-        for pattern, kind in (("**/catalog.json", "parts"), ("**/*.sqlite", "examples")):
+        for kind in ("parts", "examples"):
             root = self.catalog_root if kind == "parts" else self.episode_root
-            for path in sorted(root.glob(pattern)):
+            for path in self.release_paths(root, kind):
                 if any(component.startswith(".") for component in path.relative_to(root).parts):
                     continue
                 self.contained(path, root)
@@ -64,47 +66,72 @@ class LegoDataBrowser:
                 key = hashlib.sha256(f"{kind}:{relative}:{artifact_digest}".encode()).hexdigest()
                 if selected is not None and key != selected:
                     continue
-                if kind == "parts":
-                    content = path.read_bytes()
-                    metadata = json.loads(content)
-                    if "parts" not in metadata:
-                        continue
-                    if metadata.get("schema_version") != 1:
-                        raise ValueError(f"Unsupported part catalog schema: {path}")
-                    version = metadata["catalog_id"]
-                else:
-                    with EpisodeStorage(path) as storage:
-                        metadata = storage.catalog
-                        content = storage.connection.execute(
-                            "SELECT content FROM catalog"
-                        ).fetchone()[0]
-                    version = metadata.get("release_id", path.stem)
+                summary = self.release_summaries.get(key)
+                if summary is None or selected is not None:
+                    if kind == "parts":
+                        content = path.read_bytes()
+                        metadata = json.loads(content)
+                        if "parts" not in metadata:
+                            continue
+                        if metadata.get("schema_version") != 1:
+                            raise ValueError(f"Unsupported part catalog schema: {path}")
+                        version = metadata["catalog_id"]
+                    else:
+                        with EpisodeStorage(path) as storage:
+                            metadata = storage.catalog
+                            content = storage.connection.execute(
+                                "SELECT content FROM catalog"
+                            ).fetchone()[0]
+                        version = metadata.get("release_id", path.stem)
+                    digest = hashlib.sha256(content).hexdigest()
+                    if self.artifact_hash(path) != artifact_digest:
+                        raise ValueError("Release changed while reading metadata")
+                    summary = {
+                        "id": key, "kind": kind, "version": version,
+                        "path": relative, "catalog_sha256": digest,
+                        "artifact_sha256": artifact_digest,
+                        "validated_parts": (sum(row.get("status") == "verified" for row in metadata["parts"])
+                                            if kind == "parts" else 0),
+                    }
+                    self.release_summaries[key] = summary
+                    if selected is None:
+                        del metadata, content
                 qualification = None
                 if kind == "examples" and (path.parent / "qualification.json").is_file():
                     receipt_path = self.contained(path.parent / "qualification.json", root)
                     qualification = json.loads(receipt_path.read_bytes())
                     if qualification.get("storage_sha256") != artifact_digest:
                         raise ValueError("Episode qualification receipt storage hash mismatch")
-                digest = hashlib.sha256(content).hexdigest()
                 releases[key] = {
-                    "id": key, "kind": kind, "version": version,
-                    "path": relative, "catalog_sha256": digest,
-                    "artifact_sha256": artifact_digest,
+                    **summary,
                     "publication_mtime_ns": path.stat().st_mtime_ns,
-                    "validated_parts": (sum(row.get("status") == "verified" for row in metadata["parts"])
-                                        if kind == "parts" else 0),
                     "qualification_notices": [
                         notice for notice in notices if kind == "parts"
-                        and notice["catalog_id"] == version
-                        and notice["catalog_sha256"] == digest
+                        and notice["catalog_id"] == summary["version"]
+                        and notice["catalog_sha256"] == summary["catalog_sha256"]
                     ],
                     "qualification": qualification,
                 }
                 if selected is not None:
                     releases[key]["metadata"] = metadata
                     return releases
-                del metadata, content
+        self.release_summaries = {key: self.release_summaries[key] for key in releases}
         return releases
+
+    def release_paths(self, root: Path, kind: str) -> list[Path]:
+        if not root.exists():
+            return []
+        paths = []
+        def traversal_error(error: OSError) -> None:
+            raise error
+        for directory, children, files in os.walk(root, onerror=traversal_error):
+            children[:] = [name for name in children if not name.startswith(".")]
+            matches = ([name for name in files if name == "catalog.json"] if kind == "parts"
+                       else [name for name in files if name.endswith(".sqlite") and not name.startswith(".")])
+            paths.extend(Path(directory) / name for name in matches)
+            if kind == "parts" and matches:
+                children.clear()
+        return sorted(paths)
 
     def notices(self) -> list[dict]:
         notices = []

@@ -252,6 +252,8 @@ keeps `status`/`stored_status` historical and exposes `effective_status` and
 supersession. No matching notice means `not_invalidated`, not a new qualification
 or robot-competence claim. Notice byte hashes and reasons appear in release details.
 Release discovery discards each catalog's full payload before reading the next;
+unchanged artifact summaries are cached after fingerprint verification, while
+qualification notices and receipt checks remain fresh on each request.
 item browsing loads only the selected catalog. Catalog API requests are serialized
 to avoid multiplying the full-catalog working set within the dashboard service.
 For example:

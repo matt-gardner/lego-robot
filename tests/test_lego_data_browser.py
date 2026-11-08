@@ -198,6 +198,41 @@ def test_selected_release_does_not_parse_other_catalogs(tmp_path):
         browser.list({})
 
 
+def test_warm_discovery_reuses_payload_summary_but_refreshes_notices(tmp_path, monkeypatch):
+    path = catalog(tmp_path)
+    browser = LegoDataBrowser(tmp_path)
+    release = browser.list({})["releases"][0]
+    original_read = type(path).read_bytes
+    reads = []
+    def read(candidate):
+        reads.append(candidate)
+        return original_read(candidate)
+    monkeypatch.setattr(type(path), "read_bytes", read)
+    assert browser.list({})["releases"][0]["id"] == release["id"]
+    assert path not in reads
+    root = path.parent.parent / "notices"
+    root.mkdir()
+    (root / "invalid.json").write_text(json.dumps({
+        "schema_version": 1, "notice_id": "invalid", "catalog_id": "v1",
+        "catalog_sha256": release["catalog_sha256"], "status": "invalidated",
+        "reason": "Bad frame", "source_work_item": "work", "evidence": {},
+    }))
+    assert browser.list({})["releases"][0]["qualification_notices"][0]["status"] == "invalidated"
+    assert path not in reads
+    path.write_text(path.read_text() + "\n")
+    assert browser.list({})["releases"][0]["id"] != release["id"]
+    assert path in reads
+
+
+def test_catalog_discovery_does_not_traverse_release_assets(tmp_path):
+    path = catalog(tmp_path)
+    assets = path.parent / "parts" / "source"
+    assets.mkdir(parents=True)
+    (assets / "catalog.json").write_text("not a published release")
+    releases = LegoDataBrowser(tmp_path).list({})["releases"]
+    assert len(releases) == 1
+
+
 def test_real_geometry_preview_is_hash_pinned_and_invalidated_parts_stay_hidden(tmp_path):
     path = catalog(tmp_path)
     metadata = json.loads(path.read_text())
