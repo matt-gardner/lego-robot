@@ -46,6 +46,25 @@ by the curriculum worker. A producer's container-local `/mnt/data` path is not
 necessarily visible to other workers; use the actual shared project data mount
 for cross-worker deliverables.
 
+The first shared CPU render receipt is
+`/mnt/dockyard/lego-robot-data/data/lego-renderer/b887f204-wrist-soft-v1/`.
+The curriculum worker independently read its qualification and comparison image
+and verified these hashes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `wrist_soft_v1.json` | `ad190884a753fabe3f2e663ac4458fce6bdffc4d4b90b2bb08f4435438f104c5` |
+| `renderer_appearance.py` | `e1f2c7b79963fd5809c5ef77c341ee2bd7384ff36ed49baef907bafff055e6ce` |
+| `qualification.json` | `b3b106e9e380c94418731b82d068cbf10be7597e3a47d9f826580f337c1fec9e` |
+| `reference_vs_simulation.png` | `68f21263e096452da2337b62fe1ced7c3fbf9cf4cbb71414f8d7ae7f2565d538` |
+
+The receipt records MuJoCo 3.17.0 and Mesa llvmpipe. It uses three hand-composed
+legacy-beam render fixtures, not settled catalog scenes or accepted training
+episodes. Table appearance is closer, but sharp angular jaws, saturated proxy
+objects, missing cable and different part geometry remain visible differences.
+This is an available appearance baseline, not calibrated camera matching or
+real-robot transfer evidence.
+
 ## Evidence and boundaries
 
 Render representative matched compositions, including near-field jaw occlusion
