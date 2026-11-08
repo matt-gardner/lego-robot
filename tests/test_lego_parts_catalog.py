@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -8,8 +9,9 @@ import pytest
 mujoco = pytest.importorskip("mujoco")
 
 from so101.lego_parts_catalog import (
-    Library, decoration, prepare, publish, safe_path, validate,
+    Library, decoration, prepare, publish, safe_path, settling_height, validate,
 )
+from so101 import lego_parts_catalog as catalog_module
 
 
 def test_recursive_transform_scale_frame_and_provenance(tmp_path):
@@ -170,3 +172,68 @@ def test_non_library_archive_is_not_successfully_imported(tmp_path):
         bundle.writestr("unrelated.txt", "not an official library")
     with pytest.raises(ValueError, match="lacks the official"):
         publish(archive, tmp_path / "catalog", "invalid", ())
+
+
+def test_releases_share_immutable_sources_and_require_explicit_requalification(tmp_path, monkeypatch):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ldraw/parts/1.dat", "0 Brick\n")
+    output = tmp_path / "catalog"
+    first = publish(archive, output, "first", ())
+    second = publish(archive, output, "second", (), first)
+    for relative in ("source/complete.zip", "source/ldraw/parts/1.dat"):
+        a, b = first.parent / relative, second.parent / relative
+        assert a.stat().st_ino == b.stat().st_ino
+        assert a.stat().st_dev == b.stat().st_dev
+        assert not b.stat().st_mode & 0o222
+    original_sha256 = catalog_module.sha256
+    def changed_converter(path):
+        return ("f" * 64 if path == Path(catalog_module.__file__)
+                else original_sha256(path))
+    monkeypatch.setattr(catalog_module, "sha256", changed_converter)
+    with pytest.raises(ValueError, match="different converter"):
+        publish(archive, output, "blocked", (), second)
+    third = publish(archive, output, "requalified", (), second,
+                    requalify_previous=True)
+    assert json.loads(third.read_text())["converter_sha256"] == "f" * 64
+
+
+def test_retry_unlinks_shared_assets_and_clears_failure_metadata(tmp_path, monkeypatch):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ldraw/parts/1.dat",
+                        "0 Tetrahedron\n0 BFC CERTIFY CCW\n"
+                        "3 16 0 0 0 0 20 0 10 0 0\n"
+                        "3 16 0 0 0 10 0 0 0 0 10\n"
+                        "3 16 0 0 0 0 0 10 0 20 0\n"
+                        "3 16 10 0 0 0 20 0 0 0 10\n")
+    output = tmp_path / "catalog"
+    monkeypatch.setattr(catalog_module, "qualify", lambda *args: {"test_fixture": True})
+    first = publish(archive, output, "first", ("1",))
+    def fail_qualification(*args):
+        raise ValueError("Fixture contact failure")
+    monkeypatch.setattr(catalog_module, "qualify", fail_qualification)
+    second = publish(archive, output, "failed", (), first, requalify_previous=True)
+    old_asset = second.parent / "parts/1/part.xml"
+    old_hash = catalog_module.sha256(old_asset)
+    assert json.loads(second.read_text())["parts"][0]["status"] == "unavailable"
+    monkeypatch.setattr(catalog_module, "qualify", lambda *args: {"test_fixture": True})
+    third = publish(archive, output, "retry", ("1",), second)
+    retried = json.loads(third.read_text())["parts"][0]
+    assert retried["status"] == "verified"
+    assert "failure" not in retried
+    assert (third.parent / "parts/1/part.xml").stat().st_ino != old_asset.stat().st_ino
+    assert catalog_module.sha256(old_asset) == old_hash
+    validate(first.parent)
+    validate(second.parent)
+    validate(third.parent)
+
+
+@pytest.mark.parametrize(("quaternion", "expected_height"), [
+    ((1., 0., 0., 0.), .006),
+    ((2 ** -.5, 2 ** -.5, 0., 0.), .008),
+    ((0., 1., 0., 0.), .084),
+])
+def test_long_parts_start_four_mm_above_table_in_each_orientation(quaternion, expected_height):
+    bounds = np.array([[-.005, -.004, -.002], [.005, .004, .08]])
+    assert settling_height(bounds, quaternion) == pytest.approx(expected_height)

@@ -2,6 +2,8 @@
 
 Run with --archive complete.zip --output /mnt/data/lego-catalog --catalog-id ID.
 Use --previous CATALOG_JSON to retain verified parts in the next release.
+Immutable sources/assets are hardlinked between releases on the same filesystem.
+Use --requalify-previous after a converter change; prior results are not reused.
 Use --next-undecorated N with --previous to select the next N unverified plain
 definitions in stable ID order. Decorated definitions are imported but never
 converted by this initial, undecorated-only converter.
@@ -14,6 +16,7 @@ not a claim of robot graspability or calibrated LEGO material properties.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
@@ -31,7 +34,7 @@ import numpy as np
 
 
 SOURCE_URL = "https://library.ldraw.org/library/updates/complete.zip"
-CONVERTER_VERSION = "surface-prisms-v3-zup"
+CONVERTER_VERSION = "surface-prisms-v4-zup"
 LDU_M = 0.0004
 CONTACT_HALF_THICKNESS_M = 0.00002
 FRAME = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
@@ -45,6 +48,21 @@ def sha256(path: Path) -> str:
 
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def immutable_copy(source: str | Path, target: str | Path) -> str:
+    source = Path(source)
+    if any(p.is_symlink() for p in (source, *source.parents)):
+        raise ValueError(f"Cannot reuse symlink asset: {source}")
+    if source.stat().st_mode & 0o222:
+        raise ValueError(f"Reusable catalog asset must be read-only: {source}")
+    try:
+        os.link(source, target)
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+        shutil.copyfile(source, target)
+    return str(target)
 
 
 def safe_path(name: str) -> PurePosixPath:
@@ -193,7 +211,7 @@ def prepare(library: Library, release: Path, part_id: str) -> dict:
                                    dimensions[0] ** 2 + dimensions[2] ** 2,
                                    dimensions[0] ** 2 + dimensions[1] ** 2])
     directory = release / "parts" / part_id
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     root = ET.Element("mujoco", model="ldraw_" + part_id)
     ET.SubElement(root, "compiler", angle="radian", autolimits="true")
     asset = ET.SubElement(root, "asset")
@@ -236,6 +254,14 @@ def prepare(library: Library, release: Path, part_id: str) -> dict:
                          "bounds_m": [low.tolist(), high.tolist()]}}
 
 
+def settling_height(bounds: np.ndarray, quaternion: tuple[float, ...]) -> float:
+    rotation = np.empty(9)
+    mujoco.mju_quat2Mat(rotation, np.array(quaternion))
+    corners = np.array([[x, y, z] for x in bounds[:, 0]
+                        for y in bounds[:, 1] for z in bounds[:, 2]])
+    return .004 - float((corners @ rotation.reshape(3, 3).T)[:, 2].min())
+
+
 def qualify(release: Path, entry: dict) -> dict:
     if not np.array_equal(FRAME @ np.array([0., 1., 0.]), [0., 0., -1.]):
         raise ValueError("LDraw Y-down must map to MuJoCo Z-down")
@@ -259,13 +285,13 @@ def qualify(release: Path, entry: dict) -> dict:
     model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
     table = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "qualification_table")
     bounds = np.array(entry["geometry"]["bounds_m"])
-    radius = float(np.linalg.norm(bounds, axis=1).max())
     runs = []
     for quaternion in ((1, 0, 0, 0), (math.sqrt(.5), math.sqrt(.5), 0, 0),
                        (0, 1, 0, 0)):
         data = mujoco.MjData(model)
-        data.qpos[:3] = [0, 0, radius + .004]
+        data.qpos[:3] = [0, 0, settling_height(bounds, quaternion)]
         data.qpos[3:7] = quaternion
+        initial_qpos = data.qpos.tolist()
         contact_steps = 0
         maximum_contacts = 0
         max_penetration = 0.0
@@ -286,13 +312,14 @@ def qualify(release: Path, entry: dict) -> dict:
             raise ValueError(f"Failed settling/contact qualification: speed={speed}, "
                              f"contact_steps={contact_steps}, penetration={max_penetration}")
         runs.append({"initial_quaternion": list(quaternion), "duration_s": 3,
+                     "initial_qpos": initial_qpos, "initial_bbox_table_gap_m": .004,
                      "steps": 3000, "wall_seconds": time.perf_counter() - started,
                      "maximum_table_contacts": maximum_contacts,
                      "final_table_contacts": len(contacts),
                      "final_velocity_norm": speed, "table_contact_steps": contact_steps,
                      "max_penetration_m": max_penetration,
                      "final_qpos": data.qpos.tolist()})
-    return {"version": "table-shell-v3-zup", "mujoco_version": mujoco.__version__,
+    return {"version": "table-shell-v4-zup", "mujoco_version": mujoco.__version__,
             "frame_check": "LDraw +Y maps to MuJoCo -Z; right-handed rotation",
             "scale_check": "0.0004 metres/LDU; 3005 reference includes stud height",
             "compile_wall_seconds": compile_wall_s,
@@ -311,7 +338,8 @@ def qualify(release: Path, entry: dict) -> dict:
 def publish(archive: Path, output: Path, catalog_id: str,
             part_ids: tuple[str, ...] = DEFAULT_PARTS,
             previous: Path | None = None,
-            next_undecorated: int | None = None) -> Path:
+            next_undecorated: int | None = None,
+            requalify_previous: bool = False) -> Path:
     if str(safe_path(catalog_id)) != catalog_id or "/" in catalog_id:
         raise ValueError("catalog_id must be a single directory name")
     output.mkdir(parents=True, exist_ok=True)
@@ -320,21 +348,37 @@ def publish(archive: Path, output: Path, catalog_id: str,
         raise FileExistsError(f"Immutable catalog already exists: {destination}")
     staging = Path(tempfile.mkdtemp(prefix=".catalog-staging-", dir=output))
     try:
+        archive_sha = sha256(archive)
+        converter_sha = sha256(Path(__file__))
+        prior = None
+        if previous is not None:
+            validate(previous.parent)
+            prior = json.loads(previous.read_text())
+            if prior["source"]["archive_sha256"] != archive_sha:
+                raise ValueError("Previous catalog uses a different official source archive")
+            if prior["converter_sha256"] != converter_sha and not requalify_previous:
+                raise ValueError("Previous catalog uses a different converter; "
+                                 "use --requalify-previous")
         source = staging / "source"
         source.mkdir()
-        shutil.copyfile(archive, source / "complete.zip")
-        with zipfile.ZipFile(archive) as bundle:
-            for info in bundle.infolist():
-                relative = safe_path(info.filename)
-                if (info.external_attr >> 16) & 0o170000 == 0o120000:
-                    raise ValueError(f"Source archive symlink: {info.filename}")
-                path = source.joinpath(*relative.parts)
-                if info.is_dir():
-                    path.mkdir(parents=True, exist_ok=True)
-                else:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    with bundle.open(info) as reader, path.open("xb") as writer:
-                        shutil.copyfileobj(reader, writer)
+        if previous is not None:
+            immutable_copy(previous.parent / "source/complete.zip", source / "complete.zip")
+            shutil.copytree(previous.parent / "source/ldraw", source / "ldraw",
+                            copy_function=immutable_copy)
+        else:
+            shutil.copyfile(archive, source / "complete.zip")
+            with zipfile.ZipFile(archive) as bundle:
+                for info in bundle.infolist():
+                    relative = safe_path(info.filename)
+                    if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                        raise ValueError(f"Source archive symlink: {info.filename}")
+                    path = source.joinpath(*relative.parts)
+                    if info.is_dir():
+                        path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        with bundle.open(info) as reader, path.open("xb") as writer:
+                            shutil.copyfileobj(reader, writer)
         library = Library(source / "ldraw")
         if not library.root.is_dir() or not library.files:
             raise ValueError("Archive lacks the official ldraw source library")
@@ -354,32 +398,32 @@ def publish(archive: Path, output: Path, catalog_id: str,
         write_json(source / "files.json", inventory)
         if not entries:
             raise ValueError("Archive contains no top-level official LDraw parts")
-        if previous is not None:
-            validate(previous.parent)
-            prior = json.loads(previous.read_text())
-            if prior["source"]["archive_sha256"] != sha256(archive):
-                raise ValueError("Previous catalog uses a different official source archive")
-            if prior["converter_sha256"] != sha256(Path(__file__)):
-                raise ValueError("Previous catalog uses a different converter; requalify parts")
+        requalification = set()
+        if prior is not None:
             retained = {e["part_id"]: e for e in prior["parts"]
                         if e["status"] in ("verified", "prepared", "unavailable")}
             for index, entry in enumerate(entries):
                 if entry["part_id"] not in retained:
+                    continue
+                if requalify_previous:
+                    requalification.add(entry["part_id"])
                     continue
                 old = retained[entry["part_id"]]
                 entries[index] = old
                 for asset in old.get("assets", []):
                     destination_asset = staging.joinpath(*safe_path(asset["path"]).parts)
                     destination_asset.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(previous.parent / asset["path"], destination_asset)
+                    immutable_copy(previous.parent / asset["path"], destination_asset)
         if next_undecorated is not None:
             if next_undecorated <= 0:
                 raise ValueError("next_undecorated must be positive")
             selected = {e["part_id"] for e in entries
                         if e["decoration"] == "undecorated" and e["status"] == "imported"}
-            selected = set(sorted(selected)[:next_undecorated])
+            selected = set(sorted(selected - requalification)[:next_undecorated])
+            selected.update(part_ids)
         else:
             selected = set(part_ids)
+        selected.update(requalification)
         absent = selected - {e["part_id"] for e in entries}
         if absent:
             raise ValueError(f"Unknown requested official part IDs: {sorted(absent)}")
@@ -393,6 +437,11 @@ def publish(archive: Path, output: Path, catalog_id: str,
                 continue
             if entry["status"] == "verified":
                 continue
+            for asset in entry.get("assets", []):
+                staging.joinpath(*safe_path(asset["path"]).parts).unlink()
+            for field in ("mjcf", "assets", "geometry", "physics", "source_dependencies",
+                          "dimensions_m", "qualification", "failure"):
+                entry.pop(field, None)
             print(f"Preparing {entry['part_id']}", flush=True)
             try:
                 entry.update(prepare(library, staging, entry["part_id"]))
@@ -411,9 +460,9 @@ def publish(archive: Path, output: Path, catalog_id: str,
         write_json(staging / "catalog.json", {
             "schema_version": 1, "catalog_id": catalog_id, "parts": entries,
             "converter_version": CONVERTER_VERSION,
-            "converter_sha256": sha256(Path(__file__)),
+            "converter_sha256": converter_sha,
             "source": {"url": SOURCE_URL, "archive_path": "source/complete.zip",
-                       "archive_sha256": sha256(archive), "license_files": license_files,
+                       "archive_sha256": archive_sha, "license_files": license_files,
                        "inventory": {"path": "source/files.json", "sha256": sha256(source / "files.json")},
                        "file_count": len(library.files)},
             "conversion_priority": "all_undecorated_before_decorated",
@@ -484,9 +533,10 @@ def main() -> None:
     parser.add_argument("--parts", nargs="*", default=list(DEFAULT_PARTS))
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--next-undecorated", type=int)
+    parser.add_argument("--requalify-previous", action="store_true")
     args = parser.parse_args()
     path = publish(args.archive, args.output, args.catalog_id, tuple(args.parts),
-                   args.previous, args.next_undecorated)
+                   args.previous, args.next_undecorated, args.requalify_previous)
     print(json.dumps({"catalog": str(path), "sha256": sha256(path)}), flush=True)
 
 
