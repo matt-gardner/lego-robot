@@ -482,6 +482,26 @@ def test_media_run_lookup_reuses_discovery_and_rechecks_path_boundary(tmp_path, 
 
 
 @pytest.mark.parametrize("base_path", ["", "/so101", "/lego-robot"])
+def test_feedback_sign_in_stays_at_origin_root_on_both_browser_pages(tmp_path, base_path):
+    server = make_server(tmp_path, "127.0.0.1", 0, base_path)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        for page in ("lego", "examples"):
+            with urlopen(f"http://127.0.0.1:{server.server_port}{base_path}/{page}") as response:
+                body = response.read().decode()
+            assert 'href="/family"' in body
+            assert f'href="{base_path}/lego"' in body
+            assert f'src="{base_path}/lego.js"' in body
+            if base_path:
+                assert f'href="{base_path}/family"' not in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join()
+
+
+@pytest.mark.parametrize("base_path", ["", "/so101", "/lego-robot"])
 def test_http_serves_assets_and_observes_new_runs_without_restart(tmp_path, base_path):
     server = make_server(tmp_path, "127.0.0.1", 0, base_path)
     worker = threading.Thread(target=server.serve_forever, daemon=True)

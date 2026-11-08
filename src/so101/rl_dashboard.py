@@ -539,7 +539,8 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                     if path == "/examples":
                         page = page.replace('data-browser-mode="parts"', 'data-browser-mode="examples"')
                         page = page.replace("<h1>LEGO parts</h1>", "<h1>Recorded examples</h1>")
-                    page = page.replace('href="/', f'href="{base_path}/')
+                    # Family authentication lives at the origin root, not the dashboard mount.
+                    page = re.sub(r'href="/(?!family(?:/|"))', f'href="{base_path}/', page)
                     page = page.replace('src="/', f'src="{base_path}/')
                     if notice:
                         page = page.replace(
