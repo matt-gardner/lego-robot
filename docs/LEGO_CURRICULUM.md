@@ -44,6 +44,13 @@ motion; grasp/place heading selection also checks lift and placement waypoints.
 Reachable IK does not establish contact-valid, successful paired supervision:
 the existing physical and single-pass acceptance checks still apply.
 
+Plan v7 samples distinct part IDs before repeating a cohort, retaining
+family-balanced selection. The producer proposes 2 separated, 4 clustered,
+6 overlapping, and 8 piled objects rather than two objects in every category.
+New-source auxiliary admission requires a qualified eight-object pair; a
+two-object success does not establish the memory cost of larger piles.
+Imported/tabletop-verified parts still need actual robot-expert qualification.
+
 SFT is one command at a time: grasp, push, place and view. Generate meaningful
 alternate target/destination commands from the same saved scene for paired
 examples. Many physical objects do not require many command entities. Use

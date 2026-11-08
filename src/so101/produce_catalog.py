@@ -148,8 +148,9 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                 # Feedback-visible generation is development-only, never sealed evaluation.
                 category = ("separated", "cluster", "overlap", "pile")[sequence % 4]
                 task = ("grasp", "view", "push", "place")[(sequence // 4) % 4]
+                object_count = {"separated": 2, "cluster": 4, "overlap": 6, "pile": 8}[category]
                 plan = prepare_scene(catalog, seed=seed, sequence=sequence,
-                                     category=category, task=task, object_count=2)
+                                     category=category, task=task, object_count=object_count)
                 family = hashlib.sha256(json.dumps(
                     ["new-catalog-development-v1", seed, sequence],
                     separators=(",", ":"),
@@ -158,6 +159,7 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                 plan.update(scene_family_id=family, split="development")
                 attempt = root / f"attempt_{sequence:09d}"
                 entry = {"sequence": sequence, "category": category, "task": task,
+                         "object_count": object_count,
                          "source": str(attempt), "status": "interrupted",
                          "worker_source_sha256": identity["source_sha256"]}
                 sim = None

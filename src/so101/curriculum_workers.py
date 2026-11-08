@@ -107,7 +107,8 @@ def supervise(root: Path, catalog: Path, appearance: Path, part_ids: list[str],
                                 state["measured_worker_peak_kib"], attempt["peak_rss_kib"]
                             )
                             if (attempt.get("worker_source_sha256") == identity["source_sha256"]
-                                    and attempt["status"] == "qualified"):
+                                    and attempt["status"] == "qualified"
+                                    and attempt.get("object_count", 2) >= 8):
                                 state["current_recipe_measured"] = True
                 memory = memory_state()
                 peak = state["measured_worker_peak_kib"] * 1024

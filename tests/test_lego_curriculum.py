@@ -52,6 +52,18 @@ class CurriculumTests(unittest.TestCase):
         with self.assertRaisesRegex(CatalogUnavailable, "No verified"):
             self.write_catalog()
 
+    def test_scene_uses_distinct_parts_before_repeating(self):
+        other = dict(self.report["parts"][0], part_id="test-brick", family="brick")
+        self.report["parts"].append(other)
+        catalog = self.write_catalog()
+        for sequence in range(8):
+            plan = self.plan(catalog, sequence=sequence, object_count=8)
+            for index in range(0, 8, 2):
+                self.assertEqual(
+                    {obj["part_id"] for obj in plan["objects"][index:index + 2]},
+                    {"test-slope", "test-brick"},
+                )
+
     def test_deterministic_pairing_and_catalog_version_binding(self):
         catalog = self.write_catalog()
         original = self.plan(catalog)

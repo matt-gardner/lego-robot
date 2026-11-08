@@ -159,7 +159,7 @@ def prepare_scene(
     if not catalog.parts:
         raise CatalogUnavailable("No verified LEGO parts")
     identity = {
-        "generator": "lego-scene-plan-v6", "catalog_sha256": catalog.manifest_sha256,
+        "generator": "lego-scene-plan-v7", "catalog_sha256": catalog.manifest_sha256,
         "seed": seed, "sequence": sequence, "category": category,
         "task": task, "object_count": object_count,
         "sampleable_part_ids": sorted(part.part_id for part in catalog.parts),
@@ -175,8 +175,17 @@ def prepare_scene(
     columns = math.ceil(math.sqrt(object_count))
     rows = math.ceil(object_count / columns)
     spacing = max(.04, max(max(part.dimensions_m[:2]) for part in catalog.parts) * 1.5)
+    used_parts = set()
     for index in range(object_count):
-        part = rng.choice(families[rng.choice(family_names)])
+        if len(used_parts) == len(catalog.parts):
+            used_parts.clear()
+        available = {
+            name: [part for part in families[name] if part.part_id not in used_parts]
+            for name in family_names
+        }
+        available = {name: parts for name, parts in available.items() if parts}
+        part = rng.choice(available[rng.choice(sorted(available))])
+        used_parts.add(part.part_id)
         if category == "separated":
             x = (index % columns - (columns - 1) / 2) * spacing
             y = (index // columns - (rows - 1) / 2) * spacing

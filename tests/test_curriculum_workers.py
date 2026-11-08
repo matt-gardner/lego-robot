@@ -41,6 +41,7 @@ def test_supervisor_fans_out_after_matching_measurement_and_stops_children(
             root.mkdir(parents=True)
             (root / "producer.json").write_text(json.dumps({
                 "attempts": [{"status": "qualified", "worker_source_sha256": "pinned",
+                              "object_count": 8,
                               "peak_rss_kib": 1024}],
             }))
         def poll(self):
