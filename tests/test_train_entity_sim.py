@@ -24,10 +24,10 @@ def test_storage_cli_changes_only_storage_selection(monkeypatch, tmp_path):
     trainer.main()
     monkeypatch.setattr(sys, "argv", argv + ["--episode-storage", str(tmp_path / "v1.sqlite")])
     trainer.main()
-    assert calls[0][:-2] == calls[1][:-2]
-    assert calls[0][-2] is None
-    assert str(calls[1][-2]) == str(tmp_path / "v1.sqlite")
-    assert calls[0][-1] == calls[1][-1] is False
+    assert calls[0][:-4] == calls[1][:-4]
+    assert calls[0][-4] is None
+    assert str(calls[1][-4]) == str(tmp_path / "v1.sqlite")
+    assert calls[0][-3:] == calls[1][-3:] == (False, False, 16)
 
 
 def test_initialize_only_saves_fresh_state_without_evaluation_or_updates(monkeypatch, tmp_path):
@@ -330,6 +330,93 @@ def test_checkpointed_microbatches_preserve_full_batch_masked_loss_and_adam_upda
     chunked_optimizer.step()
     for left, right in zip(chunked.parameters(), native.parameters(), strict=True):
         torch.testing.assert_close(left, right)
+
+
+def test_sequential_accumulation_preserves_global_masked_losses_gradients_and_adam(monkeypatch):
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weights = torch.nn.Parameter(torch.tensor([.2, .3, .4, .5]))
+            self.events = []
+
+        def sample_noise(self, shape, device):
+            return torch.randn(shape, device=device)
+
+        def sample_time(self, size, device):
+            return torch.rand(size, device=device)
+
+        def forward_entity(self, *inputs):
+            state, actions, noise = inputs[4], inputs[5], inputs[-2]
+            size, steps = actions.shape[:2]
+            self.events.append(("forward", size))
+            action = (actions[:, :, :6] + self.weights[0] + .05 * noise[:, :, :6]).square()
+            action.register_hook(lambda gradient: self.events.append(("backward", size)) or gradient)
+            scalar = state[:, 0, None, None]
+            box = (scalar.unsqueeze(-1) + self.weights[1]).expand(size, steps, 4, 5)
+            depth = (.1 * scalar + self.weights[2]).expand(size, steps, 4)
+            visibility = (.3 * scalar + self.weights[3]).expand(size, steps, 4)
+            return action, box, depth, visibility, torch.zeros(size)
+
+    def policy(model):
+        model.vlm_with_expert = SimpleNamespace(processor=SimpleNamespace(tokenizer=None))
+        return SimpleNamespace(model=model, config=SimpleNamespace(
+            max_state_dim=6, max_action_dim=6, tokenizer_max_length=2))
+
+    monkeypatch.setattr(trainer, "prepare_history_images", lambda policy, images: (
+        [images], [torch.ones(images.shape[0], dtype=torch.bool)]))
+    monkeypatch.setattr(trainer, "tokenize", lambda tokenizer, texts, length, device: (
+        torch.ones(len(texts), length, dtype=torch.long),
+        torch.ones(len(texts), length, dtype=torch.bool)))
+    batch = {
+        "task": ["grasp"] * 6, "images": torch.zeros(6, 1),
+        "history_state": torch.arange(6.)[:, None, None].expand(6, 4, 6),
+        "history_action": torch.zeros(6, 4, 6),
+        "actions": torch.arange(6.)[:, None, None].expand(6, 3, 6),
+        "roles": [["object"] * 6] * 3 + [["obstacle"] * 6],
+        "entity_mask": torch.tensor([[False] * 4] * 2 +
+                                    [[True, False, False, False], [True] * 4,
+                                     [True, True, False, False], [True] * 4]),
+        "entity_box": torch.zeros(6, 4, 5), "entity_visibility": torch.ones(6, 4),
+        "entity_depth_m": torch.ones(6, 4), "entity_depth_valid": torch.ones(6, 4),
+        "entity_camera_position": torch.zeros(6, 4, 3),
+        "action_is_pad": torch.tensor([[False] * 3, [False, True, True],
+                                      [False, False, True], [False] * 3,
+                                      [False, True, True], [False, False, True]]),
+        "future_visibility": (torch.arange(72).reshape(6, 3, 4) % 3 == 0).float(),
+        "future_center_valid": (torch.arange(72).reshape(6, 3, 4) % 5 != 0).float(),
+        "future_box": torch.zeros(6, 3, 4, 5),
+        "future_depth_m": torch.ones(6, 3, 4) * 2,
+        "future_depth_valid": (torch.arange(72).reshape(6, 3, 4) % 4 != 0).float(),
+    }
+    native, accumulated = Model(), Model()
+    options = (batch, EntityModelConfig(), "cpu", "known", True, .37, 1.2, .8, .1)
+    torch.manual_seed(88)
+    expected, _, _ = trainer.supervised_batch_losses(policy(native), *options)
+    expected["loss"].backward()
+    torch.manual_seed(88)
+    actual, _, _ = trainer.supervised_batch_losses(
+        policy(accumulated), *options, micro_batch_size=2, accumulate_gradients=True)
+    for name in expected:
+        torch.testing.assert_close(actual[name], expected[name])
+    torch.testing.assert_close(accumulated.weights.grad, native.weights.grad)
+    assert accumulated.events == [("forward", 2), ("backward", 2)] * 3
+    for model in (native, accumulated):
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
+        optimizer.step()
+    torch.testing.assert_close(accumulated.weights, native.weights)
+
+
+def test_execution_mode_change_on_resume_is_recorded_without_rewriting_updates():
+    saved = {"run_config": {"validation_interval": 48},
+             "steps": [{"step": 48, "loss": .5}], "validation": []}
+    requested = {"validation_interval": 48, "micro_batch_size": 16,
+                 "gradient_accumulation": True}
+    result = trainer.resume_training_log(saved, requested, 48)
+    assert result["steps"] == [{"step": 48, "loss": .5}]
+    assert result["run_config"]["gradient_accumulation"] is True
+    assert result["configuration_changes"] == [
+        {"step": 48, "setting": "gradient_accumulation", "from": False, "to": True}]
 
 
 def test_resuming_with_new_validation_interval_preserves_history_and_records_change():

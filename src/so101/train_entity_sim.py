@@ -99,6 +99,14 @@ def evaluate_without_training_rng(controller, sim, episodes, bounds, seed):
         return validation_metrics(sim, controller, episodes, bounds, seed, 300, 16, .1)
 
 
+def slice_supervised_inputs(inputs: tuple, start: int, end: int) -> tuple:
+    return tuple(
+        [tensor[start:end] for tensor in value] if isinstance(value, list)
+        else value[start:end] if isinstance(value, torch.Tensor) else value
+        for value in inputs
+    )
+
+
 def forward_supervised_batch(
     model, inputs: tuple, micro_batch_size: int = 16,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -110,11 +118,7 @@ def forward_supervised_batch(
     outputs = []
     for start in range(0, batch_size, micro_batch_size):
         end = min(start + micro_batch_size, batch_size)
-        chunk = tuple(
-            [tensor[start:end] for tensor in value] if isinstance(value, list)
-            else value[start:end] if isinstance(value, torch.Tensor) else value
-            for value in inputs
-        )
+        chunk = slice_supervised_inputs(inputs, start, end)
         outputs.append(checkpoint(model.forward_entity, *chunk, use_reentrant=False))
     # Reduce the concatenated outputs once: padding/entity weights stay identical
     # to a full batch, and clipping/Adam still happen once per optimizer update.
@@ -136,12 +140,27 @@ def resume_training_log(saved: dict, requested_config: dict, step: int,
     for name in ("supervised_validation_probe", "retain_validation_checkpoints"):
         if name in requested_config:
             previous_config.setdefault(name, False)
+    execution_defaults = {"gradient_accumulation": False, "micro_batch_size": 16}
+    for name, default in execution_defaults.items():
+        if name in requested_config:
+            previous_config.setdefault(name, default)
     comparable = {**previous_config, "validation_interval": requested_config["validation_interval"]}
+    for name in execution_defaults:
+        if name in requested_config:
+            comparable[name] = requested_config[name]
     device_changed = previous_config.get("device") != requested_config.get("device")
     if device_changed and allow_device_migration:
         comparable["device"] = requested_config["device"]
     if comparable != requested_config:
         raise ValueError("Resumed SFT configuration must match its recorded schedule and split")
+    for name in execution_defaults:
+        if name in requested_config and previous_config[name] != requested_config[name]:
+            saved.setdefault("configuration_changes", []).append({
+                "step": step, "setting": name, "from": previous_config[name],
+                "to": requested_config[name],
+            })
+        if name in requested_config:
+            saved["run_config"][name] = requested_config[name]
     if device_changed:
         saved.setdefault("configuration_changes", []).append({
             "step": step, "setting": "device", "from": previous_config["device"],
@@ -225,7 +244,10 @@ def supervised_batch_losses(
     policy, batch, entity_config, device, depth_mode, matched_step,
     obstacle_input_probability, action_coefficient, box_coefficient,
     offscreen_center_coefficient,
+    micro_batch_size=16, accumulate_gradients=False,
 ):
+    if micro_batch_size <= 0 or micro_batch_size % 2:
+        raise ValueError("Supervised microbatch size must be positive and even")
     tokenizer = policy.model.vlm_with_expert.processor.tokenizer
     batch_size = len(batch["task"])
     images = batch["images"].to(device)
@@ -284,20 +306,71 @@ def supervised_batch_losses(
     else:
         noise = policy.model.sample_noise(actions.shape, actions.device)
         flow_time = policy.model.sample_time(batch_size, actions.device)
-    action_losses, predicted_box, predicted_log_depth, visibility_logits, _ = (
-        forward_supervised_batch(policy.model, (
-            image_list, image_masks, task_tokens, task_mask, state, actions,
-            history_state, history_action, role_tokens, role_mask, entity_box,
-            entity_visibility, depth_input, depth_known,
-            entity_camera_position * depth_known.unsqueeze(-1),
-            input_entity_mask, noise, flow_time,
-        ))
+    inputs = (
+        image_list, image_masks, task_tokens, task_mask, state, actions,
+        history_state, history_action, role_tokens, role_mask, entity_box,
+        entity_visibility, depth_input, depth_known,
+        entity_camera_position * depth_known.unsqueeze(-1),
+        input_entity_mask, noise, flow_time,
     )
+    if accumulate_gradients:
+        normalizers = supervised_loss_normalizers(batch, input_entity_mask, device)
+        totals = {}
+        for start in range(0, batch_size, micro_batch_size):
+            end = min(start + micro_batch_size, batch_size)
+            outputs = policy.model.forward_entity(*slice_supervised_inputs(inputs, start, end))
+            chunk_batch = {
+                name: value[start:end] if isinstance(value, torch.Tensor) else value
+                for name, value in batch.items()
+            }
+            losses = supervised_loss_terms(
+                outputs, chunk_batch, input_entity_mask[start:end], device,
+                action_coefficient, box_coefficient, offscreen_center_coefficient,
+                normalizers,
+            )
+            if not torch.isfinite(losses["loss"]):
+                raise FloatingPointError("Non-finite supervised microbatch loss; previous checkpoint preserved")
+            losses["loss"].backward()
+            for name, value in losses.items():
+                totals[name] = totals.get(name, 0) + value.detach()
+            del outputs, losses, value, chunk_batch
+        return totals, input_entity_mask, obstacle_slots
+    outputs = forward_supervised_batch(policy.model, inputs, micro_batch_size)
+    return supervised_loss_terms(
+        outputs, batch, input_entity_mask, device, action_coefficient,
+        box_coefficient, offscreen_center_coefficient,
+    ), input_entity_mask, obstacle_slots
+
+
+def supervised_loss_normalizers(batch, input_entity_mask, device):
+    valid = ~batch["action_is_pad"].to(device)
+    tracking = valid[:, :, None] & input_entity_mask[:, None, :]
+    if not tracking.any():
+        raise ValueError("Full supervised batch has no valid entity-tracking targets")
+    visible = tracking & (batch["future_visibility"].to(device) > .5)
+    centers = tracking & (batch["future_center_valid"].to(device) > .5)
+    weights = torch.linspace(1, 2, batch["future_box"].shape[1], device=device)
+    weights = weights / weights.mean()
+    return {
+        "action": (valid.sum() * 6).clamp_min(1),
+        "visible_center": (weights[None, :, None] * (centers & visible)).sum().clamp_min(1),
+        "offscreen_center": (weights[None, :, None] * (centers & ~visible)).sum().clamp_min(1),
+        "shape": (weights[None, :, None] * visible).sum().clamp_min(1),
+        "depth": (tracking & (batch["future_depth_valid"].to(device) > .5)).sum().clamp_min(1),
+        "visibility": tracking.sum(),
+    }
+
+
+def supervised_loss_terms(
+    outputs, batch, input_entity_mask, device, action_coefficient,
+    box_coefficient, offscreen_center_coefficient, normalizers=None,
+):
+    action_losses, predicted_box, predicted_log_depth, visibility_logits, _ = outputs
     valid_steps = ~batch["action_is_pad"].to(device)
     action_mask = valid_steps[:, :, None]
-    action_loss = (action_losses[:, :, :6] * action_mask).sum() / (
-        action_mask.sum() * 6
-    ).clamp_min(1)
+    action_denominator = ((action_mask.sum() * 6).clamp_min(1)
+                          if normalizers is None else normalizers["action"])
+    action_loss = (action_losses[:, :, :6] * action_mask).sum() / action_denominator
     future_visibility = batch["future_visibility"].to(device)
     tracking_mask = valid_steps[:, :, None] & input_entity_mask[:, None, :]
     visible_mask = tracking_mask & (future_visibility > .5)
@@ -311,20 +384,22 @@ def supervised_batch_losses(
         predicted_box[..., :2], future_box[..., :2], beta=.02, reduction="none"
     ).mean(dim=-1)
 
-    def weighted_center_loss(mask):
+    def weighted_center_loss(mask, name):
         if not mask.any():
             return predicted_box[..., :2].sum() * 0
         weights = step_weights[None, :, None] * mask
-        return (center_errors * weights).sum() / weights.sum().clamp_min(1)
+        denominator = weights.sum().clamp_min(1) if normalizers is None else normalizers[name]
+        return (center_errors * weights).sum() / denominator
 
-    visible_center_loss = weighted_center_loss(visible_center_mask)
-    offscreen_center_loss = weighted_center_loss(offscreen_center_mask)
+    visible_center_loss = weighted_center_loss(visible_center_mask, "visible_center")
+    offscreen_center_loss = weighted_center_loss(offscreen_center_mask, "offscreen_center")
     if visible_mask.any():
         shape_errors = F.smooth_l1_loss(
             predicted_box[..., 2:5], future_box[..., 2:5], beta=.02, reduction="none"
         ).mean(dim=-1)
         weights = step_weights[None, :, None] * visible_mask
-        shape_loss = (shape_errors * weights).sum() / weights.sum().clamp_min(1)
+        denominator = weights.sum().clamp_min(1) if normalizers is None else normalizers["shape"]
+        shape_loss = (shape_errors * weights).sum() / denominator
     else:
         shape_loss = predicted_box[..., 2:5].sum() * 0
     box_loss = (
@@ -333,19 +408,30 @@ def supervised_batch_losses(
     )
     future_depth = batch["future_depth_m"].to(device).clamp_min(1e-4)
     depth_mask = tracking_mask & (batch["future_depth_valid"].to(device) > .5)
-    depth_loss = (
-        F.smooth_l1_loss(predicted_log_depth[depth_mask], future_depth.log()[depth_mask])
-        if depth_mask.any() else predicted_log_depth.sum() * 0
-    )
-    visibility_loss = F.binary_cross_entropy_with_logits(
-        visibility_logits[tracking_mask], future_visibility[tracking_mask]
-    )
+    if depth_mask.any():
+        depth_loss = F.smooth_l1_loss(
+            predicted_log_depth[depth_mask], future_depth.log()[depth_mask],
+            reduction="mean" if normalizers is None else "sum",
+        )
+        if normalizers is not None:
+            depth_loss = depth_loss / normalizers["depth"]
+    else:
+        depth_loss = predicted_log_depth.sum() * 0
+    if tracking_mask.any() or normalizers is None:
+        visibility_loss = F.binary_cross_entropy_with_logits(
+            visibility_logits[tracking_mask], future_visibility[tracking_mask],
+            reduction="mean" if normalizers is None else "sum",
+        )
+        if normalizers is not None:
+            visibility_loss = visibility_loss / normalizers["visibility"]
+    else:
+        visibility_loss = visibility_logits.sum() * 0
     loss = (action_coefficient * action_loss + box_coefficient * box_loss
             + depth_loss + .1 * visibility_loss)
     return {
         "loss": loss, "action_loss": action_loss, "box_loss": box_loss,
         "depth_loss": depth_loss, "visibility_loss": visibility_loss,
-    }, input_entity_mask, obstacle_slots
+    }
 
 
 def supervised_validation_probe(policy, dataset, indices, entity_config, device,
@@ -403,7 +489,11 @@ def train(
     device_rng_seed: int | None = None,
     episode_storage: Path | None = None,
     initialize_only: bool = False,
+    gradient_accumulation: bool = False,
+    micro_batch_size: int = 16,
 ) -> None:
+    if micro_batch_size <= 0 or micro_batch_size % 2:
+        raise ValueError("Supervised microbatch size must be positive and even")
     if initialize_only and (
         resume is not None or output.exists()
         or (training_state is not None and training_state.exists())
@@ -522,6 +612,8 @@ def train(
             "training_state": str(training_state), "checkpoint_interval": checkpoint_interval,
             "supervised_validation_probe": supervised_validation_probe_enabled,
             "retain_validation_checkpoints": retain_validation_checkpoints,
+            "gradient_accumulation": gradient_accumulation,
+            "micro_batch_size": micro_batch_size,
         },
         "dataset": {
             "episodes": len(dataset.episodes), "frames": len(dataset),
@@ -544,7 +636,7 @@ def train(
         del resume_state
     log["memory_optimization"] = {
         "method": "microbatch-activation-checkpointing" if batch_size > 16 else "none",
-        "micro_batch_size": min(batch_size, 16), "optimizer_batch_size": batch_size,
+        "micro_batch_size": min(batch_size, micro_batch_size), "optimizer_batch_size": batch_size,
     }
     if episode_storage is not None:
         log["episode_storage"] = {
@@ -684,16 +776,21 @@ def train(
             obstacle_input_end_probability,
             obstacle_input_decay_steps,
         )
+        if gradient_accumulation:
+            optimizer.zero_grad(set_to_none=True)
         losses, input_entity_mask, obstacle_slots = supervised_batch_losses(
             policy, batch, entity_config, device, depth_mode, matched_step,
             obstacle_input_probability, action_coefficient, box_coefficient,
-            offscreen_center_coefficient,
+            offscreen_center_coefficient, micro_batch_size=micro_batch_size,
+            accumulate_gradients=gradient_accumulation,
         )
         loss = losses["loss"]
-        optimizer.zero_grad(set_to_none=True)
+        if not gradient_accumulation:
+            optimizer.zero_grad(set_to_none=True)
         if not torch.isfinite(loss):
             raise FloatingPointError("Non-finite supervised loss; previous checkpoint preserved")
-        loss.backward()
+        if not gradient_accumulation:
+            loss.backward()
         gradient_norm = float(torch.nn.utils.clip_grad_norm_(parameters, 10))
         if not math.isfinite(gradient_norm):
             raise FloatingPointError("Non-finite supervised gradients; previous checkpoint preserved")
@@ -705,7 +802,7 @@ def train(
             **{name: float(value.detach()) for name, value in losses.items()},
             "learning_rate": current_lr,
             "gradient_norm": gradient_norm, "step_seconds": elapsed, "completed_at": time.time(),
-            "batch_size": batch_size, "micro_batch_size": min(batch_size, 16),
+            "batch_size": batch_size, "micro_batch_size": min(batch_size, micro_batch_size),
         }
         log["steps"].append(row)
         row["eta_seconds"] = float(np.mean([item["step_seconds"] for item in log["steps"][-25:]])) * (steps - step)
@@ -836,6 +933,9 @@ def main() -> None:
     parser.add_argument("--training-state", type=Path)
     parser.add_argument("--initialize-only", action="store_true",
                         help="Save fresh seeded step-zero model/Adam/RNG state without evaluation or updates")
+    parser.add_argument("--gradient-accumulation", action="store_true",
+                        help="Backpropagate each microbatch before forwarding the next")
+    parser.add_argument("--micro-batch-size", type=int, default=16)
     parser.add_argument("--allow-device-rng-migration", action="store_true")
     parser.add_argument("--device-rng-seed", type=int)
     parser.add_argument("--checkpoint-interval", type=int, default=25)
@@ -882,6 +982,8 @@ def main() -> None:
         args.device_rng_seed,
         args.episode_storage,
         args.initialize_only,
+        args.gradient_accumulation,
+        args.micro_batch_size,
     )
 
 

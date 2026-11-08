@@ -394,7 +394,13 @@ For optimizer batches larger
 than 16, SFT uses activation-checkpointed microbatches of 16. Outputs are joined
 before computing the loss, preserving full-batch padding/entity weighting and
 one gradient clipping/Adam update per optimizer batch. The log records both the
-optimizer and microbatch sizes.
+optimizer and microbatch sizes. With `--gradient-accumulation`, each microbatch
+is backpropagated immediately without activation recomputation, freeing its
+graph before the next forward pass. Full-batch random inputs and loss
+denominators are prepared once, so unequal padding/entity masks retain their
+global weighting; clipping and Adam still run once per optimizer batch.
+`--micro-batch-size` defaults to 16. Execution-mode changes on resume are
+recorded without rewriting earlier updates or changing the sample schedule.
 
 ### Sample-matched local SFT sweeps
 
