@@ -136,6 +136,24 @@ def prepare(broker, owner: str, job_id: str, phase: str) -> dict:
                 return {"phase": phase, "status": "Pending", "command_id": command,
                         "reason": "Accepted SSM command invocation is not yet visible"}
             raise
+        if (phase == "provision" and invocation["Status"] == "Failed"
+                and not invocation.get("StandardOutputContent")
+                and "can't open file '/opt/lego-robot-worker/early.py': [Errno 2] No such file or directory"
+                in invocation.get("StandardErrorContent", "")):
+            broker.db.execute(
+                "CREATE TABLE IF NOT EXISTS workflow_rejections "
+                "(job TEXT, phase TEXT, command TEXT, reason TEXT, created REAL)"
+            )
+            broker.db.execute(
+                "INSERT INTO workflow_rejections VALUES (?,?,?,?,?)",
+                (job_id, phase, command, "bootstrap entrypoint not installed", time.time()),
+            )
+            broker.db.execute(
+                "DELETE FROM workflow_commands WHERE job=? AND phase=?", (job_id, phase),
+            )
+            broker.db.commit()
+            return {"phase": phase, "status": "WaitingForBootstrap", "previous_command_id": command,
+                    "reason": "SSM failed before the bootstrap entrypoint could execute"}
         return {"phase": phase, "status": invocation["Status"], "command_id": command,
                 "stdout": invocation.get("StandardOutputContent", ""),
                 "stderr": invocation.get("StandardErrorContent", "")}

@@ -112,7 +112,8 @@ def main() -> None:
                             raise ValueError("GPU qualification receipt does not match this job")
                     break
                 if receipt["status"] not in (
-                    "Pending", "InProgress", "Delayed", "WaitingForEC2", "WaitingForSSM", "DispatchUncertain",
+                    "Pending", "InProgress", "Delayed", "WaitingForEC2", "WaitingForSSM",
+                    "WaitingForBootstrap", "DispatchUncertain",
                 ):
                     raise RuntimeError(json.dumps(receipt))
                 time.sleep(10)
