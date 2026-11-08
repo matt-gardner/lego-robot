@@ -12,10 +12,11 @@ from so101.lego_curriculum import Catalog, LDRAW_TO_MUJOCO, Part
 from so101.renderer_appearance import RendererAppearance
 from so101.renderer_appearance_v2 import WristAppearanceV2
 from so101.renderer_appearance_v3 import WristAppearanceV3
+from so101.renderer_appearance_v4 import WristAppearanceV4
 from so101.robot_sim import BeamSimulation, MODEL_ROOT, restore_episode
 
 
-@pytest.fixture(params=[RendererAppearance, WristAppearanceV2, WristAppearanceV3])
+@pytest.fixture(params=[RendererAppearance, WristAppearanceV2, WristAppearanceV3, WristAppearanceV4])
 def pair(request):
     if not (MODEL_ROOT / "revision.json").exists():
         pytest.skip("Pinned SO101 assets unavailable")
@@ -106,6 +107,22 @@ def test_reference_assembly_refuses_missing_verified_parts(tmp_path, monkeypatch
     assert not output.exists()
 
 
+@pytest.mark.parametrize("height", [0, -.01, np.nan, np.inf])
+def test_render_fixture_rejects_invalid_wrist_height(tmp_path, height):
+    with pytest.raises(ValueError, match="wrist height"):
+        qualify_renderer_catalog.qualify_catalog(
+            tmp_path / "absent.json", tmp_path / "render", wrist_height_m=height)
+    assert not (tmp_path / "render").exists()
+
+
+@pytest.mark.parametrize("fraction", [-.1, 1.1, np.nan, np.inf])
+def test_render_fixture_rejects_invalid_gripper_fraction(tmp_path, fraction):
+    with pytest.raises(ValueError, match="gripper fraction"):
+        qualify_renderer_catalog.qualify_catalog(
+            tmp_path / "absent.json", tmp_path / "render", gripper_fraction=fraction)
+    assert not (tmp_path / "render").exists()
+
+
 @pytest.mark.parametrize("invalid", ["status", "frame", "hash", "mjcf"])
 def test_unqualified_diagnostic_rejects_unsafe_source(tmp_path, monkeypatch, invalid):
     source = tmp_path / "part.xml"
@@ -139,7 +156,8 @@ def test_unqualified_diagnostic_rejects_unsafe_source(tmp_path, monkeypatch, inv
 
 @pytest.mark.skipif(os.environ.get("MUJOCO_GL") not in ("osmesa", "egl"),
                     reason="Requires explicit headless rendering backend")
-@pytest.mark.parametrize("profile_type", [RendererAppearance, WristAppearanceV2, WristAppearanceV3])
+@pytest.mark.parametrize("profile_type", [RendererAppearance, WristAppearanceV2, WristAppearanceV3,
+                                        WristAppearanceV4])
 def test_rgb_area_lighting_preserves_segmentation_depth_and_model(profile_type):
     sim = BeamSimulation(appearance=profile_type())
     try:

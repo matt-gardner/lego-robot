@@ -18,12 +18,20 @@ from so101.lego_scene import _namespace, assemble_scene
 from so101.qualify_renderer import table_point
 from so101.renderer_appearance_v2 import WristAppearanceV2
 from so101.renderer_appearance_v3 import WristAppearanceV3
+from so101.renderer_appearance_v4 import WristAppearanceV4
 from so101.robot_sim import MODEL_ROOT, OBJECT_NAMES, TABLE_Z, BeamSimulation, scene_xml
 
 
 def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = False,
                     appearance: WristAppearanceV2 | None = None,
-                    diagnostic_unqualified_separator: bool = False) -> None:
+                    diagnostic_unqualified_separator: bool = False,
+                    wrist_height_m: float | None = None,
+                    gripper_fraction: float = .3) -> None:
+    if not np.isfinite(gripper_fraction) or not 0 <= gripper_fraction <= 1:
+        raise ValueError("Render fixture gripper fraction must lie between zero and one")
+    if wrist_height_m is not None and (
+            not np.isfinite(wrist_height_m) or wrist_height_m <= 0):
+        raise ValueError("Render fixture wrist height must be positive and finite")
     catalog = load_catalog(manifest)
     parts = {part.part_id: part for part in catalog.parts}
     required = {"3003", "96874", "3702"} if reference_assembly else {"3003", "3022", "3700"}
@@ -58,8 +66,10 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
         baseline.reset(10)
         grasp = baseline.data.site_xpos[baseline.site].copy()
         grasp[2] = .015 if reference_assembly else .010
+        if wrist_height_m is not None:
+            grasp[2] = wrist_height_m
         arm = baseline.ik(grasp, 0, rng=np.random.default_rng(10))
-        arm[-1] = baseline.limits[-1, 0] + .3 * np.ptp(baseline.limits[-1])
+        arm[-1] = baseline.limits[-1, 0] + gripper_fraction * np.ptp(baseline.limits[-1])
         selected = (("orange_brick", "3003", "orange"),
                     ("teal_separator", "96874", "teal"),
                     ("gray_beam", "3702", "gray"),
@@ -226,6 +236,8 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                           "assembled_xml_sha256": hashlib.sha256(final_xml.encode()).hexdigest(),
                           "mujoco_version": mujoco.__version__, "gl_renderer": backend,
                           "qpos": data.qpos.tolist(), "labels": labels,
+                          "fixture_wrist_height_m": float(grasp[2]),
+                          "fixture_gripper_fraction": gripper_fraction,
                           "reference_assembly_hypothesis": reference_assembly,
                           "reference_composition_notes": (
                               "Three distinct 3702 instances supply gray context without scaling "
@@ -266,12 +278,17 @@ def main() -> None:
     parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--reference-assembly", action="store_true")
-    parser.add_argument("--appearance", choices=("v2", "v3"), default="v2")
+    parser.add_argument("--appearance", choices=("v2", "v3", "v4"), default="v2")
     parser.add_argument("--diagnostic-unqualified-separator", action="store_true")
+    parser.add_argument("--wrist-height-m", type=float)
+    parser.add_argument("--gripper-fraction", type=float, default=.3)
     args = parser.parse_args()
     qualify_catalog(args.catalog, args.output, reference_assembly=args.reference_assembly,
-                    appearance=WristAppearanceV3() if args.appearance == "v3" else None,
-                    diagnostic_unqualified_separator=args.diagnostic_unqualified_separator)
+                    appearance=(WristAppearanceV4() if args.appearance == "v4" else
+                                WristAppearanceV3() if args.appearance == "v3" else None),
+                    diagnostic_unqualified_separator=args.diagnostic_unqualified_separator,
+                    wrist_height_m=args.wrist_height_m,
+                    gripper_fraction=args.gripper_fraction)
 
 
 if __name__ == "__main__":

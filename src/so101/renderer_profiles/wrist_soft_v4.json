@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "profile_id": "wrist-soft-v4",
+  "parent_profile_sha256": "27e45fc310d66bcca018113c1ef05cb7ebc41ec705e91a77a39c1d2170c0e870",
+  "parent_v3_profile_sha256": "416aaf2a85acfa582a6cf315eaf2a24c8e428cb5ab0ac57f78c962aa70d3124f",
+  "camera": {
+    "name": "wrist_cam",
+    "pos": [0.012, 0.05436, -0.05310],
+    "quat": [0.953939, -0.300000, -0.001556, 0.004547],
+    "fovy": 95
+  },
+  "jaw_visual_geometry": "rounded-outward-molded-housing",
+  "blur_sigma_px": 0.95,
+  "jaw_blur_sigma_px": 1.5,
+  "jaw_sections": [
+    [0.00, 0.80, 0.70],
+    [0.12, 1.00, 1.00],
+    [0.45, 0.95, 0.95],
+    [0.78, 0.58, 0.40],
+    [0.96, 0.18, 0.10],
+    [1.00, 0.08, 0.075]
+  ]
+}
