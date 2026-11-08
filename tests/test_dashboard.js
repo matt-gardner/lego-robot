@@ -301,7 +301,7 @@ test("RL/SFT interaction preserves RL selection, zoom and metrics; SFT uses loss
   assert.equal(rows[1].children[3].textContent, "50.0%");
   assert.equal(page.eval("seriesFor(sftSections[0].metrics[0])[0].values[0].raw"), 0.4);
   assert.equal(page.eval("seriesFor(sftSections[1].metrics[2])[0].values[0].raw"), 3);
-  assert.match(page.elements.get("step-timing").textContent, /Optimizer update: 2s \(excludes evaluation\/checkpointing\).*Since reported optimizer update:/);
+  assert.match(page.elements.get("step-timing").textContent, /optimizer 2s.*since update/);
   assert.equal(page.eval("state.charts.filter(c => !c.section.hidden).every(c => !c.canvas.events.wheel)"), true);
   assert.equal(page.eval("state.charts.filter(c => c.section.dataset.kind === 'rl').every(c => c.section.hidden)"), true);
   await page.elements.get("tab-rl").events.click();
@@ -325,7 +325,7 @@ test("a newly discovered SFT run defaults before validation without altering RL"
   catalog.unshift(sft);
   await page.eval("refresh()");
   assert.equal(page.eval("chosen()[0].id"), sft.id);
-  assert.match(page.elements.get("step-timing").textContent, /Not running/);
+  assert.equal(page.elements.get("step-timing").hidden, true);
   page.eval("state.selected.clear(); saveSelection()");
   await page.eval("refresh()");
   assert.equal(page.eval("chosen().length"), 0, "explicit deselection must persist");
@@ -346,22 +346,50 @@ test("timing separates evaluation boundaries from reporting delay and stale phas
   const page = await dashboard([sft]);
   await page.elements.get("tab-sft").events.click();
   const timing = page.elements.get("step-timing");
-  assert.match(timing.textContent, /Evaluation pending \/ in progress at step 96/);
-  assert.match(timing.textContent, /Optimizer update: 13s \(excludes evaluation\/checkpointing\)/);
-  assert.match(timing.textContent, /Since reported optimizer update: 2m 30s/);
-  assert.match(timing.textContent, /GPU report age: 5s/);
-  assert.match(timing.textContent, /Last completed evaluation: 3m 18s/);
+  assert.match(timing.textContent, /evaluation pending.*step 96/);
+  assert.match(timing.textContent, /optimizer 13s/);
+  assert.match(timing.textContent, /since update 2m 30s/);
+  assert.match(timing.textContent, /report 5s/);
+  assert.match(timing.textContent, /last eval 3m 18s/);
   sft.remote.observed_at -= 200;
   page.eval("updateStepCounters()");
-  assert.match(timing.textContent, /GPU report stale; current phase unknown/);
-  assert.doesNotMatch(timing.textContent, /Evaluation pending/);
+  assert.match(timing.textContent, /stale/);
+  assert.doesNotMatch(timing.textContent, /evaluation pending/);
   sft.remote = {state: "running", phase: "evaluating", observed_at: Date.now() / 1000,
     phase_observed_at: Date.now() / 1000};
   page.eval("updateStepCounters()");
-  assert.match(timing.textContent, /Reported phase: evaluating/);
+  assert.match(timing.textContent, /evaluating/);
   sft.remote.phase_observed_at -= 200;
   page.eval("updateStepCounters()");
-  assert.doesNotMatch(timing.textContent, /Reported phase: evaluating/);
+  assert.doesNotMatch(timing.textContent, /evaluating/);
+});
+
+test("top status loads only active runs independently of selection and training tab", async () => {
+  const active = run("11111111", "sft", true), completed = run("22222222", "sft");
+  const page = await dashboard([active, completed], {
+    "rl-selected-runs": "[]", "sft-selected-runs": JSON.stringify([completed.id]),
+  });
+  const timing = page.elements.get("step-timing");
+  assert.ok(page.requests.includes("/api/runs/11111111"));
+  assert.match(timing.textContent, /sft-11111111/);
+  assert.doesNotMatch(timing.textContent, /sft-22222222/);
+  await page.elements.get("tab-sft").events.click();
+  assert.match(timing.textContent, /sft-11111111/);
+  assert.doesNotMatch(timing.textContent, /sft-22222222|excludes|phase not|Enqueue/);
+  active.active = false;
+  await page.eval("refresh()");
+  assert.equal(timing.hidden, true);
+});
+
+test("formerly colliding run IDs receive distinct stable colors across selection and refresh", async () => {
+  const runs = Array.from({length: 9}, (_, i) => run((7 * i).toString(16).padStart(8, "0"), "sft"));
+  const page = await dashboard(runs);
+  const assigned = page.eval("state.catalog.map(run => color(run.id))");
+  assert.equal(new Set(assigned).size, runs.length);
+  await page.elements.get("tab-sft").events.click();
+  page.eval("state.selected.clear(); render()");
+  await page.eval("refresh()");
+  assert.deepEqual(page.eval("state.catalog.map(run => color(run.id))"), assigned);
 });
 
 test("SFT loss plots use log-log coordinates, positive gaps and logarithmic interaction", async () => {

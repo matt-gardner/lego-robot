@@ -433,6 +433,9 @@ update, GPU report age, and the last completed evaluation duration. A scheduled
 evaluation boundary awaiting a result is labeled pending/in progress, not a
 confirmed live phase; fresh explicit phase reports take precedence. Stale GPU
 reports make the current phase unknown rather than implying optimizer progress.
+The top status strip lists active runs independently of plot selections or tabs,
+using compact data-only labels. Run colors are assigned uniquely across the
+catalog and retained through refreshes; selections do not change their colors.
 Current curriculum recordings in the data viewer support comments and
 looks-wrong feedback on the whole example or selected original wrist/external
 frame. They reuse the authenticated Family transport, immutable archive identity,

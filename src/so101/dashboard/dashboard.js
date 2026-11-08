@@ -45,7 +45,7 @@ const sections = [
   ].map(metric => ({...metric, phase: "train", task: "all"}))},
 ];
 const sftSections = [
-  {id: "sft-loss", title: "Sample-matched training loss", note: "Logged cumulative training samples · log-log axes · mean losses, not batch totals", open: true,
+  {id: "sft-loss", title: "Sample-matched training loss", note: "Training samples · log-log", open: true,
     metrics: [
       {key: "loss", title: "Mean total loss"},
       {key: "action_loss", title: "Mean action loss"},
@@ -54,7 +54,7 @@ const sftSections = [
       note: "Losses are normalized by valid action/entity labels, not summed across the batch. No additional batch-size division. Missing components remain gaps, not zeros."}))},
   {...sections[0], id: "sft-eval"},
   {id: "sft-frozen-loss", title: "Sample-matched frozen-set loss",
-    note: "Same frozen evaluation set · logged training exposure · baseline at zero samples", open: true,
+    note: "Frozen set · training samples", open: true,
     metrics: [{key: "supervised_loss", title: "Frozen supervised loss", phase: "eval", task: "all", unit: "",
       note: "Fixed evaluation examples, diffusion noise and time. Equal training samples are a compute proxy, not equal FLOPs or elapsed time."}]},
   ...["grasp", "view", "push", "place"].map(task => ({
@@ -102,7 +102,14 @@ const pct = value => finite(value) ? `${(value * 100).toFixed(1)}%` : "—";
 const num = value => finite(value) ? value.toFixed(3) : "—";
 const exp = value => finite(value) ? value.toExponential(1) : "—";
 const shortName = run => run.name.replaceAll("entity_smolvla_", "").replaceAll("trajectory_rl_", "");
-const color = id => colors[parseInt(id.slice(0, 8), 16) % colors.length];
+const runColors = new Map();
+function color(id) {
+  if (!runColors.has(id)) {
+    const index = runColors.size;
+    runColors.set(id, colors[index] || `hsl(${(index * 137.508) % 360} 70% 65%)`);
+  }
+  return runColors.get(id);
+}
 const runKind = run => run.kind || "rl";
 const tabCatalog = () => state.catalog.filter(run => runKind(run) === state.kind);
 const chosen = () => tabCatalog().filter(run => state.selected.has(run.id));
@@ -117,41 +124,38 @@ const duration = seconds => {
 function updateStepCounters() {
   const container = $("step-timing");
   if (!container) return;
-  const selected = chosen();
-  container.replaceChildren(...selected.map(summary => {
+  const active = state.catalog.filter(run => run.active === true);
+  container.hidden = !active.length;
+  container.replaceChildren(...active.map(summary => {
     const run = state.runs.get(summary.id);
     const elapsed = finite(run?.last_step_at) ? Date.now() / 1000 - run.last_step_at : null;
-    const prefix = selected.length > 1 ? `${shortName(summary)} · ` : "";
+    const prefix = `${shortName(summary).split("/").at(-1)} · `;
     const remote = summary.remote;
     const reportAge = finite(remote?.observed_at) ? Math.max(0, Date.now() / 1000 - remote.observed_at) : null;
     const freshReport = finite(reportAge) && reportAge <= 90 && remote.state !== "stale";
     const phaseAge = finite(remote?.phase_observed_at) ? Date.now() / 1000 - remote.phase_observed_at : null;
     const interval = run?.config?.run_config?.validation_interval;
     const latestStep = run?.latest_train?.step;
-    const evaluationDue = state.kind === "sft" && finite(interval) && interval > 0
+    const evaluationDue = runKind(summary) === "sft" && finite(interval) && interval > 0
       && finite(latestStep) && latestStep > 0 && latestStep % interval === 0
       && (run.latest_eval?.step ?? -1) < latestStep;
-    let phase = summary.active === true ? "Running; current phase not reported" : "Not running";
-    if (remote && !freshReport) phase = "GPU report stale; current phase unknown";
+    let phase = "running";
+    if (remote && !freshReport) phase = "stale";
     else if (freshReport && finite(phaseAge) && phaseAge >= -30 && phaseAge <= 90
       && ["training", "evaluating", "checkpointing"].includes(remote.phase)) {
-      phase = `Reported phase: ${remote.phase}`;
+      phase = remote.phase;
     } else if (summary.active === true && evaluationDue) {
-      phase = `Evaluation pending / in progress at step ${latestStep}`;
+      phase = "evaluation pending";
     }
     const since = summary.active === true
-      ? `Since reported optimizer update: ${run?.last_step_time_estimated ? "~" : ""}${duration(elapsed)}`
+      ? `since update ${run?.last_step_time_estimated ? "~" : ""}${duration(elapsed)}`
       : "";
     const counter = text("span",
-      `${prefix}${phase} · Optimizer update: ${duration(run?.latest_train?.step_seconds)} (excludes evaluation/checkpointing)` +
+      `${prefix}${phase} · step ${latestStep ?? "—"} · optimizer ${duration(run?.latest_train?.step_seconds)}` +
       (since ? ` · ${since}` : "") +
-      (remote ? ` · GPU report age: ${duration(reportAge)}` : "") +
-      (finite(run?.latest_eval?.evaluation_seconds) ? ` · Last completed evaluation: ${duration(run.latest_eval.evaluation_seconds)}` : ""));
-    counter.title = `Latest loaded step: ${run?.latest_train?.step ?? "none"}. ` +
-      (run?.last_step_time_estimated
-        ? "Estimated from the log write time; this run has no completion timestamp."
-        : "Elapsed since the recorded optimizer completion, not the duration of the current phase.") +
-      " Evaluation status is inferred from a scheduled boundary awaiting its result unless an explicit fresh phase is reported. GPU report age is separate from optimizer progress.";
+      (remote ? ` · report ${duration(reportAge)}` : "") +
+      (finite(run?.latest_eval?.evaluation_seconds) ? ` · last eval ${duration(run.latest_eval.evaluation_seconds)}` : ""));
+    counter.title = summary.path || summary.name;
     return counter;
   }));
 }
@@ -330,7 +334,7 @@ function seriesFor(metric) {
       if (!values.some(point => finite(point.value))) continue;
       result.push({
         label: `${shortName(run)} · ${series.task} · ${series.phase === "eval" ? "validation" : "train"}`,
-        values, color: color(run.id), axis: state.kind === "sft" ? "Training samples seen (compute proxy)" : run.axis,
+        values, color: color(run.id), axis: state.kind === "sft" ? "Training samples seen" : run.axis,
         dash: series.phase === "eval" ? [6, 4] : [],
       });
     }
@@ -362,7 +366,7 @@ class Chart {
     this.legend = text("div", "", "legend");
     const heading = text("h2", metric.title);
     this.panel.append(heading);
-    this.panel.append(text("div", metric.note, "subtitle"), this.canvas, this.legend);
+    this.panel.append(this.canvas, this.legend);
     container.append(this.panel);
     new ResizeObserver(() => this.draw()).observe(this.canvas);
     this.canvas.addEventListener("pointermove", event => this.hover(event));
@@ -412,7 +416,7 @@ class Chart {
       ctx.fillStyle = "#8893a4";
       ctx.font = "12px -apple-system, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("No data for this phase / task selection", W / 2, H / 2);
+      ctx.fillText("No data", W / 2, H / 2);
       return;
     }
     const steps = valid.map(p => p.x);
@@ -554,10 +558,8 @@ function render() {
   savePreferences();
   for (const chart of state.charts) chart.update();
   updateStepCounters();
-  $("context").textContent = !chosen().length ? "Select one or more runs to compare." :
-    `${chosen().length} run(s) selected · Cards and table: ${shortName(chosen().find(r => r.id === state.focus) || chosen()[0])} · Eval is unassisted. ` +
-    (state.kind === "sft" ? "Plots compare logged training samples seen, not optimizer steps. Equal exposure is a compute proxy, not equal FLOPs or wall time. Runs/points without sample counts are omitted, not guessed. SFT training is loss-only; rollout metrics are evaluation only."
-      : "Training includes every sampled group; each section has a fixed task scope.");
+  $("context").textContent = !chosen().length ? "No runs selected" :
+    `${chosen().length} selected · ${shortName(chosen().find(r => r.id === state.focus) || chosen()[0])}`;
   showErrors();
 }
 
@@ -568,7 +570,8 @@ async function request(path) {
 }
 
 async function loadDetails() {
-  await Promise.all(chosen().map(async run => {
+  await Promise.all(state.catalog.filter(run => state.selected.has(run.id) && runKind(run) === state.kind
+    || run.active === true).map(async run => {
     const previous = state.runs.get(run.id);
     if (previous?.revision === run.revision && !run.error && !previous.error) return;
     try { state.runs.set(run.id, await request(`/api/runs/${run.id}`)); }
@@ -583,6 +586,7 @@ async function refresh() {
   try {
     const result = await request("/api/runs");
     state.catalog = result.runs;
+    for (const run of [...state.catalog].sort((a, b) => a.id.localeCompare(b.id))) color(run.id);
     if (!state.initialized) {
       const rlCatalog = state.catalog.filter(run => runKind(run) === "rl");
       const existing = new Set(rlCatalog.map(run => run.id));
