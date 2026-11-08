@@ -22,7 +22,7 @@ CONFIG = Path("/etc/lego-robot-control/dashboard-deploy.json")
 CATALOG_URL = "http://127.0.0.1:8765/lego-robot/api/lego"
 EVIDENCE_VERSION = "ldraw-2026-10-023083918da2-zup-v17-mj3"
 API_LIMIT = 2 * 1024 * 1024
-STATUS_LIMIT = 128 * 1024
+STATUS_LIMIT = 16 * 1024 - 1
 SSH = (
     "ssh -i /mnt/dockyard/service-home/.ssh/dockyard-repo/id_ed25519 "
     "-o IdentitiesOnly=yes "
@@ -185,6 +185,13 @@ def status() -> dict:
     if len(selected) != 1:
         raise ValueError("Required live v17 catalog is missing or ambiguous")
     release = selected[0]
+    parts = [row for row in summaries if row.get("kind") == "parts"]
+    if any(type(row.get("publication_mtime_ns")) is not int for row in parts):
+        raise ValueError("Live parts catalogs lack publication ordering evidence")
+    recent = sorted(parts, key=lambda row: (row["publication_mtime_ns"], row["id"]),
+                    reverse=True)[:8]
+    if release not in recent:
+        recent.append(release)
     counts = {}
     for stored_status in ("verified", "unavailable", "imported", "prepared"):
         result = catalog_api({"release": release["id"], "status": stored_status, "limit": "1"})
@@ -198,14 +205,17 @@ def status() -> dict:
         raise ValueError("Live catalog verified count disagrees with release summary")
     result = {"active": True, "healthy": True, "pid": pid, "source": str(source),
               "publication": publication, "catalog_api": CATALOG_URL,
-              "releases": summaries, "catalog_evidence": {
+              "release_count": len(releases), "parts_release_count": len(parts),
+              "omitted_parts_releases": len(parts) - len(recent),
+              "release_selection": "newest eight parts publications plus required v17",
+              "releases": recent, "catalog_evidence": {
                   "release": release, "stored_status_counts": counts,
                   "total_parts": sum(counts.values()),
                   "verification_attempts": counts["verified"] + counts["unavailable"],
                   "verification_attempts_definition": "verified + unavailable",
               }}
     if len(json.dumps(result).encode()) > STATUS_LIMIT:
-        raise ValueError("Managed status response exceeds 128 KiB")
+        raise ValueError("Managed status response exceeds native 16 KiB receipt limit")
     return result
 
 
