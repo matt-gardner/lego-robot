@@ -1,4 +1,5 @@
 import hashlib
+from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
@@ -68,12 +69,20 @@ class CurriculumTests(unittest.TestCase):
         self.assertNotEqual(original["scene_id"], newer["scene_id"])
         self.assertEqual(original["status"], "proposed")
         self.assertTrue(original["requires_physical_settling"])
+        alternate = replace(catalog, parts=(replace(catalog.parts[0], part_id="other-part"),))
+        self.assertNotEqual(original["scene_id"], self.plan(alternate)["scene_id"])
 
     def test_corrupt_verified_asset_rejected(self):
         self.write_catalog()
         self.asset.write_text("changed")
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
             load_catalog(self.manifest)
+
+    def test_separated_small_parts_leave_hand_clearance_and_center_partial_grid(self):
+        plan = self.plan(self.write_catalog(), category="separated", object_count=2)
+        first, second = [obj["position_relative_to_scene_m"] for obj in plan["objects"]]
+        self.assertGreaterEqual(abs(second[0] - first[0]), .04)
+        self.assertEqual((first[1], second[1]), (0., 0.))
 
     def test_asset_escape_and_symlink_rejected(self):
         self.report["parts"][0]["mjcf"] = "../outside.xml"

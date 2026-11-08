@@ -158,9 +158,10 @@ def prepare_scene(
     if not catalog.parts:
         raise CatalogUnavailable("No verified LEGO parts")
     identity = {
-        "generator": "lego-scene-plan-v2", "catalog_sha256": catalog.manifest_sha256,
+        "generator": "lego-scene-plan-v4", "catalog_sha256": catalog.manifest_sha256,
         "seed": seed, "sequence": sequence, "category": category,
         "task": task, "object_count": object_count,
+        "sampleable_part_ids": sorted(part.part_id for part in catalog.parts),
     }
     encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     scene_id = hashlib.sha256(encoded).hexdigest()
@@ -171,12 +172,13 @@ def prepare_scene(
     family_names = sorted(families)
     objects = []
     columns = math.ceil(math.sqrt(object_count))
-    spacing = max(max(part.dimensions_m[:2]) for part in catalog.parts) * 1.5
+    rows = math.ceil(object_count / columns)
+    spacing = max(.04, max(max(part.dimensions_m[:2]) for part in catalog.parts) * 1.5)
     for index in range(object_count):
         part = rng.choice(families[rng.choice(family_names)])
         if category == "separated":
             x = (index % columns - (columns - 1) / 2) * spacing
-            y = (index // columns - (columns - 1) / 2) * spacing
+            y = (index // columns - (rows - 1) / 2) * spacing
         else:
             spread = {"cluster": .06, "overlap": .035, "pile": .02}[category]
             x, y = rng.uniform(-spread, spread), rng.uniform(-spread, spread)

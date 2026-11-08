@@ -133,9 +133,9 @@ def test_simulation_constructor_preserves_default_and_injected_model(model_root,
     model = mujoco.MjModel.from_xml_string(playback.scene_xml(model_root))
     compiled_paths = []
 
-    def compile_scene(path):
-        compiled_paths.append(path)
-        return playback.scene_xml(path)
+    def compile_scene(path, version):
+        compiled_paths.append((path, version))
+        return playback.scene_xml(path, version)
 
     def start_data(actual):
         np.testing.assert_array_equal(actual.body_mass, model.body_mass)
@@ -147,4 +147,4 @@ def test_simulation_constructor_preserves_default_and_injected_model(model_root,
     monkeypatch.setattr(mujoco, "MjData", start_data)
     with pytest.raises(RuntimeError, match="Reached simulation data initialization"):
         robot_sim.BeamSimulation(model_root, render=False, model=model if supplied else None)
-    assert compiled_paths == ([] if supplied else [model_root])
+    assert compiled_paths == ([] if supplied else [(model_root, robot_sim.SCENE_VERSION)])

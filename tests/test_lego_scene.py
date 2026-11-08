@@ -10,7 +10,8 @@ import mujoco
 import numpy as np
 
 from so101.lego_curriculum import load_catalog, prepare_scene
-from so101.lego_scene import assemble_scene, restore_scene, settle_scene
+from so101.lego_scene import assemble_scene, capture_scene_state, restore_scene, settle_scene
+from so101.catalog_sim import CatalogSimulation
 
 
 BASE = """<mujoco><compiler angle="radian"/>
@@ -82,6 +83,13 @@ class LegoSceneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disagrees"):
             restore_scene(model, restored, inconsistent, xml)
         np.testing.assert_array_equal(restored.qpos, before)
+        model.body_mass[1] *= 2
+        with self.assertRaisesRegex(ValueError, "runtime physics"):
+            restore_scene(model, restored, snapshot, xml)
+        model.body_mass[1] /= 2
+        model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        with self.assertRaisesRegex(ValueError, "runtime physics"):
+            restore_scene(model, restored, snapshot, xml)
 
     def test_invalid_instances_and_catalog_binding_rejected(self):
         plan = copy.deepcopy(self.plan)
@@ -117,6 +125,55 @@ class LegoSceneTests(unittest.TestCase):
                                   category="separated", task="grasp", object_count=3)
         with self.assertRaisesRegex(ValueError, "global settings"):
             self.assemble()
+
+    def test_robot_registry_and_recovery_use_actual_state_without_failed_prefix(self):
+        sim = CatalogSimulation(self.catalog, self.plan, render=False)
+        self.addCleanup(sim.close)
+        self.assertEqual(set(sim.beam_geoms), {obj["instance_id"] for obj in self.plan["objects"]})
+        name = self.plan["objects"][0]["instance_id"]
+        joint = sim.model.joint(name + "__part_free")
+        address = sim.model.jnt_qposadr[joint.id]
+        sim.data.qpos[address + 3:address + 7] = [np.cos(.6), 0., 0., np.sin(.6)]
+        mujoco.mj_forward(sim.model, sim.data)
+        snapshot = capture_scene_state(sim.model, sim.data, sim.xml, sim.plan,
+                                       status="failed-attempt")
+        sim.rows = [{"phase": "failed_prefix"}]
+        sim.use_recovery_start(snapshot, parent_example_id="failed-parent")
+        self.assertAlmostEqual(sim.initial["yaws"][name], 1.2)
+        self.assertEqual(sim.plan["scene_family_id"], self.plan["scene_id"])
+        self.assertNotEqual(sim.plan["scene_id"], self.plan["scene_id"])
+        sim.restore_initial()
+        self.assertEqual(sim.rows, [])
+        observations = []
+        sim.step = lambda hold, phase: observations.append((hold.copy(), phase))
+        sim.observe_recovery_start(name, "grasp", None)
+        self.assertEqual([phase for _, phase in observations], ["recovery_observe"] * 4)
+        self.assertEqual(sim.command_entities, [(name, "object")])
+        for hold, _ in observations:
+            np.testing.assert_allclose(hold, sim.data.qpos[sim.qadr])
+        self.assertEqual(sim.initial["recovery_parent_example_id"], "failed-parent")
+
+    def test_grasp_selects_equivalent_heading_before_recording_any_action(self):
+        sim = CatalogSimulation(self.catalog, self.plan, render=False)
+        self.addCleanup(sim.close)
+        name = self.plan["objects"][0]["instance_id"]
+        rotation = sim.data.body(name).xmat.reshape(3, 3)
+        primary = np.arctan2(rotation[1, 0], rotation[0, 0]) + np.pi / 2
+        events = []
+        def ik(position, yaw):
+            events.append(("ik", yaw))
+            if abs(yaw - primary) < 1e-9:
+                raise RuntimeError("Unreachable original heading")
+            return sim.data.qpos[sim.qadr].copy()
+        sim.ik = ik
+        sim.move = lambda goal, phase: events.append(("move", phase))
+        sim.contacts = lambda target: {"fixed", "moving"}
+        _, result = sim._grasp(name)
+        self.assertTrue(result["success"])
+        self.assertEqual([event[0] for event in events[:3]], ["ik"] * 3)
+        self.assertAlmostEqual(events[1][1], primary + np.pi)
+        self.assertEqual([value for kind, value in events if kind == "move"],
+                         ["approach", "descend", "close", "lift"])
 
 
 if __name__ == "__main__":

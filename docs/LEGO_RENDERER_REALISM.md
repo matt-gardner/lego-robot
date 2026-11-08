@@ -65,6 +65,57 @@ objects, missing cable and different part geometry remain visible differences.
 This is an available appearance baseline, not calibrated camera matching or
 real-robot transfer evidence.
 
+The independently readable v2 release is
+`/mnt/dockyard/lego-robot-data/data/lego-renderer/b887f204-wrist-soft-v2/`.
+Instantiate `WristAppearanceV2()` from `so101.renderer_appearance_v2`, not the
+v1 class with a v2 JSON file. It inherits the integration API and records all
+three identities: profile
+`27e45fc310d66bcca018113c1ef05cb7ebc41ec705e91a77a39c1d2170c0e870`,
+v2 implementation
+`437f2b4a881ab720b4e5e5b5b180197000e606fd1f21f1ff391f6345fb6dc9e1`
+and the unchanged v1 parent implementation above.
+
+V2 replaces non-contact jaw visuals with outward-tapered sleeves and softens
+jaw highlights, blur and saturation. `add_visual_cable(xml, points_m)` optionally
+adds fixed, world-space non-contact context; bind the points and resulting XML
+hash, and never treat it as a physical obstacle. Curriculum independently
+verified the source/profile, comparison, qualification and molded-parts fixture
+hashes. The latter uses real catalog 3003/3022/3700 geometry, but remains a
+hand-composed render, not a settled expert episode.
+
+The v2 comparison is softer and less saturated than v1; its exterior still
+looks angular/triangular compared with the reference's molded white jaws.
+The fixture gripper opening is a composition hypothesis, not robot calibration.
+V1/v2 remain immutable and opt-in; neither receipt qualifies SFT, physical
+manipulation or existing sweep data. New renderer versions require independent
+receipts rather than silent substitution into an already-recording attempt.
+
+The independently verified v3 receipt is
+`/mnt/dockyard/lego-robot-data/data/lego-renderer/b887f204-wrist-soft-v3/`.
+Use `WristAppearanceV3` from `so101.renderer_appearance_v3` with the same inherited
+integration API. Profile SHA is
+`416aaf2a85acfa582a6cf315eaf2a24c8e428cb5ab0ac57f78c962aa70d3124f`;
+implementation SHA is
+`438eed9f8d74090fe10aba237a302d107ca98f46e0626c4594972330682504f8`.
+`identity()` also binds the exact v2 profile/implementation and v1 implementation.
+V3 rounds the non-contact sleeve surfaces with elliptic sections; the matched
+comparison has rounder tips but still different jaw silhouette and proxy parts.
+Its hand-composed CPU render qualification does not establish dynamic catalog
+acceptance or calibration. Any separate static visual of physics-failed 96874
+must retain that diagnostic-only status, never become a verified catalog entry
+or expert example through renderer integration.
+
+The separately verified render-only diagnostic at
+`/mnt/dockyard/lego-robot-data/data/lego-renderer/b887f204-reference-static-v3/`
+uses actual 96874 source geometry as a fixed non-contact visual, alongside three
+distinct 3702 instances and 3003. Qualification hash
+`4e6d866e29c2ce22e0321419fcc3317d3bd70ef7244f4146acd3c2217d5b20f2`
+records the failed 96874 physical check explicitly; comparison hash
+`0d77b62dd20599a06e470362c23120c6b749013e0c6dfaf5a4274527efd4ffda`
+shows a more recognizable molded separator than the earlier proxy. Composition,
+orientation and jaw occlusion still differ from the photo. This diagnostic
+cannot enter the verified-only curriculum loader or establish expert acceptance.
+
 ## Evidence and boundaries
 
 Render representative matched compositions, including near-field jaw occlusion

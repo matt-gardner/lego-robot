@@ -26,6 +26,48 @@ RGBA = {
 }
 
 
+def runtime_model_sha256(model: mujoco.MjModel) -> str:
+    """Bind runtime physics changes that are not represented by the source XML."""
+    digest = hashlib.sha256()
+    for key in ("body_mass", "body_inertia", "body_pos", "body_quat", "body_ipos",
+                "body_iquat", "geom_size", "geom_pos", "geom_quat", "geom_gap", "geom_margin",
+                "geom_friction", "geom_solref", "geom_solimp", "geom_priority",
+                "geom_solmix", "geom_contype", "geom_conaffinity", "geom_type",
+                "geom_dataid", "jnt_range", "jnt_pos", "jnt_axis", "jnt_stiffness",
+                "dof_damping", "dof_armature", "dof_frictionloss", "qpos0",
+                "actuator_forcerange", "actuator_ctrlrange", "actuator_gainprm",
+                "actuator_biasprm", "actuator_dynprm", "actuator_gear", "actuator_trnid",
+                "eq_data", "eq_active0", "mesh_vert", "mesh_face", "mesh_pos", "mesh_quat"):
+        digest.update(key.encode())
+        digest.update(np.asarray(getattr(model, key)).tobytes())
+    for key in ("timestep", "gravity", "integrator", "solver", "cone", "jacobian",
+                "iterations", "tolerance", "impratio", "noslip_iterations", "noslip_tolerance",
+                "disableflags", "enableflags", "density", "viscosity", "wind"):
+        digest.update(key.encode())
+        digest.update(np.asarray(getattr(model.opt, key)).tobytes())
+    return digest.hexdigest()
+
+
+def capture_scene_state(
+    model: mujoco.MjModel, data: mujoco.MjData, xml: str, plan: dict, *, status: str,
+) -> dict:
+    specification = mujoco.mjtState.mjSTATE_INTEGRATION
+    integration = np.empty(mujoco.mj_stateSize(model, specification))
+    mujoco.mj_getState(model, data, integration, specification)
+    if not np.isfinite(integration).all():
+        raise ValueError("Cannot capture non-finite physics as a recovery start")
+    return {
+        "schema_version": 1, "scene_id": plan["scene_id"], "status": status,
+        "catalog_sha256": plan["catalog_sha256"],
+        "model_xml_sha256": hashlib.sha256(xml.encode()).hexdigest(),
+        "runtime_model_sha256": runtime_model_sha256(model),
+        "physics_version": mujoco.__version__, "time": float(data.time),
+        "qpos": data.qpos.tolist(), "qvel": data.qvel.tolist(),
+        "act": data.act.tolist(), "ctrl": data.ctrl.tolist(),
+        "integration_state": integration.tolist(),
+    }
+
+
 def _namespace(
     element: ET.Element, prefix: str, directory: Path, allowed_assets: dict[Path, str],
 ) -> None:
@@ -151,6 +193,23 @@ def settle_scene(
     if not math.isfinite(model.opt.timestep) or model.opt.timestep <= 0:
         raise ValueError("Invalid physics timestep")
     data = mujoco.MjData(model)
+    return settle_data(
+        model, data, xml, plan, maximum_seconds=maximum_seconds,
+        stationary_seconds=stationary_seconds, velocity_tolerance=velocity_tolerance,
+        contact_limit_m=contact_limit_m,
+    )
+
+
+def settle_data(
+    model: mujoco.MjModel, data: mujoco.MjData, xml: str, plan: dict, *,
+    maximum_seconds: float = 10., stationary_seconds: float = .5,
+    velocity_tolerance: float = .005, contact_limit_m: float = .001,
+) -> tuple[mujoco.MjModel, mujoco.MjData, dict]:
+    """Settle initialized robot controls and catalog objects without resetting."""
+    limits = (maximum_seconds, stationary_seconds, velocity_tolerance, contact_limit_m)
+    if any(not math.isfinite(value) or value <= 0 for value in limits):
+        raise ValueError("Settling parameters must be positive and finite")
+    deadline = data.time + maximum_seconds
     mujoco.mj_forward(model, data)
     addresses = []
     for obj in plan["objects"]:
@@ -161,7 +220,7 @@ def settle_scene(
         addresses.append((obj, int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])))
     maximum_penetration = 0.
     stationary_since = None
-    while data.time < maximum_seconds:
+    while data.time < deadline:
         penetration = max((max(0., -float(contact.dist)) for contact in data.contact), default=0.)
         maximum_penetration = max(maximum_penetration, penetration)
         if penetration > contact_limit_m:
@@ -185,19 +244,8 @@ def settle_scene(
          "qpos": data.qpos[q:q + 7].tolist(), "qvel": data.qvel[v:v + 6].tolist()}
         for obj, q, v in addresses
     ]
-    snapshot = {
-        "schema_version": 1, "scene_id": plan["scene_id"], "status": "settled",
-        "catalog_sha256": plan["catalog_sha256"],
-        "model_xml_sha256": hashlib.sha256(xml.encode()).hexdigest(),
-        "physics_version": mujoco.__version__, "time": float(data.time),
-        "maximum_penetration_m": maximum_penetration, "objects": objects,
-        "qpos": data.qpos.tolist(), "qvel": data.qvel.tolist(),
-        "act": data.act.tolist(), "ctrl": data.ctrl.tolist(),
-    }
-    specification = mujoco.mjtState.mjSTATE_INTEGRATION
-    integration = np.empty(mujoco.mj_stateSize(model, specification))
-    mujoco.mj_getState(model, data, integration, specification)
-    snapshot["integration_state"] = integration.tolist()
+    snapshot = capture_scene_state(model, data, xml, plan, status="settled")
+    snapshot.update(maximum_penetration_m=maximum_penetration, objects=objects)
     return model, data, snapshot
 
 
@@ -207,6 +255,8 @@ def restore_scene(model: mujoco.MjModel, data: mujoco.MjData, snapshot: dict, xm
         raise ValueError("Snapshot belongs to a different scene model")
     if snapshot.get("physics_version") != mujoco.__version__:
         raise ValueError("Snapshot uses a different physics version")
+    if snapshot.get("runtime_model_sha256") != runtime_model_sha256(model):
+        raise ValueError("Snapshot uses different runtime physics settings")
     values = {}
     for key in ("qpos", "qvel", "act", "ctrl"):
         value = np.asarray(snapshot[key], dtype=float)

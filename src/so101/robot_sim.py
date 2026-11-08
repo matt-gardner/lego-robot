@@ -274,7 +274,9 @@ class BeamSimulation:
 
     def __init__(self, model_root: Path = MODEL_ROOT, *, render: bool = True,
                  model: mujoco.MjModel | None = None, scene_version: int = SCENE_VERSION,
-                 appearance: RendererAppearance | None = None):
+                 appearance: RendererAppearance | None = None,
+                 object_names: tuple[str, ...] = OBJECT_NAMES,
+                 distractor_names: tuple[str, ...] = tuple(DISTRACTOR_SIZES)):
         self.model_root = model_root
         self.scene_version = scene_version
         self.appearance = appearance
@@ -317,15 +319,17 @@ class BeamSimulation:
         self.base_geom_colors = self.model.geom_rgba.copy()
         self.beam_geoms = {
             name: np.flatnonzero(self.model.geom_bodyid == self.model.body(name).id)
-            for name in OBJECT_NAMES
+            for name in object_names
         }
-        shell = self.model.geom("studded_shell").id
-        self.studded_studs = self.beam_geoms["studded"][
-            self.beam_geoms["studded"] != shell
-        ]
+        self.studded_studs = np.array([], dtype=int)
+        if "studded" in self.beam_geoms:
+            shell = self.model.geom("studded_shell").id
+            self.studded_studs = self.beam_geoms["studded"][
+                self.beam_geoms["studded"] != shell
+            ]
         self.distractors = {
             name: self.model.body(name).id
-            for name in ("green_plate_a", "green_plate_b", "green_piece", "gray_clutter")
+            for name in distractor_names
         }
         self.destination_geoms = {
             name: np.array([self.model.geom(f"{name}_geom").id])
@@ -891,7 +895,13 @@ class BeamSimulation:
                 contacts.add(self.model.body(other_body).name)
         return sorted(contacts)
 
-    def ik(self, position: np.ndarray, yaw: float, *, rng=None) -> np.ndarray:
+    def ik(
+        self, position: np.ndarray, yaw: float, *, rng=None,
+        position_tolerance: float = .001, rotation_tolerance: float = .10,
+    ) -> np.ndarray:
+        if any(not math.isfinite(value) or value <= 0
+               for value in (position_tolerance, rotation_tolerance)):
+            raise ValueError("IK tolerances must be positive and finite")
         rng = np.random.default_rng(0) if rng is None else rng
         desired = np.array([
             [math.cos(yaw), -math.sin(yaw), 0],
@@ -916,7 +926,8 @@ class BeamSimulation:
                 magnitude = np.linalg.norm(quaternion[1:])
                 error_rot = quaternion[1:] * (2 * math.atan2(magnitude, quaternion[0]) / max(magnitude, 1e-9))
                 best = min(best, float(np.linalg.norm(error_pos)))
-                if np.linalg.norm(error_pos) < .001 and np.linalg.norm(error_rot) < .10:
+                if (np.linalg.norm(error_pos) < position_tolerance
+                        and np.linalg.norm(error_rot) < rotation_tolerance):
                     return self.scratch.qpos[self.qadr].copy()
                 jac_pos, jac_rot = np.zeros((3, self.model.nv)), np.zeros((3, self.model.nv))
                 mujoco.mj_jacSite(self.model, self.scratch, jac_pos, jac_rot, self.site)

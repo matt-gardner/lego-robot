@@ -21,6 +21,11 @@ These are sampling categories, not approval gates. Keep easy anchors while
 expanding configurations. Describe complexity by part mix/count, packing,
 pile height, visible target fraction, local neighbors, obstruction, approach
 clearance and part/gripper size ratio. Count alone is not difficulty.
+Separated proposals retain at least 4 cm center spacing for small parts rather
+than scaling down to LEGO size alone, and center partially filled grids on the
+scene. This distinguishes easy hand-clearance anchors from touching clusters.
+Plan version v4 binds the changed proposal recipe; historical v3 plans stay
+unchanged. The robot home is centered on the scene rather than 10 cm to its side.
 
 SFT is one command at a time: grasp, push, place and view. Generate meaningful
 alternate target/destination commands from the same saved scene for paired
@@ -37,30 +42,64 @@ ID and SHA, category, task, object instance/part IDs, initial placement proposal
 and two command choices. Initial positions are proposals for physical settling,
 not claims of collision-free scenes or accepted demonstrations.
 
-Only a future scene/expert adapter can turn a plan into demonstrations. Its
-saved settled state must include every dynamic object and velocity, robot
-state, labels, camera/renderer identity and physics fingerprints. Namespace
+The catalog-backed scene/expert adapter saves every dynamic object and velocity,
+robot state, labels, camera/renderer identity and physics fingerprints. Namespace
 part instances/assets and keep source part identity separate from instance ID.
-The current four-object BeamSimulation is not an arbitrary-pile adapter.
+Legacy four-object BeamSimulation resets are not valid for catalog scenes.
 
 `so101.lego_scene.assemble_scene` now imports catalog MJCF templates into an
 explicit-radian caller-provided base XML. It namespaces each instance's
 body/joint/geometry/material/mesh identifiers, resolves only declared asset
-paths, rechecks hashes, and rejects template global settings. It does not yet
-provide a robot expert or rendered training episodes.
+paths, rechecks hashes, and rejects template global settings.
 
 `settle_scene` compiles and simulates the proposal, rejects non-finite physics,
 MuJoCo warnings and excessive interval penetration, and requires stationary
 objects. It returns all-object metadata plus a full MuJoCo integration-state
 snapshot bound to the XML hash and physics version. `restore_scene` validates
 the snapshot before modifying the destination state, including warm-start and
-control state. Settling timeouts/velocity/contact tolerances are physical
+control state. A runtime-model hash additionally binds mesh geometry, contact
+settings, actuator dynamics, joint properties and solver options. Settling
+timeouts/velocity/contact tolerances are physical
 acceptance parameters, not daily generation quotas.
 
-The adapter has CPU tests using synthetic fixtures only: dynamic object/asset
-namespacing, actual settling, identical next-step recovery, corrupted catalogs
-and invalid physics rejection. Real catalog/robot contact qualification remains
-separate; these tests do not create or qualify real training data.
+Corrected real catalog entries have also exercised tabletop settling and exact
+next-step restoration. These scene diagnostics do not establish robot grasping,
+paired SFT qualification, camera calibration or successful transfer.
+
+`so101.catalog_sim.CatalogSimulation` inserts catalog objects into the SO101
+model, initializes robot controls and settles the scene. It reuses the robot
+kinematics, command labels and strict physical checks without the legacy object
+registry/reset. Catalog grasp proposals use actual part dimensions/orientation
+and request 0.2 mm / 0.01 rad IK precision, leaving legacy defaults unchanged,
+and preflight both equivalent parallel-jaw headings before recording any action;
+this is planning, not a failed-action retry. The robot table uses `solref=.001 1`,
+`solimp=.99 .999 .0001`, priority 1; catalog part contact settings are preserved.
+Acceptance still requires at most 1 mm general and 0.3 mm table penetration,
+at least 5 cm target lift and ten consecutive two-jaw retention observations.
+Tabletop catalog qualification with a different table/contact profile is not
+silently claimed to be identical to robot-scene qualification.
+
+`so101.collect_catalog_sim` records a single scene pair with synchronized wrist
+and external pre-action images, actions and entity labels. `complete` requires
+both commands to pass independently from the same saved state; one successful
+command is not a qualified pair. Source hashes, exact compiled `model.mjb`,
+`model.xml`, scene plan and integration state are archived inside each episode,
+using contained hardlinks within the new attempt directory. Existing
+`EpisodeStorage` can therefore retain all scene/source artifacts alongside
+original JPEGs without parent-directory media addressing. Compiled replay needs
+the recorded MuJoCo version and validated model/state hashes; legacy playback
+must not interpret `simulation_backend=catalog-v1` as a legacy reset recipe.
+
+The one-pair CLI is not a continuous producer, an immutable release publisher,
+an audit service or a claim of full SFT reader qualification. Those interfaces
+remain separate implementation work. Example CPU qualification invocation:
+
+```sh
+MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa LP_NUM_THREADS=1 PYTHONPATH=src \
+  python -m so101.collect_catalog_sim --catalog /catalog/catalog.json \
+  --output /new/attempt --seed 20261108 --sequence 0 --category separated \
+  --task grasp --object-count 2 --part-id 3005
+```
 
 Preparation CLI (prints a proposal only, does not run physics or write data):
 
@@ -95,6 +134,10 @@ Recovery SFT uses the saved post-failure state, fresh observation/history and
 only successful corrective action targets. Never allow target horizons or
 previous-action context to import the failed prefix. Numerically invalid or
 interpenetrating states are not automatically useful recovery examples.
+`use_recovery_start` validates and restores an exact failure snapshot, preserves
+the parent scene family, assigns distinct child identities and refreshes actual
+object orientations. Each corrective recording starts with four new neutral-hold
+observation frames. Parent rows/actions are never copied into the child.
 
 For each consecutive ten accepted examples in each category, select one
 randomly for this worker's rendered wrist/external temporal visual audit.
