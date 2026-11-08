@@ -552,13 +552,15 @@ aggregates include both, including their different applied assistance levels.
 ### Data browser and task difficulty
 
 The read-only browser is at **http://127.0.0.1:8765/data**, linked from the
-dashboard. Filter source examples, recent policy trajectories, and exact
-source/assistance entries in the easy bucket by task, difficulty, usage and
-policy outcome. It joins logged source IDs to the current frozen split and
-the saved solved bucket. Discarded groups count as training attempts; passing
-an expert demonstration is not a policy pass. Easy-bucket membership means a
-historical perfect group at the displayed assistance, not unassisted mastery.
-Legacy examples remain explicitly **unrated**.
+dashboard. Browse source demonstrations independently of training runs, filtering
+by task, scene difficulty, object count, demonstration result and quality.
+Collection references without locally available episode metadata are counted and
+explicitly disclosed, not presented as playable examples. Legacy examples remain
+**unrated**. Select a training context after opening an item to see that run's
+split, usage, policy outcomes and retained trajectory recordings. Training
+filters are not exposed at the top level. Discarded groups count as training
+attempts; expert success is not a policy pass, and historical solved-bucket
+membership is not unassisted mastery.
 
 `collect_difficulty_sim.py` generates four authored levels (0 easy, 1 standard,
 2 hard, 3 challenge) for each task using the procedural physics expert, without

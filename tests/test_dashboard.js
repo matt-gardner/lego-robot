@@ -117,8 +117,9 @@ test("data browser prefixes catalog requests and image/movie endpoints", async (
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/so101/dashboard/data.js"), "utf8"), context);
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(requests, ["/lego-robot/api/runs"]);
-  elements.get("data-run").value = "run/id";
+  assert.deepEqual(requests, ["/lego-robot/api/runs",
+    "/lego-robot/api/data/all?offset=0&limit=24&view=examples&task=all&difficulty=all&object_count=all&expert_outcome=all&expert_acceptance=all"]);
+  vm.runInContext('trainingContext = "run/id"', context);
   assert.equal(vm.runInContext('endpoint({image: "overview"})', context),
     "/lego-robot/api/data/run%2Fid?image=overview");
   assert.equal(vm.runInContext('endpoint({movie: "prepare"})', context),

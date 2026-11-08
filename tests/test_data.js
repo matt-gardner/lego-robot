@@ -77,6 +77,25 @@ test("JSON renderer errors retain their meaningful message", async () => {
   await assert.rejects(p.run('get("/test")'), /180-second limit/);
 });
 
+test("top-level browsing uses dataset features without a training run", async () => {
+  const p = page(), routes = [];
+  p.context.document.createElement = () => ({value: "", textContent: ""});
+  for (const id of ["task", "difficulty", "object_count", "expert_outcome", "expert_acceptance"]) {
+    p.element(id).value = "all";
+  }
+  p.element("task").value = "push";
+  p.element("data-run").value = "irrelevant-training-run";
+  p.context.fetch = async route => {
+    routes.push(route);
+    return response(200, {items: [], total: 0, facets: {}});
+  };
+  await p.run("load()");
+  assert.match(routes[0], /^\/lego-robot\/api\/data\/all\?/);
+  assert.match(routes[0], /task=push/);
+  assert.doesNotMatch(routes[0], /[?&](usage|bucket|outcome)=|irrelevant-training-run/);
+  assert.equal(p.element("data-count").textContent, "0 matching examples");
+});
+
 test("preparation polls pending JSON before loading the exact selected recording", async () => {
   const p = page();
   const routes = [];

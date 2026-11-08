@@ -70,6 +70,36 @@ def test_source_usage_outcomes_difficulty_and_exact_assistance_bucket(dataset):
     assert len(detail["source_history"]) == 3
 
 
+def test_data_first_browser_without_any_training_log(dataset):
+    root, path, _, a, b, c = dataset
+    path.unlink()
+    browser = TrainingDataBrowser(root)
+    result = browser.list(None, {})
+    assert {row["source"] for row in result["items"]} == {a, b, c}
+    assert all(not row["used"] and row["split"] == "not recorded" for row in result["items"])
+    assert browser.list(None, {"expert_outcome": "failed"})["items"][0]["source"] == c
+    assert browser.list(None, {"task": "view"})["items"][0]["source"] == b
+    assert browser.list(None, {"difficulty": "3"})["items"][0]["source"] == c
+    assert browser.detail(None, "examples", identifier(a))["metadata"]["task"] == "grasp"
+    assert browser.media(None, "examples", identifier(a), "initial").read_bytes() == b"jpeg"
+    (root / b / "episode.json").unlink()
+    browser.cache.clear()
+    assert browser.list(None, {})["unavailable_source_count"] == 1
+    assert browser.list(None, {})["total"] == 2
+    with pytest.raises(ValueError, match="require a training run"):
+        browser.list(None, {"view": "rollouts"})
+    server = make_server(root / "outputs", "127.0.0.1", 0, "/lego-robot")
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.server_port}/lego-robot/api/data/all?task=grasp") as response:
+            assert json.load(response)["items"][0]["source"] == a
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join()
+
+
 def test_source_generation_order_is_not_policy_usage_and_preserves_filters(dataset):
     root, path, _, a, b, c = dataset
     for source, timestamp in [

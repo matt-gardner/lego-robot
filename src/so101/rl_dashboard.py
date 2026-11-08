@@ -492,8 +492,9 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                     self.respond(500, {"error": str(error)})
             elif path.startswith("/api/data/"):
                 query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
-                log_path = store.path_for(path.removeprefix("/api/data/"))
-                if log_path is None:
+                dataset_view = path == "/api/data/all"
+                log_path = None if dataset_view else store.path_for(path.removeprefix("/api/data/"))
+                if log_path is None and not dataset_view:
                     self.respond(404, {"error": "Run not found"})
                     return
                 try:

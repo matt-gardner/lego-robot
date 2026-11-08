@@ -9,24 +9,23 @@
   <script src="/data.js" defer></script>
 </head>
 <body>
-  <header>
+  <header class="data-header">
     <div><span class="eyebrow">SO-101 / DATA</span><h1>Data browser<span class="accent">.</span></h1></div>
-    <a href="/">Training dashboard</a>
-    <a href="/lego">LEGO catalogs and generations</a>
+    <nav class="data-nav" aria-label="Dashboard navigation">
+      <a href="/lego">Parts</a><a href="/data" aria-current="page">Data</a>
+      <a href="/examples">Recorded examples</a><a href="/">Training</a>
+    </nav>
   </header>
   <main class="data-main">
     <div id="error" role="alert" hidden></div>
     <div class="data-filters">
-      <label>Run<select id="data-run" aria-label="Training run"></select></label>
-      <label>Browse<select id="view"><option value="examples">Source examples</option><option value="rollouts">Recent policy trajectories</option><option value="solved">Easy / solved bucket</option></select></label>
-      <label>Category<select id="task"><option value="all">All tasks</option><option>grasp</option><option>view</option><option>push</option><option>place</option></select></label>
+      <label>Task<select id="task"><option value="all">All tasks</option><option value="grasp">Grasp</option><option value="view">Look at target</option><option value="push">Push</option><option value="place">Place</option></select></label>
       <label>Scene difficulty<select id="difficulty"><option value="all">All difficulties</option><option value="0">0 - Easy</option><option value="1">1 - Standard</option><option value="2">2 - Hard</option><option value="3">3 - Challenge</option><option value="unrated">Unrated legacy</option></select></label>
-      <label>Usage<select id="usage"><option value="all">All examples</option><option value="used">Sampled in training</option><option value="unused">Not sampled in training</option><option value="validation">Frozen validation membership</option></select></label>
-      <label>Policy outcomes<select id="outcome"><option value="all">All outcomes</option><option value="passed">Has a policy pass</option><option value="failed">Has a policy failure</option></select></label>
-      <label>Bucket<select id="bucket"><option value="all">Any bucket</option><option value="solved">In easy / solved bucket</option></select></label>
-      <label>Search<input id="data-search" type="search" placeholder="Target, seed or source"></label>
+      <label>Objects in scene<select id="object_count"><option value="all">Any number</option></select></label>
+      <label>Demonstration result<select id="expert_outcome"><option value="all">All results</option></select></label>
+      <label>Demonstration quality<select id="expert_acceptance"><option value="all">All qualities</option></select></label>
     </div>
-    <p class="hint">Scene difficulty is distinct from expert assistance. Legacy sources are unrated, not retroactively called easy. Newly generated scenes have not been added to the paused training run. SO-101 has a fixed base: search means wrist-camera motion, not mobile navigation.</p>
+    <p class="hint">Browse source demonstrations by their data features, independently of training runs. Unrated means difficulty was not recorded. Training usage and policy trajectories are available inside each example.</p>
     <p id="mode-note" class="context"></p>
     <div class="section-title"><h2 id="data-count">Loading examples</h2><button id="refresh-data">Refresh</button></div>
     <div id="data-grid" class="data-grid"></div>
@@ -35,6 +34,7 @@
   <dialog id="detail">
     <div class="section-title"><h2 id="detail-title"></h2><button id="close-detail" aria-label="Close details">Close</button></div>
     <p id="detail-kind" class="context"></p>
+    <label>Training context<select id="data-run" aria-label="Training context for this example"><option value="">Source data only</option></select></label>
     <nav class="trajectory-navigation" aria-label="Recorded trajectory navigation">
       <button id="previous-trajectory" aria-label="Previous training trajectory">&larr; Previous</button>
       <button id="source-expert">Source expert</button>

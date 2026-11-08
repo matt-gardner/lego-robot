@@ -6,12 +6,8 @@ let detailRequest = 0, previousTrajectory = null, nextTrajectory = null;
 let moviePreparation = null;
 let wristPlayback = null, playbackWanted = false;
 const limit = 24;
-const filters = ["view", "task", "difficulty", "usage", "outcome", "bucket"];
-const notes = {
-  examples: "Newest recorded generation dates first; undated legacy examples follow in stable identity order. Overview and wrist previews are source expert demonstrations, NOT policy rollouts. Policy usage includes discarded groups; expert success and policy success are separate.",
-  rollouts: "Newest policy rollout summaries first. Historical runs did not record actions/images. Future runs record the first rollout per training group, with sparse actual wrist frames and bounded retention; other rollouts remain summary-only.",
-  solved: "One entry per source AND exact assistance level that previously passed every rollout. Membership is historical, not proof it remains solved or works unassisted. Counts below are for that assistance level.",
-};
+let trainingContext = "";
+const filters = ["task", "difficulty", "object_count", "expert_outcome", "expert_acceptance"];
 async function get(url) {
   const response = await fetch(url);
   if (!response.headers.get("content-type")?.includes("application/json")) {
@@ -27,22 +23,22 @@ async function get(url) {
   return body;
 }
 function error(message) { $("error").textContent = message; $("error").hidden = !message; }
-function endpoint(params) {
-  return `${basePath}/api/data/${encodeURIComponent($("data-run").value)}?${new URLSearchParams(params)}`;
+function endpoint(params, run = trainingContext) {
+  return `${basePath}/api/data/${run ? encodeURIComponent(run) : "all"}?${new URLSearchParams(params)}`;
 }
 function text(tag, value) { const node = document.createElement(tag); node.textContent = value; return node; }
 const percent = value => `${Math.round(100 * value)}%`;
 function image(item, view, frame) { return endpoint({view, item: item.id, image: frame}); }
 function preview(item, view, frame, caption) {
   const figure = document.createElement("figure"), img = document.createElement("img");
-  img.loading = "lazy"; img.alt = caption; img.src = image(item, view, frame);
+  img.loading = "lazy"; img.alt = caption; img.src = endpoint({view, item: item.id, image: frame}, "");
   img.addEventListener("error", () => { img.removeAttribute("src"); img.alt = `${caption}: unavailable`; }, {once: true});
   figure.append(img, text("figcaption", caption)); return figure;
 }
 function renderCard(item, view) {
   const card = document.createElement("button"); card.className = "data-example";
   const difficulty = item.difficulty ? `${item.difficulty.level} - ${item.difficulty.name}` : "Unrated legacy";
-  card.append(text("h3", `${item.task} / ${item.target}`), text("p", `${difficulty} | ${item.split}`));
+  card.append(text("h3", `${item.task} / ${item.target}`), text("p", `${difficulty} | ${item.object_count} objects`));
   const images = document.createElement("div"); images.className = "previews";
   if (view === "rollouts" && item.evidence_status === "available") {
     images.append(preview(item, view, "0", "Actual policy wrist frame"));
@@ -60,27 +56,40 @@ function renderCard(item, view) {
     card.append(text("p", `Step ${item.step} | ${item.success ? "PASS" : "FAIL"} | ${item.bucket} | assistance ${percent(item.assistance)}${item.discarded ? item.jerk_regularizer_applied ? " | task-policy group skipped; jerk loss applied" : " | discarded group" : ""}`));
     card.append(text("p", `Jerk ${Number(item.rms_jerk).toFixed(3)} | ${item.steps} policy steps | ${item.evidence_status === "available" ? "Recorded policy trajectory" : item.evidence_status === "expired" ? "Recording expired; summary retained" : "Summary only: no policy images/actions recorded"}`));
   } else {
-    card.append(text("p", `Expert: ${item.expert_outcome} | Policy: ${item.passed}/${item.rollouts} passed | ${item.failed} failed`));
-    if (item.expert_acceptance) card.append(text("p", `Expert acceptance: ${item.expert_acceptance}`));
-    card.append(text("p", view === "solved" ? `Perfect at step ${item.solved_at_step} with ${percent(item.assistance)} assistance`
-      : `${item.used ? `Last sampled at step ${item.last_step}` : "Not sampled in this training log"} | ${item.solved_entries.length} solved assistance entries`));
+    card.append(text("p", `Demonstration: ${item.expert_outcome}`));
+    if (item.expert_acceptance) card.append(text("p", item.expert_acceptance === "single-pass-v1"
+      ? "Clean single-pass demonstration" : "Legacy demonstration (may include retries)"));
     if (item.difficulty) card.append(text("p", item.difficulty.factors.join("; ")));
   }
-  card.append(text("p", item.source));
-  card.addEventListener("click", () => showDetail(item, view).catch(e => error(e.message)));
+  card.addEventListener("click", () => {
+    trainingContext = ""; $("data-run").value = "";
+    showDetail(item, view).catch(e => error(e.message));
+  });
   return card;
 }
 async function load() {
-  if (!$("data-run").value) return;
-  const version = ++request, params = {offset, limit, search: $("data-search").value};
-  filters.forEach(id => { params[id] = $(id).value; });
-  error(""); $("mode-note").textContent = notes[params.view];
+  const version = ++request, params = {offset, limit, view: "examples"};
+  filters.forEach(id => { params[id] = $(id).value || "all"; });
+  error(""); $("mode-note").textContent = "Newest dated examples first; legacy examples with no generation date follow. Previews show source demonstrations, not policy rollouts.";
   try {
-    const result = await get(endpoint(params));
+    const result = await get(endpoint(params, ""));
     if (version !== request) return;
     total = result.total;
     $("data-grid").replaceChildren(...result.items.map(item => renderCard(item, params.view)));
-    $("data-count").textContent = `${total.toLocaleString()} matching ${params.view} / step ${result.last_step ?? "none"}`;
+    $("data-count").textContent = `${total.toLocaleString()} matching examples`;
+    if (result.unavailable_source_count) $("mode-note").textContent +=
+      ` ${result.unavailable_source_count.toLocaleString()} catalog references have no locally available episode metadata and are not shown.`;
+    const labels = {"single-pass-v1": "Clean single-pass demonstration",
+      "legacy final-success (may include retries)": "Legacy demonstration (may include retries)",
+      success: "Successful", failed: "Failed", unknown: "Not recorded"};
+    for (const field of ["object_count", "expert_outcome", "expert_acceptance"]) {
+      const selected = $(field).value || "all";
+      $(field).replaceChildren(...[["all", {object_count: "Any number", expert_outcome: "All results", expert_acceptance: "All qualities"}[field]],
+        ...(result.facets?.[field] || []).map(value => [value, labels[value] || value])].map(([value, label]) => {
+          const option = text("option", label); option.value = value; return option;
+        }));
+      $(field).value = selected;
+    }
     $("page-status").textContent = total ? `${offset + 1}-${Math.min(offset + limit, total)} of ${total.toLocaleString()}` : "No matches";
     $("previous").disabled = offset === 0;
     $("next").disabled = offset + limit >= total;
@@ -285,7 +294,8 @@ async function showDetail(item, view) {
     ? result.evidence_status === "available" ? `ACTUAL POLICY ROLLOUT | Step ${item.step} | assistance ${percent(item.assistance)} | ${result.scope}`
       : result.evidence_status === "expired" ? "POLICY SUMMARY ONLY: recording expired under retention limit."
         : "POLICY SUMMARY ONLY: this historical rollout did not record images or actions."
-    : "SOURCE EXPERT DEMONSTRATION - not a learned-policy trajectory";
+    : trainingContext ? "SOURCE DEMONSTRATION - training history below is for the selected run."
+      : "SOURCE DEMONSTRATION - select a training context below to inspect run usage and policy recordings.";
   $("frame-label").hidden = !result.frames.length;
   $("detail-preview").hidden = !result.frames.length;
   $("detail-image").hidden = !result.frames.length;
@@ -306,10 +316,9 @@ async function showDetail(item, view) {
   if (result.movie_available) prepareMovie();
 }
 filters.forEach(id => $(id).addEventListener("change", () => { offset = 0; load(); }));
-$("data-run").addEventListener("change", () => { $("detail").close(); ++detailRequest; stopMovie(); offset = 0; load(); });
-let searchTimer;
-$("data-search").addEventListener("input", () => {
-  clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset = 0; load(); }, 250);
+$("data-run").addEventListener("change", () => {
+  trainingContext = $("data-run").value;
+  if (detail) showDetail({id: detail.example_id, task: detail.task, target: detail.target}, "examples").catch(e => error(e.message));
 });
 $("previous").addEventListener("click", () => { offset = Math.max(0, offset - limit); load(); });
 $("next").addEventListener("click", () => { offset += limit; load(); });
@@ -362,8 +371,5 @@ get(`${basePath}/api/runs`).then(result => {
   for (const run of runs) {
     const option = text("option", run.name); option.value = run.id; $("data-run").append(option);
   }
-  const canonical = runs.find(run => !run.archived && run.path.includes("trajectory_rl_all_assisted_lr1e4/"));
-  if (canonical) $("data-run").value = canonical.id;
-  if (!runs.length) throw new Error("No training runs found");
-  return load();
 }).catch(e => error(e.message));
+load();

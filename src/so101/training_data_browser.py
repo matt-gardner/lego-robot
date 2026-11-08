@@ -33,22 +33,24 @@ class TrainingDataBrowser:
             raise ValueError("Source is outside simulation data")
         return path
 
-    def index(self, log_path: Path) -> dict:
+    def index(self, log_path: Path | None) -> dict:
         with self.lock:
-            log = json.loads(log_path.read_text())
-            collections = ([] if log.get("kind") == "sft" else
+            log = json.loads(log_path.read_text()) if log_path else {}
+            collections = (sorted(self.data_root.glob("*/collection.json")) if log_path is None else
+                           [] if log.get("kind") == "sft" else
                            sorted(self.data_root.glob("task_difficulty*/collection.json")))
             previews = sorted(self.data_root.glob("physical_preview*/collection.json"))
             collection = log.get("run_config", {}).get("collection")
             collection_path = self.source_path(collection) / "collection.json" if collection else None
-            split_path = log_path.parent / "data_split.json"
-            files = [log_path, *collections, *previews, *([collection_path] if collection_path else []),
-                     *([split_path] if split_path.exists() else [])]
+            split_path = log_path.parent / "data_split.json" if log_path else None
+            files = [*([log_path] if log_path else []), *collections, *previews,
+                     *([collection_path] if collection_path else []),
+                     *([split_path] if split_path and split_path.exists() else [])]
             revision = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
             cached = self.cache.get(log_path)
             if cached and cached[0] == revision and time.monotonic() - cached[1] < 30:
                 return cached[2]
-            split = json.loads(split_path.read_text()) if split_path.exists() else {}
+            split = json.loads(split_path.read_text()) if split_path and split_path.exists() else {}
             train = {source for values in split.get("training", {}).values() for source in values}
             validation = set(split.get("validation", []))
             sources = train | validation
@@ -62,6 +64,7 @@ class TrainingDataBrowser:
             for path in collections:
                 report = json.loads(path.read_text())
                 sources.update(row["source"] for row in report.get("attempts", []) if row.get("source"))
+                sources.update(report.get("successful_episodes", []))
             groups = [(step["step"], index, group)
                       for step in log.get("steps", [])
                       for index, group in enumerate(step.get("groups", []))
@@ -71,7 +74,11 @@ class TrainingDataBrowser:
             sources.update(item["source"] for item in solved)
             examples = {}
             by_source = {}
+            unavailable_sources = []
             for source in sorted(sources):
+                if log_path is None and not (self.source_path(source) / "episode.json").is_file():
+                    unavailable_sources.append(source)
+                    continue
                 metadata = json.loads((self.source_path(source) / "episode.json").read_text())
                 difficulty = metadata.get("difficulty")
                 row = {
@@ -81,11 +88,13 @@ class TrainingDataBrowser:
                     "destination": metadata.get("destination"), "seed": metadata["initial"]["seed"],
                     "difficulty": difficulty, "difficulty_level": difficulty["level"] if difficulty else "unrated",
                     "expert_outcome": metadata.get("outcome", "unknown"),
+                    "object_count": len(metadata["initial"].get("objects", {})) or "not recorded",
                     "expert_acceptance": (
                         "single-pass-v1" if metadata["initial"].get("expert_acceptance_version") == 1
                         else "legacy final-success (may include retries)"
                     ),
-                    "split": "validation" if source in validation else "training" if source in train else "not-in-run",
+                    "split": (metadata.get("split", "not recorded") if log_path is None else
+                              "validation" if source in validation else "training" if source in train else "not-in-run"),
                     "used": False, "rollouts": 0, "passed": 0, "failed": 0,
                     "last_step": None, "solved_entries": [], "history": [],
                 }
@@ -135,6 +144,7 @@ class TrainingDataBrowser:
                              "last_step": history[-1]["step"] if history else None}
             result = {"examples": examples, "rollouts": rollouts, "solved": easy,
                       "source_rollouts": source_rollouts,
+                      "unavailable_source_count": len(unavailable_sources),
                       "last_step": log.get("steps", [{}])[-1].get("step") if log.get("steps") else None}
             self.cache[log_path] = (revision, time.monotonic(), result)
             if len(self.cache) > 2:
@@ -142,10 +152,12 @@ class TrainingDataBrowser:
                 del self.cache[oldest]
             return result
 
-    def evidence_path(self, log_path: Path, row: dict) -> Path | None:
+    def evidence_path(self, log_path: Path | None, row: dict) -> Path | None:
         reference = row.get("evidence")
         if not reference:
             return None
+        if log_path is None:
+            raise ValueError("Policy evidence requires a training run")
         path = (log_path.parent / reference).resolve()
         root = (log_path.parent / "rollouts").resolve()
         if (not root.is_relative_to(log_path.parent.resolve())
@@ -153,11 +165,13 @@ class TrainingDataBrowser:
             raise ValueError("Invalid rollout evidence reference")
         return path
 
-    def list(self, log_path: Path, query: dict) -> dict:
+    def list(self, log_path: Path | None, query: dict) -> dict:
         index = self.index(log_path)
         view = query.get("view", "examples")
         if view not in ("examples", "rollouts", "solved"):
             raise ValueError("Invalid data view")
+        if log_path is None and view != "examples":
+            raise ValueError("Policy trajectories require a training run")
         allowed = {
             "task": ("all", "grasp", "view", "push", "place"),
             "difficulty": ("all", "unrated", "0", "1", "2", "3"),
@@ -176,6 +190,9 @@ class TrainingDataBrowser:
             if query.get("task", "all") not in ("all", row["task"]):
                 continue
             if query.get("difficulty", "all") not in ("all", str(row["difficulty_level"])):
+                continue
+            if any(query.get(field, "all") not in ("all", str(row.get(field, "")))
+                   for field in ("expert_outcome", "expert_acceptance", "object_count")):
                 continue
             usage = query.get("usage", "all")
             if (usage == "used" and not row["used"] or usage == "unused" and row["used"]
@@ -206,10 +223,14 @@ class TrainingDataBrowser:
         return {
             "items": page, "total": len(rows), "offset": offset, "limit": limit,
             "last_step": index["last_step"],
+            "unavailable_source_count": index["unavailable_source_count"],
             "counts": {name: len(index[name]) for name in ("examples", "rollouts", "solved")},
+            "facets": {field: sorted({str(row.get(field, "not recorded"))
+                                     for row in index["examples"].values()})
+                       for field in ("expert_outcome", "expert_acceptance", "object_count")},
         }
 
-    def detail(self, log_path: Path, view: str, item_id: str) -> dict:
+    def detail(self, log_path: Path | None, view: str, item_id: str) -> dict:
         index = self.index(log_path)
         if view not in ("examples", "rollouts", "solved") or item_id not in index[view]:
             raise FileNotFoundError("Example or rollout not found")
@@ -251,7 +272,7 @@ class TrainingDataBrowser:
                        else "reconstructed from recorded commands using the legacy scene "
                             "(not original overview footage or corrected physics).")}
 
-    def movie_request(self, log_path: Path, view: str, item_id: str) -> tuple[Path, Path | None, Path]:
+    def movie_request(self, log_path: Path | None, view: str, item_id: str) -> tuple[Path, Path | None, Path]:
         index = self.index(log_path)
         if view not in ("examples", "rollouts", "solved") or item_id not in index[view]:
             raise FileNotFoundError("Example or rollout not found")
@@ -272,7 +293,7 @@ class TrainingDataBrowser:
         target = cache / f"{identifier(json.dumps(revision))}.mp4"
         return source, evidence, target
 
-    def prepare_movie(self, log_path: Path, view: str, item_id: str) -> dict:
+    def prepare_movie(self, log_path: Path | None, view: str, item_id: str) -> dict:
         """Poll one bounded render without holding a gateway request open."""
         _, _, target = self.movie_request(log_path, view, item_id)
         with self.preparation_lock:
@@ -302,7 +323,7 @@ class TrainingDataBrowser:
             threading.Thread(target=prepare, name="data-browser-playback", daemon=True).start()
             return {"ready": False, "status": "preparing"}
 
-    def movie(self, log_path: Path, view: str, item_id: str) -> Path:
+    def movie(self, log_path: Path | None, view: str, item_id: str) -> Path:
         source, evidence, target = self.movie_request(log_path, view, item_id)
         cache = target.parent
         with self.movie_lock:
@@ -329,7 +350,7 @@ class TrainingDataBrowser:
                 expired.unlink()
             return target
 
-    def media(self, log_path: Path, view: str, item_id: str, image: str) -> Path:
+    def media(self, log_path: Path | None, view: str, item_id: str, image: str) -> Path:
         index = self.index(log_path)
         if view not in ("examples", "rollouts", "solved") or item_id not in index[view]:
             raise FileNotFoundError("Example or rollout not found")
