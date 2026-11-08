@@ -230,6 +230,9 @@ keeps `status`/`stored_status` historical and exposes `effective_status` and
 `qualification_status` separately; an invalidation takes precedence over
 supersession. No matching notice means `not_invalidated`, not a new qualification
 or robot-competence claim. Notice byte hashes and reasons appear in release details.
+Release discovery discards each catalog's full payload before reading the next;
+item browsing loads only the selected catalog. Catalog API requests are serialized
+to avoid multiplying the full-catalog working set within the dashboard service.
 For example:
 
 ```sh

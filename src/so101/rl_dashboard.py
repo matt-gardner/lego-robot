@@ -468,11 +468,12 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
             if path == "/api/lego":
                 query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
                 try:
-                    if "frame" in query:
-                        body, content_type = lego_browser.media(query)
-                        self.send_body(200, body, content_type)
-                    else:
-                        self.respond(200, lego_browser.list(query))
+                    with lego_browser.lock:
+                        if "frame" in query:
+                            body, content_type = lego_browser.media(query)
+                            self.send_body(200, body, content_type)
+                        else:
+                            self.respond(200, lego_browser.list(query))
                 except FileNotFoundError as error:
                     self.respond(404, {"error": str(error)})
                 except (ValueError, KeyError, TypeError) as error:

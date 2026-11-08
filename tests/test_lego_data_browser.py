@@ -2,6 +2,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import tracemalloc
 from urllib.request import urlopen
 
 import pytest
@@ -165,6 +166,35 @@ def test_malformed_notice_fails_instead_of_hiding_invalidation(tmp_path):
     (root / "broken.json").write_text('{"schema_version":1}')
     with pytest.raises(ValueError, match="qualification notice"):
         LegoDataBrowser(tmp_path).list({})
+
+
+def test_discovery_memory_does_not_retain_historical_payloads(tmp_path):
+    payload_size = 512 * 1024
+    for index in range(8):
+        path = catalog(tmp_path, f"v{index}")
+        metadata = json.loads(path.read_text())
+        metadata["parts"][0]["evidence"] = "x" * payload_size
+        path.write_text(json.dumps(metadata))
+    tracemalloc.start()
+    try:
+        releases = LegoDataBrowser(tmp_path).releases()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(releases) == 8
+    assert all("metadata" not in release for release in releases.values())
+    assert peak < 5 * payload_size
+
+
+def test_selected_release_does_not_parse_other_catalogs(tmp_path):
+    catalog(tmp_path)
+    other = catalog(tmp_path, "v2")
+    browser = LegoDataBrowser(tmp_path)
+    selected = next(row["id"] for row in browser.list({})["releases"] if row["version"] == "v1")
+    other.write_text("malformed unrelated catalog")
+    assert browser.list({"release": selected})["total"] == 2
+    with pytest.raises(ValueError):
+        browser.list({})
 
 
 def test_dashboard_prefix_and_lego_api(tmp_path):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from pathlib import Path
 
 from so101.episode_storage import EpisodeStorage
@@ -15,6 +16,7 @@ class LegoDataBrowser:
         self.root = workspace.resolve() / "data"
         self.catalog_root = catalog_root.absolute() if catalog_root else self.root
         self.fingerprints: dict[Path, tuple[tuple[int, int, int, int], str]] = {}
+        self.lock = threading.RLock()
 
     def artifact_hash(self, path: Path) -> str:
         stat = path.stat()
@@ -44,7 +46,7 @@ class LegoDataBrowser:
             raise ValueError("Path outside dashboard data root")
         return path
 
-    def releases(self) -> dict[str, dict]:
+    def releases(self, selected: str | None = None) -> dict[str, dict]:
         releases = {}
         notices = self.notices()
         for pattern, kind in (("**/catalog.json", "parts"), ("**/*.sqlite", "examples")):
@@ -53,6 +55,11 @@ class LegoDataBrowser:
                 if any(component.startswith(".") for component in path.relative_to(root).parts):
                     continue
                 self.contained(path, root)
+                artifact_digest = self.artifact_hash(path)
+                relative = path.relative_to(root).as_posix()
+                key = hashlib.sha256(f"{kind}:{relative}:{artifact_digest}".encode()).hexdigest()
+                if selected is not None and key != selected:
+                    continue
                 if kind == "parts":
                     content = path.read_bytes()
                     metadata = json.loads(content)
@@ -69,20 +76,20 @@ class LegoDataBrowser:
                         ).fetchone()[0]
                     version = metadata.get("release_id", path.stem)
                 digest = hashlib.sha256(content).hexdigest()
-                artifact_digest = self.artifact_hash(path)
-                relative = path.relative_to(root).as_posix()
-                key = hashlib.sha256(f"{kind}:{relative}:{artifact_digest}".encode()).hexdigest()
                 releases[key] = {
                     "id": key, "kind": kind, "version": version,
                     "path": relative, "catalog_sha256": digest,
                     "artifact_sha256": artifact_digest,
-                    "metadata": metadata,
                     "qualification_notices": [
                         notice for notice in notices if kind == "parts"
                         and notice["catalog_id"] == version
                         and notice["catalog_sha256"] == digest
                     ],
                 }
+                if selected is not None:
+                    releases[key]["metadata"] = metadata
+                    return releases
+                del metadata, content
         return releases
 
     def notices(self) -> list[dict]:
@@ -117,7 +124,7 @@ class LegoDataBrowser:
         return "superseded" if "superseded" in statuses else "not_invalidated"
 
     def release(self, release_id: str) -> dict:
-        release = self.releases().get(release_id)
+        release = self.releases(release_id).get(release_id)
         if release is None:
             raise FileNotFoundError("Catalog or immutable release not found")
         return release
