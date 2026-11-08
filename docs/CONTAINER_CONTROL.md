@@ -86,8 +86,25 @@ that a mismatched job digest fails before running anything. The broker checks
 template AMI, bootstrap hash, instance type, bounded one-time Spot pricing,
 IMDSv2 with instance metadata tags enabled, OS-initiated shutdown set to
 `terminate`, encrypted ephemeral disks, and disk-size policy before allocation.
-This project does not yet include a qualified AWS worker bootstrap or
-SSM documents. Do not substitute the Azure worker.
+The AWS bootstrap and SSM documents are implemented; the original step304
+continuation has been qualified on L4. That qualification is not approval for
+a fresh sweep cell. Do not substitute the Azure worker.
+
+### Fresh sweep initialization
+
+`so101.train_entity_sim --initialize-only` accepts the normal cell recipe and
+saves seeded step-zero model, empty Adam state with parameter groups, training
+RNG, normalization and frozen-probe selection. It performs no evaluation or
+optimizer update and refuses existing outputs, model resumes or existing
+training states. Keep the full intended update budget in `--steps`; do not
+change it to zero. The preparation flag is not part of the training recipe.
+
+Stage and publish each cell's initial state as a new immutable input through
+trusted activation. Verify its actual step/configuration and qualify that
+exact state on the worker. Starting from this state evaluates the frozen
+step-zero probe before the first update. An initial state is neither runtime
+qualification nor a training grant; the host aggregate-approval path must
+support step zero explicitly, not relabel it as the historical step304 PASS.
 
 Commands:
 

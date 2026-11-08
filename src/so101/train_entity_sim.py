@@ -402,7 +402,13 @@ def train(
     allow_device_rng_migration: bool = False,
     device_rng_seed: int | None = None,
     episode_storage: Path | None = None,
+    initialize_only: bool = False,
 ) -> None:
+    if initialize_only and (
+        resume is not None or output.exists()
+        or (training_state is not None and training_state.exists())
+    ):
+        raise ValueError("Initialization requires a fresh output and no existing model or training state")
     scheduled_learning_rate(0, steps, learning_rate, learning_rate_schedule, warmup_fraction)
     if (
         steps <= 0
@@ -584,6 +590,12 @@ def train(
             ],
             "normalization": "training-only",
         }
+
+    if initialize_only:
+        log["status"] = "initialized"
+        save_training_state(training_state, policy, optimizer, 0, rng, log)
+        atomic_json(output / "sft_training.json", log)
+        return
 
     def evaluate_at(step):
         optimizer.zero_grad(set_to_none=True)
@@ -822,6 +834,8 @@ def main() -> None:
         default=0.,
     )
     parser.add_argument("--training-state", type=Path)
+    parser.add_argument("--initialize-only", action="store_true",
+                        help="Save fresh seeded step-zero model/Adam/RNG state without evaluation or updates")
     parser.add_argument("--allow-device-rng-migration", action="store_true")
     parser.add_argument("--device-rng-seed", type=int)
     parser.add_argument("--checkpoint-interval", type=int, default=25)
@@ -867,6 +881,7 @@ def main() -> None:
         args.allow_device_rng_migration,
         args.device_rng_seed,
         args.episode_storage,
+        args.initialize_only,
     )
 
 

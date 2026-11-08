@@ -24,9 +24,48 @@ def test_storage_cli_changes_only_storage_selection(monkeypatch, tmp_path):
     trainer.main()
     monkeypatch.setattr(sys, "argv", argv + ["--episode-storage", str(tmp_path / "v1.sqlite")])
     trainer.main()
-    assert calls[0][:-1] == calls[1][:-1]
-    assert calls[0][-1] is None
-    assert str(calls[1][-1]) == str(tmp_path / "v1.sqlite")
+    assert calls[0][:-2] == calls[1][:-2]
+    assert calls[0][-2] is None
+    assert str(calls[1][-2]) == str(tmp_path / "v1.sqlite")
+    assert calls[0][-1] == calls[1][-1] is False
+
+
+def test_initialize_only_saves_fresh_state_without_evaluation_or_updates(monkeypatch, tmp_path):
+    collection = tmp_path / "collection"
+    collection.mkdir()
+    (collection / "collection.json").write_text('{"successful_episodes": []}')
+    output = tmp_path / "initial"
+    policy = torch.nn.Linear(2, 1)
+    policy.config = SimpleNamespace(chunk_size=1)
+    policy.model = SimpleNamespace(vlm_with_expert=SimpleNamespace(lm_expert=policy))
+    monkeypatch.setattr(trainer.SmolVLAPolicy, "from_pretrained", lambda _: policy)
+    monkeypatch.setattr(trainer, "attach_entity_modules", lambda *args: None)
+    dataset = SimpleNamespace(
+        episodes=[], task_episode_indices={}, normalization=lambda: {"fixed": True},
+    )
+    class Dataset:
+        def __init__(self, *args, **kwargs):
+            self.__dict__.update(dataset.__dict__)
+        def __len__(self):
+            return 0
+    monkeypatch.setattr(trainer, "EntityTrajectoryDataset", Dataset)
+    monkeypatch.setattr(trainer, "BeamSimulation",
+                        lambda *args, **kwargs: pytest.fail("Initialization evaluated"))
+    monkeypatch.setattr(sys, "argv", [
+        "train", "--collection", str(collection), "--output", str(output),
+        "--device", "cpu", "--seed", "61000", "--initialize-only",
+    ])
+    trainer.main()
+    state = torch.load(output / "training_state.pt", map_location="cpu", weights_only=False)
+    trainer.validate_state(state, allow_untrained=True)
+    assert state["step"] == 0
+    assert state["optimizer"]["state"] == {}
+    assert state["log"]["steps"] == state["log"]["validation"] == []
+    assert state["log"]["status"] == "initialized"
+    assert state["log"]["run_config"]["steps"] == 500
+    assert not (output / "STOP").exists()
+    with pytest.raises(ValueError, match="fresh output"):
+        trainer.main()
 
 
 def test_triangular_schedule_peaks_at_early_warmup_then_decays():
