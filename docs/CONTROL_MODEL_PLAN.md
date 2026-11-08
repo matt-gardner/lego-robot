@@ -343,6 +343,51 @@ Initial dataset target:
 Dataset quality is measured by target identity, lift, retention, and box-label
 continuity—not merely by exporter success.
 
+## Simulation data curriculum
+
+Prioritize object count/configuration, LEGO part diversity, and wrist-camera
+appearance over multi-command temporal composition. SFT receives one command
+at a time; long task sequences and RL are not the current curriculum target.
+Keep LEGO contact physics fixed rather than adding arbitrary mass/friction
+randomization.
+
+Use the official LDraw parts library as the geometry source, preserving part
+identities, dependency hashes, authorship and per-file license information.
+The official library includes cheese slopes (`54200.dat`), round 1x1 bricks
+(`3062b.dat`), and minifigure heads (`3626c.dat`). Convert visual geometry and
+contact geometry separately: one convex hull would fill cavities and create
+false contacts. Settled loose piles must not be mistaken for connected LEGO
+assemblies.
+
+Generate families ranging from separated pieces through touching clusters,
+overlapping arrangements and physically settled mixed piles. Vary pile height,
+packing, target burial/visibility, available jaw clearance, shape distribution
+and size relative to the gripper. Generate alternate target/destination commands
+from the same saved initial state for genuine paired SFT examples. Large piles
+can contain many physical objects without making every object a commanded
+entity.
+
+Appearance references are the three supplied real images under
+`data/real_robot/wrist_camera/`. They show a pale textured tabletop, soft
+low-contrast lighting, image softness/noise, near-field white gripper occlusion,
+and cropped parts at the image boundary. Match those observations; do not
+infer camera calibration or material parameters from these images alone.
+
+Run deterministic physical, identity, label and timing checks on generated
+examples. Select one example from each consecutive ten accepted examples in
+each recorded curriculum category for agent visual review of rendered wrist
+and external views. Track the audited example IDs and findings; a systematic
+visual failure should trigger a generator correction, not silent acceptance.
+
+Preserve failed simulations as diagnostic provenance and possible recovery
+starting states. A recovery SFT example starts from the saved post-failure
+state, with only the successful corrective continuation as action targets.
+Neither its target sequence nor its previous-action/history context should
+reuse the failed action prefix; capture fresh observations after the boundary.
+Failed rollouts themselves are never supervised as successful demonstrations.
+Preserve the original datasets, historical labels, frozen splits and STOP
+markers; publish new curriculum data separately.
+
 ## Continuous execution
 
 Create `coordinate_policy_runner.py` as the only real-hardware owner.
@@ -459,6 +504,15 @@ place:
 
 The planner must not encode role through list position alone. Every entity
 carries an explicit role and stable command-local identity.
+
+### Potential command augmentations
+
+Orientation-sensitive placement is a future extension, not an interpretation
+of the current destination box. Define an explicit desired object orientation
+and its reference frame, angular tolerance, symmetry equivalences, and matching
+expert/label/physical-success semantics before introducing such examples.
+Destination-box rotation alone does not unambiguously specify final object
+orientation.
 
 ## Evaluation gates
 
