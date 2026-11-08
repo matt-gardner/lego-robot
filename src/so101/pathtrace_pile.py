@@ -111,7 +111,9 @@ def render_pathtrace(
     loaded = mi.load_dict(scene)
     output.mkdir(parents=True, exist_ok=False)
     image = mi.render(loaded, seed=profile["seed"], spp=profile["samples"])
-    mi.util.write_bitmap(str(output / "pile.png"), image * profile["exposure_gain"])
+    mi.util.write_bitmap(
+        str(output / "pile.png"), image * profile["exposure_gain"], write_async=False,
+    )
     for path, digest in input_hashes.items():
         if file_hash(Path(path)) != digest:
             raise RuntimeError(f"Input changed while rendering: {path}")
