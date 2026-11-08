@@ -22,7 +22,8 @@ def catalog(broker, owner: str) -> dict:
     result = []
     for digest, workflow in workflows.items():
         if digest in allowed:
-            result.append({"spec_id": workflow["spec_id"], "spec_sha256": digest})
+            result.append({"spec_id": workflow["spec_id"], "spec_sha256": digest,
+                           "family": workflow.get("family")})
     return {"specs": result}
 
 
@@ -36,6 +37,9 @@ def prepare(broker, owner: str, job_id: str, phase: str) -> dict:
         workflow = trusted_json(WORKFLOWS)[job["digest"]]
         step = workflow["steps"][phase]
         instance = broker.owned_instance(job)
+        if instance["State"]["Name"] == "pending":
+            return {"phase": phase, "status": "WaitingForEC2",
+                    "reason": "The owned EC2 instance is still pending"}
         if instance["State"]["Name"] != "running":
             raise ValueError("GPU worker is not yet running")
         broker.db.execute(

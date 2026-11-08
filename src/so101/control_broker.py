@@ -29,6 +29,14 @@ from so101.aws_qualification_recovery import evidence as qualification_evidence
 
 
 LOG = logging.getLogger(__name__)
+
+
+class AllocationFailure(RuntimeError):
+    def __init__(self, job: dict, code: str | None):
+        super().__init__("AWS GPU allocation failed" + (": " + code if code else ""))
+        self.job = job
+        self.aws_error_code = code
+
 IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -70,7 +78,7 @@ def validate_policy(policy: dict) -> None:
     allowed = {
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
         "gpu.start", "gpu.status", "gpu.logs", "gpu.stop",
-        "gpu.recover", "gpu.recover_qualification", "gpu.catalog", "gpu.prepare",
+        "gpu.recover", "gpu.recover_qualification", "gpu.catalog", "gpu.prepare", "gpu.request",
     }
     identifiers = set()
     hashes = set()
@@ -275,6 +283,11 @@ class Broker:
             "stop_command TEXT, stop_deadline REAL)"
         )
         self.db.commit()
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS allocation_requests "
+            "(owner TEXT, request TEXT, job TEXT, PRIMARY KEY(owner,request))"
+        )
+        self.db.commit()
 
     def aws(self, *args: str) -> dict:
         return controller_request(self.policy, self.run, *args)
@@ -297,7 +310,7 @@ class Broker:
         return dict(row)
 
     def update(self, job_id: str, **fields: object) -> None:
-        if not set(fields) <= {"status", "instance", "error", "stop_command", "stop_deadline"}:
+        if not set(fields) <= {"status", "instance", "error", "stop_command", "stop_deadline", "reserved"}:
             raise ValueError("Invalid state update")
         with self.db:
             self.db.execute(
@@ -375,9 +388,32 @@ class Broker:
             }),
         )
 
-    def submit(self, owner: str, spec_id: str, digest: str, parent: str | None = None) -> dict:
+    def request(self, owner: str, request_id: str) -> dict:
+        if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
+            raise ValueError("A canonical allocation request UUID is required")
         with self.lock:
+            row = self.db.execute(
+                "SELECT job FROM allocation_requests WHERE owner=? AND request=?",
+                (owner, request_id),
+            ).fetchone()
+            return {"job": self.job(row["job"], owner) if row else None}
+
+    def submit(self, owner: str, spec_id: str, digest: str, parent: str | None = None,
+               request_id: str | None = None) -> dict:
+        with self.lock:
+            if request_id is not None:
+                previous = self.request(owner, request_id)["job"]
+                if previous is not None:
+                    if (previous["spec_id"] != spec_id or previous["digest"] != digest
+                            or previous["parent"] != parent):
+                        raise ValueError("Allocation request UUID cannot be rebound to another recipe")
+                    return previous
             job = self.reserve(owner, spec_id, digest, parent)
+            if request_id is not None:
+                self.db.execute(
+                    "INSERT INTO allocation_requests VALUES (?,?,?)", (owner, request_id, job["id"]),
+                )
+                self.db.commit()
             spec = json.loads(job["spec"])
             try:
                 template = self.aws(
@@ -441,6 +477,17 @@ class Broker:
                 self.update(job["id"], status="recovery-required", error=str(error))
                 LOG.exception("Provisioning failed for job %s; reconciling paid resources", job["id"])
                 self.reconcile(job["id"])
+                if isinstance(error, subprocess.CalledProcessError) and "run-instances" in error.cmd:
+                    match = re.search(
+                        r"An error occurred \(([A-Za-z][A-Za-z0-9.]+)\) when calling the RunInstances operation",
+                        error.stderr or "",
+                    )
+                    code = match.group(1) if match else None
+                    if (error.returncode == 254 and code in {
+                        "InsufficientInstanceCapacity", "VcpuLimitExceeded", "InstanceLimitExceeded",
+                    } and not self.instances(job["id"])):
+                        self.update(job["id"], status="failed", error=code, reserved=0)
+                    raise AllocationFailure(self.job(job["id"], owner), code) from error
                 raise
             return self.job(job["id"], owner)
 
@@ -458,7 +505,7 @@ class Broker:
             items = self.instances(job_id)
             if items and all(item["State"]["Name"] == "terminated" for item in items):
                 self.update(job_id, status="stopped")
-            elif time.time() >= job["deadline"] or job["status"] in {"provisioning", "recovery-required"}:
+            elif time.time() >= job["deadline"] or job["status"] in {"provisioning", "recovery-required", "terminating"}:
                 self.reconcile(job_id)
             elif job["status"] == "stopping":
                 terminate = time.time() >= job["stop_deadline"]
@@ -513,6 +560,13 @@ class Broker:
             job = self.job(job_id, owner)
             if job["status"] in TERMINAL:
                 return job
+            if job["status"] == "terminating":
+                return self.status(owner, job_id)
+            if job["status"] == "idle":
+                self.owned_instance(job)
+                self.update(job_id, status="terminating")
+                self.reconcile(job_id)
+                return self.status(owner, job_id)
             if job["status"] == "stopping":
                 return self.status(owner, job_id)
             if not job["instance"]:
@@ -616,8 +670,12 @@ class Broker:
             "gpu.recover": {"job_id"},
             "gpu.recover_qualification": {"job_id"},
             "gpu.catalog": set(), "gpu.prepare": {"job_id", "phase"},
+            "gpu.request": {"request_id"},
         }
-        if action not in fields or set(body) != fields[action]:
+        expected = fields.get(action)
+        if action == "gpu.submit" and "request_id" in body:
+            expected = {"spec_id", "spec_sha256", "request_id"}
+        if expected is None or set(body) != expected:
             raise ValueError("Unknown action or unexpected request fields")
         if action.startswith("dashboard."):
             return self.dashboard(action.endswith(".restart"))
@@ -627,7 +685,10 @@ class Broker:
                 return catalog(self, owner)
             return prepare(self, owner, body["job_id"], body["phase"])
         if action in {"gpu.submit", "gpu.resume"}:
-            return self.submit(owner, body["spec_id"], body["spec_sha256"], body.get("parent"))
+            return self.submit(owner, body["spec_id"], body["spec_sha256"], body.get("parent"),
+                               body.get("request_id"))
+        if action == "gpu.request":
+            return self.request(owner, body["request_id"])
         return getattr(self, action.split(".")[1])(owner, body["job_id"])
 
 
@@ -648,6 +709,9 @@ def make_server(broker: Broker, host: str, port: int) -> ThreadingHTTPServer:
                     raise ValueError("Expected a JSON object")
                 result = broker.dispatch(auth[7:], self.path.removeprefix("/"), body)
                 self.reply(200, result)
+            except AllocationFailure as error:
+                self.reply(503, {"error": str(error), "aws_error_code": error.aws_error_code,
+                                 "job": error.job})
             except PermissionError as error:
                 self.reply(403, {"error": str(error)})
             except (ValueError, TypeError) as error:
@@ -669,8 +733,8 @@ def make_server(broker: Broker, host: str, port: int) -> ThreadingHTTPServer:
             self.end_headers()
             self.wfile.write(payload)
 
-        def log_message(self, fmt: str, *args: object) -> None:
-            LOG.info("%s %s", self.client_address[0], fmt % args)
+        def log_message(self, format: str, *args: object) -> None:
+            LOG.info("%s %s", self.client_address[0], format % args)
 
     return ThreadingHTTPServer((host, port), Handler)
 
@@ -694,7 +758,7 @@ def main() -> None:
         "dashboard.status", "dashboard.restart", "gpu.submit", "gpu.resume",
         "gpu.status", "gpu.logs", "gpu.stop", "gpu.start", "gpu.recover",
         "gpu.recover_qualification",
-        "gpu.catalog", "gpu.prepare",
+        "gpu.catalog", "gpu.prepare", "gpu.request",
     ])
     call.add_argument("--url", required=True)
     call.add_argument("--token-file", type=Path, required=True)
