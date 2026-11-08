@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import os
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
@@ -14,11 +15,13 @@ from so101.renderer_appearance_v2 import WristAppearanceV2
 from so101.renderer_appearance_v3 import WristAppearanceV3
 from so101.renderer_appearance_v4 import WristAppearanceV4
 from so101.renderer_appearance_v5 import WristAppearanceV5
-from so101.robot_sim import BeamSimulation, MODEL_ROOT, restore_episode
+from so101.renderer_appearance_v6 import WristAppearanceV6
+from so101.robot_sim import BeamSimulation, MODEL_ROOT, SCENE_VERSION, restore_episode, scene_xml
+from so101.collect_catalog_sim import load_appearance
 
 
 @pytest.fixture(params=[RendererAppearance, WristAppearanceV2, WristAppearanceV3,
-                        WristAppearanceV4, WristAppearanceV5])
+                        WristAppearanceV4, WristAppearanceV5, WristAppearanceV6])
 def pair(request):
     if not (MODEL_ROOT / "revision.json").exists():
         pytest.skip("Pinned SO101 assets unavailable")
@@ -69,6 +72,23 @@ def test_photometric_processing_is_reproducible_without_spatial_warp():
     assert first.shape == image.shape and first.dtype == image.dtype
     np.testing.assert_array_equal(first, profile.process_rgb(image, seed=10, frame=1))
     assert not np.array_equal(first, profile.process_rgb(image, seed=10, frame=2))
+
+
+def test_v6_restores_original_cad_jaws_without_changing_other_v3_xml():
+    xml = scene_xml(MODEL_ROOT, SCENE_VERSION)
+    original = ET.fromstring(xml)
+    styled = ET.fromstring(WristAppearanceV3().apply_xml(xml))
+    profile = WristAppearanceV6()
+    restored = ET.fromstring(profile.apply_xml(xml))
+    for material in ("wrist_roll_follower_so101_v1_material",
+                     "moving_jaw_so101_v1_material"):
+        selector = f".//geom[@material='{material}']"
+        assert restored.find(selector).attrib == original.find(selector).attrib
+        geom = styled.find(selector)
+        geom.attrib.clear()
+        geom.attrib.update(original.find(selector).attrib)
+    assert ET.tostring(restored) == ET.tostring(styled)
+    assert load_appearance(profile.path).identity() == profile.identity()
 
 
 def test_v5_noise_matches_reference_correlation_without_chromatic_speckle():
@@ -195,7 +215,7 @@ def test_unqualified_diagnostic_rejects_unsafe_source(tmp_path, monkeypatch, inv
 @pytest.mark.skipif(os.environ.get("MUJOCO_GL") not in ("osmesa", "egl"),
                     reason="Requires explicit headless rendering backend")
 @pytest.mark.parametrize("profile_type", [RendererAppearance, WristAppearanceV2, WristAppearanceV3,
-                                        WristAppearanceV4, WristAppearanceV5])
+                                        WristAppearanceV4, WristAppearanceV5, WristAppearanceV6])
 def test_rgb_area_lighting_preserves_segmentation_depth_and_model(profile_type):
     sim = BeamSimulation(appearance=profile_type())
     try:

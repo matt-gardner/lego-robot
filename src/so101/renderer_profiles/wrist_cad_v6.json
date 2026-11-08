@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "profile_id": "wrist-cad-v6",
+  "parent_v3_profile_sha256": "416aaf2a85acfa582a6cf315eaf2a24c8e428cb5ab0ac57f78c962aa70d3124f",
+  "jaw_visual_geometry": "original-source-cad"
+}

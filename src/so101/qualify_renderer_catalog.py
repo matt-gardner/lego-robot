@@ -20,6 +20,7 @@ from so101.renderer_appearance_v2 import WristAppearanceV2
 from so101.renderer_appearance_v3 import WristAppearanceV3
 from so101.renderer_appearance_v4 import WristAppearanceV4
 from so101.renderer_appearance_v5 import WristAppearanceV5
+from so101.renderer_appearance_v6 import WristAppearanceV6
 from so101.robot_sim import MODEL_ROOT, OBJECT_NAMES, TABLE_Z, BeamSimulation, scene_xml
 
 
@@ -311,14 +312,15 @@ def main() -> None:
     parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--reference-assembly", action="store_true")
-    parser.add_argument("--appearance", choices=("v2", "v3", "v4", "v5"), default="v2")
+    parser.add_argument("--appearance", choices=("v2", "v3", "v4", "v5", "v6"), default="v2")
     parser.add_argument("--diagnostic-unqualified-separator", action="store_true")
     parser.add_argument("--wrist-height-m", type=float)
     parser.add_argument("--gripper-fraction", type=float, default=.3)
     parser.add_argument("--reference-scene", choices=("wrist_current", "autopilot_scene_wrist"))
     args = parser.parse_args()
     qualify_catalog(args.catalog, args.output, reference_assembly=args.reference_assembly,
-                    appearance=(WristAppearanceV5() if args.appearance == "v5" else
+                    appearance=(WristAppearanceV6() if args.appearance == "v6" else
+                                WristAppearanceV5() if args.appearance == "v5" else
                                 WristAppearanceV4() if args.appearance == "v4" else
                                 WristAppearanceV3() if args.appearance == "v3" else None),
                     diagnostic_unqualified_separator=args.diagnostic_unqualified_separator,

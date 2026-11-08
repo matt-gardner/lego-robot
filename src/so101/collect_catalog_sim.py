@@ -24,6 +24,7 @@ from so101.renderer_appearance import DEFAULT_PROFILE, RendererAppearance
 from so101.renderer_appearance_v2 import DEFAULT_PROFILE_V2, WristAppearanceV2
 from so101.renderer_appearance_v3 import DEFAULT_PROFILE_V3, WristAppearanceV3
 from so101.renderer_appearance_v4 import WristAppearanceV4
+from so101.renderer_appearance_v6 import WristAppearanceV6
 from so101.simulation_corpus import validate_clean_expert
 
 
@@ -37,6 +38,7 @@ def load_appearance(path: Path) -> RendererAppearance:
         "wrist-soft-v2": WristAppearanceV2,
         "wrist-soft-v3": WristAppearanceV3,
         "wrist-soft-v4": WristAppearanceV4,
+        "wrist-cad-v6": WristAppearanceV6,
     }
     if profile_id not in implementations:
         raise ValueError(f"Unsupported catalog recording renderer profile: {profile_id!r}")

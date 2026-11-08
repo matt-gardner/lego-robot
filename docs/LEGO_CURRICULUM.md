@@ -4,6 +4,14 @@ Approved by Matt November 8, 2026. This dedicated session owns curriculum,
 producer, deterministic checks, recovery extraction and visual sanity audits.
 Catalog, dashboard, realism and host integration have separate owners.
 
+`wrist-cad-v6` is an explicit recording profile restoring the original upstream
+robot CAD jaw visuals, rather than the unmeasured tapered cosmetic sleeves in
+v2/v3. It retains v3 camera, lighting and photometric settings, without cosmetic
+sleeve blur. Contact geometry, dynamics and historical profiles remain unchanged.
+The upstream CAD is not a hardware calibration; push-path/contact accuracy still
+requires separate validation. Existing releases are never rerendered or relabeled
+by selecting this profile for future recordings.
+
 ## Priorities and progression
 
 Use verified entries from `LEGO_PARTS_CATALOG.md` as they become available.
