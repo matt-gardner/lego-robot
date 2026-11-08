@@ -19,6 +19,7 @@ import numpy as np
 
 from so101.control_model.dataset import oriented_box_from_mask
 from so101.robot_control import JOINTS
+from so101.renderer_appearance import RendererAppearance
 
 MODEL_COMMIT = "f3b6013629c7b94f8ee93fd977b161fa8350f9bc"
 MODEL_URL = (
@@ -57,6 +58,9 @@ TARGET_COLORS = {
 
 def restore_episode(sim: BeamSimulation, metadata: dict) -> tuple[str, str | None, list[tuple[str, str]]]:
     initial = metadata["initial"]
+    identity = initial.get("renderer")
+    if identity != (sim.appearance.identity() if sim.appearance else None):
+        raise ValueError("Playback renderer identity mismatch; instantiate the recorded profile")
     sim.use_scene_version(int(initial.get("scene_version", LEGACY_SCENE_VERSION)))
     appearance = initial.get("appearance", {})
     labels = appearance.get("target_labels", {})
@@ -269,13 +273,23 @@ class BeamSimulation:
     """The expert sees object poses; exported policy observations never do."""
 
     def __init__(self, model_root: Path = MODEL_ROOT, *, render: bool = True,
-                 model: mujoco.MjModel | None = None, scene_version: int = SCENE_VERSION):
+                 model: mujoco.MjModel | None = None, scene_version: int = SCENE_VERSION,
+                 appearance: RendererAppearance | None = None):
         self.model_root = model_root
         self.scene_version = scene_version
+        self.appearance = appearance
+        if appearance is not None and model is not None:
+            raise ValueError("Apply appearance to MJCF before compilation; supplied models are unsupported")
+        source = None
+        if model is None:
+            source = scene_xml(model_root, scene_version)
+            if appearance is not None:
+                source = appearance.apply_xml(source)
         self.model = model if model is not None else mujoco.MjModel.from_xml_string(
-            scene_xml(model_root) if scene_version == SCENE_VERSION
-            else scene_xml(model_root, scene_version)
+            source
         )
+        if appearance is not None:
+            appearance.apply_model(self.model)
         self.data = mujoco.MjData(self.model)
         self.scratch = mujoco.MjData(self.model)
         self.joints = np.array([self.model.joint(name).id for name in JOINTS])
@@ -336,7 +350,8 @@ class BeamSimulation:
             render = self.renderer is not None
             fps = self.fps
             self.close()
-            self.__init__(self.model_root, render=render, scene_version=version)
+            self.__init__(self.model_root, render=render, scene_version=version,
+                          appearance=self.appearance)
             self.fps = fps
 
     def set_body_pose(self, name: str, position, quaternion=None) -> None:
@@ -486,7 +501,13 @@ class BeamSimulation:
         if self.renderer is None:
             raise RuntimeError("Rendering was not enabled")
         self.renderer.update_scene(self.data, camera="wrist_cam")
-        image = self.renderer.render().copy()
+        image = (self.appearance.render_rgb(self.renderer, self.model, self.data)
+                 if self.appearance is not None else self.renderer.render().copy())
+        if self.appearance is not None:
+            image = self.appearance.process_rgb(
+                image, seed=int(self.initial.get("seed", 0)),
+                frame=round(self.data.time / self.model.opt.timestep),
+            )
         if self.visual_cue_target:
             if self.active_target is None:
                 raise RuntimeError("Visual target cue requested without an active target")
@@ -791,6 +812,9 @@ class BeamSimulation:
         for name in OBSTACLE_NAMES:
             self.model.body_pos[self.model.body(name).id] = [0, 0, -1]
         mujoco.mj_forward(self.model, self.data)
+        if self.appearance is not None:
+            self.appearance.apply_lighting(self.model)
+            self.initial["renderer"] = self.appearance.identity()
         self.initial["appearance"] = {
             "light_diffuse": self.model.light_diffuse.tolist(),
             "light_ambient": self.model.light_ambient.tolist(),
