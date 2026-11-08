@@ -223,3 +223,38 @@ explicitly development-only, keeping feedback-visible attempts out of sealed
 evaluation and training. It never imports historical episodes or assigns their
 descendants to training. A future train/sealed producer must implement protected
 historical-family exclusions and independent split policy before publication.
+
+`so101.curriculum_workers` supervises multiple identical pinned development
+workers with one shared ledger. Global scene sequences are reserved
+transactionally before an attempt and retained in each worker's interruption
+state; worker scheduling cannot duplicate a scene or reset category audit counts.
+Each child uses SCHED_IDLE/nice19 and idle-class I/O, with renderer/BLAS threads
+set to one by the runtime environment.
+
+Fan-out is bounded by actual CPU affinity and available memory, not CPU quotas
+or time windows. The controller reads host MemAvailable, cgroup memory.max/current
+and inactive-file cache, reserves each worker's growth toward the observed peak,
+and updates that peak from actual receipts. Inactive file cache is treated as
+reclaimable, not resident model memory. New-source expansion waits for a matching
+full paired recording/reader measurement; prior measured peaks remain
+conservative startup estimates. Host/cgroup memory pressure or insufficient
+reserved growth headroom requests graceful attempt-boundary worker retirement.
+This is predictive backpressure, not a guaranteed memory cap; unexpected worker
+errors remain explicit. Source changes require a separate recorded rollout root.
+Existing datasets and historical timestamps are not rewritten.
+
+Example supervisor invocation (peak must come from the matching measured
+two-object renderer/reader population, not part archive sizes):
+
+```sh
+python -m so101.curriculum_workers --root /new/supervisor \
+  --catalog /pinned/catalog.json --appearance /pinned/profile.json \
+  --part-id 3005 --seed 20261108 --initial-sequence 0 \
+  --worker-peak-kib 1445932
+```
+
+The runtime requires `ionice`. Supervisor state, child logs and the shared audit
+ledger are durable coordination artifacts; completed release archives remain
+immutable and independent. Shutdown requests each child to finish its attempt.
+Storage-pressure planning, validated broader worker populations, train/sealed
+promotion policy and audit wake delivery are still separate work.

@@ -56,3 +56,17 @@ def test_incomplete_pair_does_not_increment_audit_population(tmp_path):
         ledger.accept_pair(report)
     assert ledger.connection.execute("SELECT COUNT(*) FROM examples").fetchone()[0] == 0
     ledger.close()
+
+
+def test_global_sequences_remain_distinct_across_workers_and_restarts(tmp_path):
+    path = tmp_path / "ledger.sqlite"
+    first = CurriculumLedger(path, audit_seed=7)
+    second = CurriculumLedger(path, audit_seed=7)
+    assert first.claim_sequence(minimum=15) == 15
+    assert second.claim_sequence(minimum=15) == 16
+    assert first.claim_sequence(minimum=16) == 17
+    first.close()
+    second.close()
+    resumed = CurriculumLedger(path, audit_seed=7)
+    assert resumed.claim_sequence(minimum=0) == 18
+    resumed.close()

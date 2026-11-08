@@ -16,6 +16,7 @@ class CurriculumLedger:
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.executescript("""
             CREATE TABLE IF NOT EXISTS settings(audit_seed INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS sequence_counter(next_sequence INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS families(
                 id TEXT PRIMARY KEY, split TEXT NOT NULL
             );
@@ -35,6 +36,20 @@ class CurriculumLedger:
             elif row[0] != audit_seed:
                 raise ValueError("Audit seed changed; existing selections must be preserved")
         self.audit_seed = audit_seed
+
+    def claim_sequence(self, *, minimum: int) -> int:
+        """Allocate a global scene sequence independently of worker scheduling."""
+        if type(minimum) is not int or minimum < 0:
+            raise ValueError("Sequence floor must be nonnegative")
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            row = self.connection.execute("SELECT next_sequence FROM sequence_counter").fetchone()
+            sequence = max(minimum, row[0]) if row is not None else minimum
+            if row is None:
+                self.connection.execute("INSERT INTO sequence_counter VALUES (?)", (sequence + 1,))
+            else:
+                self.connection.execute("UPDATE sequence_counter SET next_sequence=?", (sequence + 1,))
+        return sequence
 
     def reserve_family(self, family: str, split: str) -> str:
         """Reserve membership before simulation; descendants reuse the same family."""

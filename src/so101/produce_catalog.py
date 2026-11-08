@@ -106,7 +106,10 @@ def publish_pair(root: Path, attempt: Path, report: dict) -> Path:
 
 
 def run(root: Path, catalog_path: Path, appearance_path: Path,
-        part_ids: list[str], seed: int, stopping) -> None:
+        part_ids: list[str], seed: int, stopping, *, ledger_path: Path | None = None,
+        initial_sequence: int = 0) -> None:
+    if type(initial_sequence) is not int or initial_sequence < 0:
+        raise ValueError("Initial sequence must be nonnegative")
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".producer.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -117,7 +120,7 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
             if state["recipe"] != identity:
                 raise ValueError("Producer source/catalog/runtime changed; use a new root")
         else:
-            state = {"recipe": identity, "next_sequence": 0, "attempts": []}
+            state = {"recipe": identity, "next_sequence": initial_sequence, "attempts": []}
             atomic_json(state_path, state)
         catalog = load_catalog(catalog_path)
         if part_ids:
@@ -128,12 +131,20 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                 part for part in catalog.parts if part.part_id in requested
             ))
         appearance = load_appearance(appearance_path)
-        ledger = CurriculumLedger(root / "ledger.sqlite", audit_seed=seed)
+        ledger_path = (ledger_path or root / "ledger.sqlite").resolve()
+        if state.get("ledger_path", str(ledger_path)) != str(ledger_path):
+            raise ValueError("Producer coordination ledger changed")
+        state["ledger_path"] = str(ledger_path)
+        ledger = CurriculumLedger(ledger_path, audit_seed=seed)
         try:
             while not stopping():
                 if recipe(catalog_path, appearance_path, part_ids, seed) != identity:
                     raise ValueError("Pinned producer inputs changed during execution")
-                sequence = state["next_sequence"]
+                sequence = state.get("active_sequence")
+                if sequence is None:
+                    sequence = ledger.claim_sequence(minimum=state["next_sequence"])
+                    state["active_sequence"] = sequence
+                    atomic_json(state_path, state)
                 # Feedback-visible generation is development-only, never sealed evaluation.
                 category = ("separated", "cluster", "overlap", "pile")[sequence % 4]
                 task = ("grasp", "view", "push", "place")[(sequence // 4) % 4]
@@ -147,7 +158,8 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                 plan.update(scene_family_id=family, split="development")
                 attempt = root / f"attempt_{sequence:09d}"
                 entry = {"sequence": sequence, "category": category, "task": task,
-                         "source": str(attempt), "status": "interrupted"}
+                         "source": str(attempt), "status": "interrupted",
+                         "worker_source_sha256": identity["source_sha256"]}
                 sim = None
                 try:
                     if attempt.exists():
@@ -177,7 +189,8 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                         sim.close()
                 entry["peak_rss_kib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
                 state["attempts"].append(entry)
-                state["next_sequence"] += 1
+                state["next_sequence"] = sequence + 1
+                state["active_sequence"] = None
                 atomic_json(state_path, state)
                 atomic_json(root / "pending_audits.json", ledger.pending_audits())
                 print(json.dumps(entry), flush=True)
@@ -192,6 +205,8 @@ def main() -> None:
     parser.add_argument("--appearance", type=Path, required=True)
     parser.add_argument("--part-id", action="append", default=[])
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--ledger", type=Path)
+    parser.add_argument("--initial-sequence", type=int, default=0)
     args = parser.parse_args()
     os.sched_setscheduler(0, os.SCHED_IDLE, os.sched_param(0))
     os.nice(19)
@@ -204,7 +219,8 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     logging.basicConfig(level=logging.INFO)
-    run(args.root, args.catalog, args.appearance, args.part_id, args.seed, lambda: stopped)
+    run(args.root, args.catalog, args.appearance, args.part_id, args.seed, lambda: stopped,
+        ledger_path=args.ledger, initial_sequence=args.initial_sequence)
 
 
 if __name__ == "__main__":
