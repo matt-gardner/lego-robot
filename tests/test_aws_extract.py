@@ -63,3 +63,13 @@ def test_archive_byte_and_member_ceilings_are_exact(tmp_path):
             bundle.addfile(member)
     with pytest.raises(ValueError, match="member ceiling"):
         extract(source, tmp_path / "too-many", max_bytes=1, max_members=1)
+
+
+def test_expired_lease_never_commits_extraction_receipt(tmp_path):
+    source, target = tmp_path / "input.tar", tmp_path / "prepared"
+    archive(source)
+    readings = iter((0, 0, 2))
+    with pytest.raises(TimeoutError, match="lease expired"):
+        extract(source, target, max_bytes=4, max_members=1,
+                deadline=1, wall=lambda: next(readings))
+    assert not (target / ".extracted.json").exists()

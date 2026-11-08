@@ -318,6 +318,11 @@ from the instance role and use an automatically removed private Docker config.
 Image pull/requests are lease-bounded; archive preparation remains protected
 by the active independent guard. Successful `/var/lib/so101-worker/installed.json`
 means **prepared-idle**, not training or aggregate PASS. No start is issued.
+Installation reports each image-pull, artifact-staging, and archive-preparation
+phase with remaining lease seconds. Docker pull output streams without exposing
+the temporary registry authorization. Extraction reports member/byte progress
+every 10,000 members and checks the lease between members, body chunks, and
+directory synchronization; expiration never commits an extraction receipt.
 Failed/ambiguous installation leaves an intent and cannot blindly replay or
 overwrite existing state; inspect that exact disposable worker before recovery.
 Never run this installer/guard on the CPU controller or coding-agent host.

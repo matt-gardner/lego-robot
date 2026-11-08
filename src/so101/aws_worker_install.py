@@ -5,6 +5,7 @@ import argparse
 import base64
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -81,7 +82,7 @@ def pull_image(manifest: dict, auth_root: Path, *, run=subprocess.run) -> None:
              "--username=AWS", "--password-stdin", registry],
             input=password, check=True, capture_output=True, text=True, timeout=30, env=env)
         run([cli, "--host=unix:///var/run/docker.sock", "pull", image],
-            check=True, capture_output=True, text=True, timeout=3600, env=env)
+            check=True, text=True, timeout=3600, env=env)
 
 
 def adopt_guard(source: Path, manifest: dict, job: str) -> None:
@@ -174,6 +175,12 @@ def install(execution_sha256: str, source_sha256: str, *, metadata=None,
         options["timeout"] = min(options["timeout"], remaining)
         return run(command, **options)
 
+    def progress(phase):
+        remaining = deadline - wall()
+        logging.warning("Worker installation phase=%s remaining_seconds=%.1f", phase, remaining)
+        if remaining <= 0:
+            raise TimeoutError("Worker lease expired during installation")
+
     def systemctl(*arguments):
         bounded_run(["/usr/bin/systemctl", *arguments], check=True, capture_output=True,
                     text=True, timeout=30, env={"PATH": "/usr/bin:/bin"})
@@ -214,11 +221,14 @@ def install(execution_sha256: str, source_sha256: str, *, metadata=None,
         env={"PATH": "/usr/bin:/bin", "HOME": str(STATE)})
     if "nvidia" not in json.loads(runtimes.stdout):
         raise ValueError("Trusted AMI Docker daemon must already supply NVIDIA Container Toolkit")
+    progress("image-pull")
     pull_image(manifest, STATE, run=bounded_run)
+    progress("artifact-staging")
     staged = stage_idle(Path(config["manifest"]), config["manifest_sha256"],
                         STATE / "staged", metadata=metadata, run=bounded_run, wall=wall)
+    progress("archive-preparation")
     prepare(Path(config["manifest"]), config["manifest_sha256"], Path(config["plan"]),
-            config["plan_sha256"], staged)
+            config["plan_sha256"], staged, deadline=deadline, wall=wall)
     require_guard(bounded_run)
     if wall() >= deadline:
         raise TimeoutError("Worker lease expired during input preparation")
@@ -226,6 +236,7 @@ def install(execution_sha256: str, source_sha256: str, *, metadata=None,
                "spec_sha256": manifest["spec_sha256"], "source_sha256": source_sha256,
                "execution_sha256": execution_sha256, "deadline": deadline}
     atomic_json(STATE / "installed.json", receipt)
+    progress("prepared-idle")
     return receipt
 
 

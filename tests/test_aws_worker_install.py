@@ -90,7 +90,11 @@ def setup(tmp_path, monkeypatch):
         return module.STATE / "staged" / ("a" * 32)
 
     monkeypatch.setattr(module, "stage_idle", stage)
-    monkeypatch.setattr(module, "prepare", lambda *args: events.append("prepare"))
+    def prepare(*args, deadline, wall):
+        assert deadline == 2000
+        assert wall() == 1000
+        events.append("prepare")
+    monkeypatch.setattr(module, "prepare", prepare)
     monkeypatch.setattr(module, "pull_image", lambda *args, **kwargs: events.append("pull"))
     return manifest, config, events, run
 

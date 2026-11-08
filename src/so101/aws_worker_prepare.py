@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path, PurePosixPath
+import time
 
 from so101.aws_extract import extract
 from so101.aws_worker_bootstrap import load_manifest
@@ -11,7 +13,7 @@ from so101.control_broker import canonical, trusted_json, trusted_path
 
 
 def prepare(manifest_path: Path, manifest_sha256: str, plan_path: Path, plan_sha256: str,
-            staged: Path) -> None:
+            staged: Path, *, deadline: float | None = None, wall=time.time) -> None:
     manifest = load_manifest(manifest_path, manifest_sha256)
     plan = trusted_json(plan_path)
     if (hashlib.sha256(canonical(plan)).hexdigest() != plan_sha256
@@ -29,6 +31,9 @@ def prepare(manifest_path: Path, manifest_sha256: str, plan_path: Path, plan_sha
         raise ValueError("Root plan requires an explicit archive preparation map")
     destinations = []
     for name, settings in archives.items():
+        if deadline is not None and wall() >= deadline:
+            raise TimeoutError("Worker lease expired during input preparation")
+        logging.warning("Preparing verified archive=%s", name)
         artifact = manifest["artifacts"].get(name)
         if (not isinstance(artifact, dict) or not isinstance(settings, dict)
                 or set(settings) != {"destination", "max_bytes", "max_members"}):
@@ -50,7 +55,7 @@ def prepare(manifest_path: Path, manifest_sha256: str, plan_path: Path, plan_sha
         if sha256(archive) != artifact["sha256"]:
             raise ValueError("Staged archive changed before input preparation")
         extract(archive, staged / destination, max_bytes=settings["max_bytes"],
-                max_members=settings["max_members"])
+                max_members=settings["max_members"], deadline=deadline, wall=wall)
     mounts = plan.get("readonly_mounts")
     if not isinstance(mounts, dict) or not mounts:
         raise ValueError("Prepared inputs require explicit read-only mounts")
