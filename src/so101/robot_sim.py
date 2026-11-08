@@ -419,6 +419,8 @@ class BeamSimulation:
             self.initial["appearance"]["distractors"] = {
                 name: self.position(name).tolist() for name in self.distractors
             }
+        if self.scene_version >= SCENE_VERSION:
+            self.initial["expert_acceptance_version"] = 1
 
     def _checked_contact_depths(self, phase: str, substep: int) -> tuple[float, float]:
         table = self.model.geom("table").id
@@ -1048,7 +1050,8 @@ class BeamSimulation:
         closed = self.data.ctrl[self.actuators].copy()
         yaw = self.yaws[target] + math.pi / 2
         for attempt, (height_offset, yaw_offset) in enumerate(
-            ((0., 0.), (-.0015, .025), (.001, -.025))
+            ((0., 0.),) if self.scene_version >= SCENE_VERSION
+            else ((0., 0.), (-.0015, .025), (.001, -.025))
         ):
             position = self.position(target)
             attempt_yaw = yaw + yaw_offset
@@ -1227,7 +1230,7 @@ class BeamSimulation:
         closed = self.limits[-1, 0]
         wrist_roll = float(self.data.qpos[self.qadr[4]])
         retreat = None
-        for cycle in range(4):
+        for cycle in range(1 if self.scene_version >= SCENE_VERSION else 4):
             current_position = self.position(target).copy()
             direction = destination_position[:2] - current_position[:2]
             distance = float(np.linalg.norm(direction))
@@ -1269,11 +1272,13 @@ class BeamSimulation:
         initial_destination_error = float(np.linalg.norm(
             start_position[:2] - destination_position[:2]
         ))
+        success = destination_error <= .070 and (
+            displacement >= .02 or initial_destination_error <= .070
+        )
         return {
-            "success": destination_error <= .070 and (
-                displacement >= .02 or initial_destination_error <= .070
-            ),
-            "reason": "Object pushed into the requested destination region",
+            "success": success,
+            "reason": ("Object pushed into the requested destination region" if success
+                       else "Push did not reach the requested destination region"),
             "destination_error_m": destination_error,
             "displacement_m": displacement,
         }

@@ -6,7 +6,28 @@ import pytest
 from so101.cloud_checkpoint import sha256
 from so101 import rebuild_physical_dataset as rebuild
 from so101.robot_sim import MODEL_ROOT, SCENE_VERSION
-from so101.simulation_corpus import load_catalog
+from so101.simulation_corpus import load_catalog, load_corpus
+from so101.control_model.simulation_dataset import EntityTrajectoryDataset
+
+
+@pytest.mark.parametrize("loader", [load_corpus, EntityTrajectoryDataset])
+def test_training_consumers_reject_final_success_with_failed_first_push(tmp_path, loader):
+    episode = tmp_path / "episode"
+    episode.mkdir()
+    (episode / "episode.json").write_text(json.dumps({
+        "task": "push", "outcome": "success",
+        "initial": {"expert_acceptance_version": 1},
+    }))
+    (episode / "frames.jsonl").write_text("\n".join(json.dumps({"phase": phase})
+        for phase in ["push", "push_retreat", "push_realign", "push"]))
+    (tmp_path / "collection.json").write_text(json.dumps({
+        "successful_episodes": [str(episode)],
+    }))
+    with pytest.raises(ValueError, match="failed pass/retry"):
+        if loader is EntityTrajectoryDataset:
+            loader(tmp_path, horizon=16, history_steps=4)
+        else:
+            loader(tmp_path)
 
 
 @pytest.fixture

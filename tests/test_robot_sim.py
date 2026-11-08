@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -10,6 +11,57 @@ from so101.robot_sim import (
     restore_episode, training_command,
 )
 from so101.collect_difficulty_sim import configure_scene
+from so101.simulation_corpus import validate_clean_expert
+
+
+def test_exact_failed_first_push_is_not_accepted_after_recovery():
+    # Recorded example 0d5a7a3eda4b771683b5: first pass 17.03cm, recovery 2.17cm.
+    def run(version):
+        position = np.array([.22562779, 0., 0.])
+        phases = []
+        def move(goal, phase, **kwargs):
+            phases.append(phase)
+            if phase == "push":
+                position[0] = .17034389 if phases.count("push") == 1 else .02171213
+        fake = SimpleNamespace(
+            scene_version=version, limits=np.array([[0., 1.]] * 6),
+            data=SimpleNamespace(qpos=np.zeros(6), ctrl=np.zeros(6)),
+            qadr=np.arange(6), actuators=np.arange(6),
+            configure_command=lambda *args: None,
+            position=lambda name: position.copy() if name == "short" else np.zeros(3),
+            push_ik=lambda *args: np.zeros(6), move=move, step=lambda *args: None,
+        )
+        return BeamSimulation.demonstrate_push(fake, "short", "goal_left"), phases
+    legacy, legacy_phases = run(LEGACY_SCENE_VERSION)
+    assert legacy["success"] and legacy_phases.count("push") == 2
+    corrected, phases = run(SCENE_VERSION)
+    assert not corrected["success"] and phases.count("push") == 1
+    assert corrected["destination_error_m"] == pytest.approx(.17034389)
+
+
+@pytest.mark.parametrize("phases", [
+    ["push", "push_retreat", "push_realign", "push"],
+    ["close", "retry_open", "grasp_retry", "lift"],
+    ["push", "push_retreat", "push"],
+])
+def test_clean_expert_guard_rejects_failed_prefix_even_with_final_success(phases):
+    metadata = {"outcome": "success", "initial": {"expert_acceptance_version": 1}}
+    with pytest.raises(ValueError, match="pass|retry"):
+        validate_clean_expert(metadata, [{"phase": phase} for phase in phases])
+    validate_clean_expert({"outcome": "success", "initial": {}},
+                          [{"phase": phase} for phase in phases])
+
+
+def test_failed_first_grasp_cannot_recover_into_clean_place(sim, monkeypatch):
+    sim.reset(0)
+    sim.scene_version = SCENE_VERSION
+    calls = []
+    def contacts(target):
+        calls.append(target)
+        return set() if len(calls) == 1 else {"fixed", "moving"}
+    monkeypatch.setattr(sim, "contacts", contacts)
+    result = sim.demonstrate_place("studded", "goal_left")
+    assert not result["success"] and len(calls) == 1
 
 
 @pytest.fixture
@@ -126,8 +178,12 @@ def test_corrected_scene_experts_with_valid_solid_starts(task, level):
             if task == "grasp" and level == 3 else
             environment.demonstrate_command(task, case["target"], case["destination"])
         )
-        assert result["success"], result
-        if task in ("push", "place"):
+        if task == "push" and level == 3:
+            assert not result["success"]
+            assert result["destination_error_m"] > .07
+        else:
+            assert result["success"], result
+        if task in ("push", "place") and result["success"]:
             assert result["destination_error_m"] <= case["constraints"]["destination_tolerance_m"]
         if task == "grasp" and level == 3:
             assert result["obstacle_contacts"] == 0

@@ -78,6 +78,10 @@ class TrainingDataBrowser:
                     "destination": metadata.get("destination"), "seed": metadata["initial"]["seed"],
                     "difficulty": difficulty, "difficulty_level": difficulty["level"] if difficulty else "unrated",
                     "expert_outcome": metadata.get("outcome", "unknown"),
+                    "expert_acceptance": (
+                        "single-pass-v1" if metadata["initial"].get("expert_acceptance_version") == 1
+                        else "legacy final-success (may include retries)"
+                    ),
                     "split": "validation" if source in validation else "training" if source in train else "not-in-run",
                     "used": False, "rollouts": 0, "passed": 0, "failed": 0,
                     "last_step": None, "solved_entries": [], "history": [],

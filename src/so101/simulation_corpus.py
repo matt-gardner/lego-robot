@@ -12,6 +12,26 @@ import numpy as np
 TASKS = ("grasp", "view", "push", "place")
 
 
+def validate_clean_expert(metadata: dict, rows: list[dict]) -> None:
+    """Reject recovered passes rather than relabeling their failed prefixes."""
+    version = metadata.get("initial", {}).get("expert_acceptance_version")
+    if version is None:
+        return
+    if version != 1:
+        raise ValueError(f"Unsupported expert acceptance version: {version}")
+    if metadata.get("outcome") != "success":
+        raise ValueError("Clean expert episode did not succeed")
+    retry_phases = {"grasp_retry", "retry_open", "retry_retreat", "push_realign"}
+    if any(row.get("phase") in retry_phases for row in rows):
+        raise ValueError("Clean expert episode contains a failed pass/retry")
+    pushes = sum(
+        row.get("phase") == "push" and (index == 0 or rows[index - 1].get("phase") != "push")
+        for index, row in enumerate(rows)
+    )
+    if pushes > 1:
+        raise ValueError("Clean expert episode contains multiple push passes")
+
+
 @dataclass(frozen=True)
 class CorpusEpisode:
     source: Path
@@ -35,6 +55,9 @@ def load_corpus(collection: Path) -> dict[str, list[CorpusEpisode]]:
     for source_name in report["successful_episodes"]:
         source = Path(source_name)
         metadata = json.loads((source / "episode.json").read_text())
+        if metadata.get("initial", {}).get("expert_acceptance_version") is not None:
+            rows = [json.loads(line) for line in (source / "frames.jsonl").read_text().splitlines()]
+            validate_clean_expert(metadata, rows)
         task = metadata["task"]
         if task in TASKS and metadata.get("outcome", "success") == "success":
             if "scene_version" in report and metadata["initial"]["scene_version"] != report["scene_version"]:

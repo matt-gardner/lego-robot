@@ -14,7 +14,7 @@ from so101.control_model.command import (
     camera_point_from_projection,
     task_phase_prompt,
 )
-from so101.simulation_corpus import load_catalog
+from so101.simulation_corpus import load_catalog, validate_clean_expert
 
 
 class EntityTrajectoryDataset(Dataset):
@@ -59,6 +59,7 @@ class EntityTrajectoryDataset(Dataset):
                 json.loads(line)
                 for line in (source / "frames.jsonl").read_text().splitlines()
             ]
+            validate_clean_expert(episode, rows)
             if not rows or any(
                 key not in row
                 for row in rows

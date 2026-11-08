@@ -59,6 +59,7 @@ function renderCard(item, view) {
     card.append(text("p", `Jerk ${Number(item.rms_jerk).toFixed(3)} | ${item.steps} policy steps | ${item.evidence_status === "available" ? "Recorded policy trajectory" : item.evidence_status === "expired" ? "Recording expired; summary retained" : "Summary only: no policy images/actions recorded"}`));
   } else {
     card.append(text("p", `Expert: ${item.expert_outcome} | Policy: ${item.passed}/${item.rollouts} passed | ${item.failed} failed`));
+    if (item.expert_acceptance) card.append(text("p", `Expert acceptance: ${item.expert_acceptance}`));
     card.append(text("p", view === "solved" ? `Perfect at step ${item.solved_at_step} with ${percent(item.assistance)} assistance`
       : `${item.used ? `Last sampled at step ${item.last_step}` : "Not sampled in this training log"} | ${item.solved_entries.length} solved assistance entries`));
     if (item.difficulty) card.append(text("p", item.difficulty.factors.join("; ")));

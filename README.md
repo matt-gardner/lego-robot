@@ -1,5 +1,14 @@
 # SO-101 LeRobot workspace
 
+New expert recordings use `initial.expert_acceptance_version=1`: one grasp
+attempt and one push pass, with final task success still required. Failed
+attempts are rejected as complete episodes, never trimmed or relabeled as clean
+experts. SFT/RL loaders reject retry phases in versioned clean recordings.
+Historical unversioned recordings remain unchanged and retain their original
+acceptance semantics. Corrected replacements must use a new output dataset
+(for example `physical_preview_v3_clean_v1`), preserving source provenance;
+older preview recordings are not silently rewritten.
+
 Completed `data/simulation/physical_preview*/collection.json` datasets appear
 as supplemental dashboard examples. Search for `physical_preview_v3` to inspect
 the collision-correct preview; these examples are not marked as used by historical

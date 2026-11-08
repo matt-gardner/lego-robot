@@ -23,7 +23,7 @@ from so101.robot_sim import (
     BeamSimulation, BEAM_HALF_HEIGHT, INITIAL_PENETRATION_TOLERANCE, MODEL_COMMIT,
     MODEL_ROOT, OBJECT_NAMES, SCENE_VERSION, TABLE_Z, TARGET_COLORS, restore_episode,
 )
-from so101.simulation_corpus import CorpusEpisode, expert_bounds, load_corpus
+from so101.simulation_corpus import CorpusEpisode, expert_bounds, load_corpus, validate_clean_expert
 from so101.simulation_playback import model_fingerprint
 
 CONTACT_LIMIT_M = .001
@@ -126,9 +126,11 @@ def validate_episode(root: Path) -> tuple[dict, int]:
     if metadata["outcome"] != "success" or metadata["initial"]["scene_version"] != SCENE_VERSION:
         raise ValueError(f"Unqualified corrected episode: {root}")
     count = 0
+    phases = []
     with (root / "frames.jsonl").open() as stream:
         for line in stream:
             row = json.loads(line)
+            phases.append({"phase": row.get("phase")})
             if len(row["qpos"]) != 62 or not np.isfinite(row["qpos"]).all():
                 raise ValueError(f"Invalid physics snapshot in {root}")
             if (row["action_interval_max_contact_penetration_m"] > CONTACT_LIMIT_M
@@ -146,6 +148,9 @@ def validate_episode(root: Path) -> tuple[dict, int]:
             count += 1
     if count < 2 or count != metadata["frames"]:
         raise ValueError(f"Incomplete recorded trajectory in {root}")
+    if metadata["initial"].get("expert_acceptance_version") != 1:
+        raise ValueError(f"Missing clean expert acceptance provenance in {root}")
+    validate_clean_expert(metadata, phases)
     return metadata, count
 
 

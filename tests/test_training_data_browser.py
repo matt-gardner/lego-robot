@@ -56,6 +56,7 @@ def test_source_usage_outcomes_difficulty_and_exact_assistance_bucket(dataset):
     row = next(item for item in result["items"] if item["source"] == a)
     assert (row["rollouts"], row["passed"], row["failed"]) == (6, 3, 3)
     assert row["difficulty_level"] == "unrated"
+    assert row["expert_acceptance"] == "legacy final-success (may include retries)"
     assert browser.list(path, {"outcome": "failed"})["total"] == 1
     assert browser.list(path, {"difficulty": "3", "usage": "unused"})["items"][0]["source"] == c
     assert browser.list(path, {"usage": "validation"})["items"][0]["source"] == b
