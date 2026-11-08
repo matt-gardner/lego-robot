@@ -145,6 +145,7 @@ def test_exact_invalidation_preserves_history_and_identity(tmp_path):
     assert result["items"][0]["stored_status"] == "verified"
     assert result["items"][0]["effective_status"] == "invalidated"
     assert result["items"][0]["qualification_status"] == "invalidated"
+    assert browser.list({"release": release["id"], "effective_status": "verified"})["total"] == 0
     assert result["release"]["qualification_notices"][0]["notice_sha256"] == (
         hashlib.sha256(notice_path.read_bytes()).hexdigest())
     assert browser.list({"release": release["id"], "qualification_status": "not_invalidated"})["total"] == 0
@@ -195,6 +196,63 @@ def test_selected_release_does_not_parse_other_catalogs(tmp_path):
     assert browser.list({"release": selected})["total"] == 2
     with pytest.raises(ValueError):
         browser.list({})
+
+
+def test_real_geometry_preview_is_hash_pinned_and_invalidated_parts_stay_hidden(tmp_path):
+    path = catalog(tmp_path)
+    metadata = json.loads(path.read_text())
+    geometry = b"""<mujoco><asset><mesh name="visual" vertex="0 0 0 1 0 0 0 1 1" face="0 1 2"/></asset>
+    <worldbody><body><geom type="mesh" mesh="visual" group="2" rgba=".8 .25 .1 1"/></body></worldbody></mujoco>"""
+    mesh_path = path.parent / "parts" / "54200" / "part.xml"
+    mesh_path.parent.mkdir(parents=True)
+    mesh_path.write_bytes(geometry)
+    metadata["parts"][0].update({
+        "mjcf": "parts/54200/part.xml",
+        "assets": [{"path": "parts/54200/part.xml", "sha256": hashlib.sha256(geometry).hexdigest()}],
+    })
+    path.write_text(json.dumps(metadata))
+    browser = LegoDataBrowser(tmp_path)
+    release = browser.list({})["releases"][0]
+    query = {"release": release["id"], "item": "54200"}
+    assert release["validated_parts"] == 1
+    assert browser.geometry(query)["meshes"][0]["faces"] == [[0, 1, 2]]
+    assert b"<polygon" in browser.preview(query)
+    assert browser.list({"release": release["id"], "effective_status": "verified"})["total"] == 1
+    mesh_path.write_bytes(geometry + b"\n")
+    with pytest.raises(ValueError, match="checksum"):
+        browser.preview(query)
+
+
+@pytest.mark.parametrize("mesh", [
+    b'<mujoco><asset><mesh name="m" vertex="nan 0 0" face="0 0 0"/></asset><worldbody><geom type="mesh" mesh="m" group="2"/></worldbody></mujoco>',
+    b'<mujoco><asset><mesh name="m" vertex="0 0 0" face="0 0 2"/></asset><worldbody><geom type="mesh" mesh="m" group="2"/></worldbody></mujoco>',
+    b'<mujoco><worldbody><body pos="1 0 0"/></worldbody></mujoco>',
+])
+def test_invalid_visual_geometry_is_not_rendered(mesh):
+    from so101.part_preview import visual_geometry
+
+    with pytest.raises(ValueError):
+        visual_geometry(mesh)
+
+
+def test_declared_variants_group_with_plain_base_without_qualification_claim(tmp_path):
+    path = catalog(tmp_path)
+    metadata = json.loads(path.read_text())
+    metadata["parts"][0]["decoration"] = "undecorated"
+    metadata["parts"].append({
+        "part_id": "54200p01", "description": "Printed slope", "family": "slope",
+        "status": "imported", "decoration": "print", "base_part_id": "54200",
+        "base_part_relationship": {"basis": "ldraw_official_numbering",
+                                   "geometry_equivalence": "not_qualified"},
+    })
+    path.write_text(json.dumps(metadata))
+    browser = LegoDataBrowser(tmp_path)
+    release = browser.list({})["releases"][0]["id"]
+    variants = browser.list({"release": release, "item": "54200"})["variants"]
+    assert [variant["part_id"] for variant in variants] == ["54200p01"]
+    assert variants[0]["status"] == "imported"
+    assert variants[0]["relationship"]["geometry_equivalence"] == "not_qualified"
+    assert browser.list({"release": release, "item": "54200p01"})["variants"][0]["part_id"] == "54200"
 
 
 def test_dashboard_prefix_and_lego_api(tmp_path):

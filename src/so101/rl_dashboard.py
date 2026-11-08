@@ -452,6 +452,8 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
         "/data.css": ("data.css", "text/css; charset=utf-8"),
         "/lego": ("lego.html", "text/html; charset=utf-8"),
         "/lego.js": ("lego.js", "text/javascript; charset=utf-8"),
+        "/lego.css": ("lego.css", "text/css; charset=utf-8"),
+        "/part-viewer.js": ("part-viewer.js", "text/javascript; charset=utf-8"),
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -472,6 +474,10 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                         if "frame" in query:
                             body, content_type = lego_browser.media(query)
                             self.send_body(200, body, content_type)
+                        elif query.get("preview") == "image":
+                            self.send_body(200, lego_browser.preview(query), "image/svg+xml")
+                        elif query.get("preview") == "geometry":
+                            self.respond(200, lego_browser.geometry(query))
                         else:
                             self.respond(200, lego_browser.list(query))
                 except FileNotFoundError as error:

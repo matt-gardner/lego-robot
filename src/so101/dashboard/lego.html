@@ -6,31 +6,46 @@
   <title>LEGO catalogs and generations</title>
   <link rel="stylesheet" href="/dashboard.css">
   <link rel="stylesheet" href="/data.css">
+  <link rel="stylesheet" href="/lego.css">
+  <script src="/part-viewer.js" defer></script>
   <script src="/lego.js" defer></script>
 </head>
 <body>
-  <header><h1>LEGO catalogs and generations</h1><a href="/data">Training data browser</a></header>
+  <header><h1>LEGO parts</h1><a href="/data">Training data browser</a></header>
   <main class="data-main">
-    <p class="context">Imported geometry is not physical qualification or robot competence. Historical acceptance and split labels are never upgraded.</p>
+    <p class="context">Browse validated simulation parts. Select a part to inspect its geometry. Validation is not robot-grasp qualification.</p>
     <p id="lego-error" role="alert"></p>
-    <div class="data-filters">
-      <label>Catalog / generation<select id="lego-release"></select></label>
-      <label>Tags / part / task / pile / acceptance / audit<input id="lego-search" type="search"></label>
-      <label>Part status<select id="lego-status"><option value="">All</option><option>imported</option><option>prepared</option><option>verified</option><option>unavailable</option></select></label>
-      <label>Qualification notice<select id="lego-qualification"><option value="">All</option><option>invalidated</option><option>superseded</option><option>not_invalidated</option></select></label>
-      <button id="lego-refresh">Refresh releases</button>
+    <div class="catalog-toolbar">
+      <label>Search parts<input id="lego-search" type="search" placeholder="Part number, brick, plate, slope..."></label>
+      <button id="lego-refresh">Refresh parts</button>
     </div>
-    <p id="lego-identity" class="hint"></p>
-    <p id="lego-feedback" role="status"></p>
+    <details class="catalog-advanced">
+      <summary>Catalog history and advanced filters</summary>
+      <p class="hint">Each catalog is an immutable snapshot of prepared parts. The latest usable snapshot is selected automatically. Older catalogs retain their original labels and any invalidation warnings.</p>
+      <div class="data-filters">
+      <label>Catalog snapshot<select id="lego-release"></select></label>
+      <label>Show<select id="lego-status"><option value="verified" selected>Validated parts</option><option value="">All parts</option><option>imported</option><option>prepared</option><option>unavailable</option></select></label>
+      <label>Qualification notice<select id="lego-qualification"><option value="">All</option><option>invalidated</option><option>superseded</option><option>not_invalidated</option></select></label>
+      </div>
+      <p id="lego-identity" class="hint"></p>
+      <p id="lego-feedback" role="status"></p>
+    </details>
+    <p id="lego-catalog-note" class="hint"></p>
     <h2 id="lego-count"></h2>
-    <div id="lego-grid" class="data-grid"></div>
+    <div id="lego-grid" class="data-grid catalog-grid"></div>
     <div class="data-pagination"><button id="lego-previous">Previous</button><button id="lego-next">Next</button></div>
     <dialog id="lego-detail">
-      <button id="lego-close">Close</button>
+      <div class="part-detail-heading"><h2 id="lego-part-title"></h2><button id="lego-close">Close</button></div>
+      <div class="part-detail-layout">
+        <div><canvas id="lego-geometry" width="800" height="600" tabindex="0" aria-label="Part geometry. Drag to rotate, scroll to zoom, or use arrow keys."></canvas><p id="lego-preview-status" role="status"></p></div>
+        <div><p id="lego-part-summary"></p><h3>Print and sticker variants</h3><p id="lego-variant-note"></p><div id="lego-variants" class="part-variants"></div></div>
+      </div>
+      <div id="lego-recording">
       <label>Recorded frame<select id="lego-frame"></select></label>
       <p id="lego-frame-identity"></p>
       <div class="detail-previews"><img id="lego-wrist" alt="Recorded wrist frame" hidden><img id="lego-external" alt="Recorded external frame" hidden></div>
-      <pre id="lego-metadata"></pre>
+      </div>
+      <details><summary>Technical metadata and immutable identity</summary><pre id="lego-metadata"></pre></details>
     </dialog>
   </main>
 </body>

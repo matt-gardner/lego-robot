@@ -1,0 +1,24 @@
+.catalog-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin: 24px 0; }
+.catalog-toolbar label { display: grid; gap: 7px; flex: 1; min-width: 200px; }
+.catalog-toolbar input { width: 100%; }
+.catalog-advanced { margin-bottom: 24px; }
+.catalog-advanced summary { color: var(--muted); cursor: pointer; }
+.catalog-advanced .data-filters { padding-top: 16px; }
+.catalog-grid { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+.part-card { padding: 0; overflow: hidden; text-align: left; border-radius: 16px; }
+.part-card img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #eef2f6; }
+.part-card .part-info { display: grid; padding: 15px; gap: 6px; }
+.part-card strong { font-size: 16px; }
+.part-card .part-id, .part-badge { font-size: 12px; color: var(--muted); }
+.part-card .part-badge { color: #a6deb5; }
+.part-card:hover { border-color: #a6deb5; transform: translateY(-2px); }
+.part-placeholder { display: grid; place-items: center; height: 160px; color: var(--muted); }
+#lego-geometry { display: block; width: 100%; aspect-ratio: 4 / 3; background: #eef2f6; border-radius: 14px; cursor: grab; touch-action: none; }
+#lego-geometry:active { cursor: grabbing; }
+#lego-detail [hidden] { display: none; }
+.part-detail-layout { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px; }
+.part-detail-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+.part-variants { display: grid; gap: 10px; }
+.part-variants button { text-align: left; }
+#lego-preview-status { color: var(--muted); font-size: 13px; }
+@media (max-width: 650px) { .part-detail-layout { grid-template-columns: 1fr; } .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

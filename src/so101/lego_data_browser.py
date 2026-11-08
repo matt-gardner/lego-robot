@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from so101.episode_storage import EpisodeStorage
+from so101.part_preview import thumbnail, visual_geometry
 
 
 class LegoDataBrowser:
@@ -17,6 +18,7 @@ class LegoDataBrowser:
         self.catalog_root = catalog_root.absolute() if catalog_root else self.root
         self.fingerprints: dict[Path, tuple[tuple[int, int, int, int], str]] = {}
         self.lock = threading.RLock()
+        self.preview_catalogs: dict[str, dict] = {}
 
     def artifact_hash(self, path: Path) -> str:
         stat = path.stat()
@@ -80,6 +82,9 @@ class LegoDataBrowser:
                     "id": key, "kind": kind, "version": version,
                     "path": relative, "catalog_sha256": digest,
                     "artifact_sha256": artifact_digest,
+                    "publication_mtime_ns": path.stat().st_mtime_ns,
+                    "validated_parts": (sum(row.get("status") == "verified" for row in metadata["parts"])
+                                        if kind == "parts" else 0),
                     "qualification_notices": [
                         notice for notice in notices if kind == "parts"
                         and notice["catalog_id"] == version
@@ -139,6 +144,15 @@ class LegoDataBrowser:
                    for row in rows):
                 raise ValueError("Invalid catalog part status")
             qualification = self.qualification_status(release)
+            self.preview_catalogs[release["id"]] = {
+                "release": {key: value for key, value in release.items() if key != "metadata"},
+                "parts": {
+                    row["part_id"]: {key: row.get(key) for key in ("part_id", "mjcf", "assets")}
+                    for row in rows if row.get("mjcf")
+                },
+            }
+            while len(self.preview_catalogs) > 2:
+                del self.preview_catalogs[next(iter(self.preview_catalogs))]
             return [{**row, "id": row["part_id"], "stored_status": row["status"],
                      "qualification_status": qualification,
                      "effective_status": qualification if qualification != "not_invalidated"
@@ -167,6 +181,43 @@ class LegoDataBrowser:
         if len({row["id"] for row in rows}) != len(rows):
             raise ValueError("Duplicate example identity in release")
         return rows
+
+    def geometry(self, query: dict[str, str]) -> dict:
+        cached = self.preview_catalogs.get(query["release"])
+        if cached is None:
+            release = self.release(query["release"])
+            if release["kind"] != "parts":
+                raise ValueError("Geometry previews require a part catalog")
+            self.rows(release)
+            cached = self.preview_catalogs[query["release"]]
+        release = cached["release"]
+        if release["kind"] != "parts":
+            raise ValueError("Geometry previews require a part catalog")
+        catalog_path = self.contained(self.catalog_root / release["path"], self.catalog_root)
+        if self.artifact_hash(catalog_path) != release["artifact_sha256"]:
+            raise FileNotFoundError("Catalog changed; reload the pinned part identity")
+        row = cached["parts"].get(query["item"])
+        if row is None:
+            raise FileNotFoundError("Part has no prepared geometry in this catalog")
+        reference = row.get("mjcf")
+        if not isinstance(reference, str):
+            raise FileNotFoundError("Part has no prepared geometry")
+        relative = Path(reference)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Unsafe MJCF reference")
+        asset = next((asset for asset in row.get("assets", []) if asset["path"] == reference), None)
+        if asset is None:
+            raise ValueError("MJCF missing from hash-pinned assets")
+        catalog_dir = (self.catalog_root / release["path"]).parent
+        path = self.contained(catalog_dir / relative, self.catalog_root)
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != asset["sha256"]:
+            raise ValueError("Part geometry checksum mismatch")
+        return {**visual_geometry(content), "part_id": row["part_id"],
+                "asset_sha256": asset["sha256"], "release_id": release["id"]}
+
+    def preview(self, query: dict[str, str]) -> bytes:
+        return thumbnail(self.geometry(query))
 
     def media(self, query: dict[str, str]) -> tuple[bytes, str]:
         release = self.release(query["release"])
@@ -219,6 +270,8 @@ class LegoDataBrowser:
             row = next((row for row in rows if row["id"] == query["item"]), None)
             if row is None:
                 raise FileNotFoundError("Part or example not found in release")
+            base_part_id = (row.get("base_part_id") or
+                            (row.get("part_id") if row.get("decoration") == "undecorated" else None))
             frames = []
             if release["kind"] == "examples":
                 with EpisodeStorage(self.contained(self.root / release["path"])) as storage:
@@ -235,12 +288,24 @@ class LegoDataBrowser:
                                            "wrist": "image" in frame,
                                            "external": "external_image" in frame})
             return {"item": row, "frames": frames,
+                    "variants": [
+                        {"part_id": candidate["part_id"], "description": candidate["description"],
+                         "decoration": candidate.get("decoration", "not recorded"),
+                         "status": candidate["status"],
+                         "relationship": candidate.get("base_part_relationship")}
+                        for candidate in release["metadata"].get("parts", [])
+                        if base_part_id and (
+                            candidate.get("base_part_id") or
+                            (candidate["part_id"] if candidate.get("decoration") == "undecorated" else None)
+                        ) == base_part_id
+                        and candidate["part_id"] != row["part_id"]
+                    ],
                     "release": {key: value for key, value in release.items()
                                            if key != "metadata"}}
         search = query.get("search", "").casefold()
         rows = [row for row in rows if not search or search in
                 json.dumps(row, sort_keys=True).casefold()]
-        for field in ("status", "family", "task", "category", "split",
+        for field in ("status", "effective_status", "family", "task", "category", "split",
                       "expert_acceptance", "visual_audit", "qualification_status"):
             if query.get(field):
                 rows = [row for row in rows if str(row.get(field, "")) == query[field]]

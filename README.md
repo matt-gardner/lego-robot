@@ -221,6 +221,15 @@ to read externally published catalog releases. Hidden staging paths are excluded
 from discovery until publication. Exact artifact and catalog hashes,
 part preparation failures, historical acceptance labels and original recorded
 frames remain visible; missing external recordings are not reconstructed.
+The parts page defaults to effectively verified parts from the most recently
+published usable catalog; snapshot history and non-validated filters are under
+advanced controls. Cards show hash-verified visual-mesh thumbnails. Clicking a
+part opens a drag-to-rotate, scroll-to-zoom viewer (arrow keys also rotate).
+Previews use embedded visual MJCF meshes, not collision hulls, and need no GPU,
+external scripts or new runtime dependency. Unsupported or unprepared geometry
+is explicitly unavailable. Print/sticker variants use producer-declared
+`base_part_id` relationships; numbering-based declarations are not claims of
+qualified geometric equivalence or decorated simulation readiness.
 Authenticated request-monitor feedback delivery is not yet integrated and is
 explicitly shown as unavailable. This page does not accept or acknowledge comments.
 Producer-authored immutable `notices/*.json` (schema version 1) annotate an exact
