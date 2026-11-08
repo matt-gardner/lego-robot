@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from dataclasses import replace
 import fcntl
 import hashlib
@@ -12,6 +13,7 @@ from pathlib import Path
 import resource
 import signal
 import shutil
+import threading
 
 import cv2
 import mujoco
@@ -30,6 +32,55 @@ LOGGER = logging.getLogger(__name__)
 CONTACT_SOLVER = "pyramidal-v1"
 STATIONARITY_METRIC = "surface-speed-v2"
 VELOCITY_TOLERANCE = .005
+DISK_FREE_FLOOR = 8 * 1024**3
+PAIR_WRITE_ALLOWANCE = 2 * 1024**3
+
+
+class DiskBackpressure:
+    """Keep in-flight simulation state in RAM while shared storage is pressured."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.status_path = root / "disk_status.json"
+        self.wakeup = threading.Event()
+
+    def wait(self, required_bytes: int, phase: str,
+             stopping: Callable[[], bool] | None = None) -> bool:
+        if required_bytes < 0:
+            raise ValueError("Disk write allowance must be nonnegative")
+        threshold = DISK_FREE_FLOOR + required_bytes
+        paused = False
+        while True:
+            if stopping is not None and stopping():
+                return False
+            filesystem = os.statvfs(self.root)
+            available = filesystem.f_bavail * filesystem.f_frsize
+            if available >= threshold:
+                if paused or phase != "recording":
+                    atomic_json(self.status_path, {
+                        "status": "ready", "phase": phase, "available_bytes": available,
+                        "required_available_bytes": threshold,
+                    })
+                return True
+            if not paused:
+                LOGGER.warning("Curriculum disk pause during %s: %s bytes available, %s needed",
+                               phase, available, threshold)
+                atomic_json(self.status_path, {
+                    "status": "resource_paused", "phase": phase,
+                    "available_bytes": available, "required_available_bytes": threshold,
+                    "preserves_inflight_state": True,
+                })
+                paused = True
+            self.wakeup.wait(30)
+
+    def before_frame(self) -> None:
+        # Allow both camera images and metadata; check before any physics advancement.
+        self.wait(1024**2, "recording")
+
+
+def qualification_write_allowance(attempt: Path) -> int:
+    # Count logical bytes (including hard links) conservatively, not reclaimed space.
+    return 2 * sum(path.stat().st_size for path in attempt.rglob("*") if path.is_file()) + 64 * 1024**2
 
 
 def scheduled_scene(sequence: int) -> tuple[str, str, int]:
@@ -152,8 +203,11 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
             raise ValueError("Producer coordination ledger changed")
         state["ledger_path"] = str(ledger_path)
         ledger = CurriculumLedger(ledger_path, audit_seed=seed)
+        disk = DiskBackpressure(root)
         try:
             while not stopping():
+                if not disk.wait(PAIR_WRITE_ALLOWANCE, "admission", stopping):
+                    break
                 if recipe(catalog_path, appearance_path, part_ids, seed) != identity:
                     raise ValueError("Pinned producer inputs changed during execution")
                 sequence = state.get("active_sequence")
@@ -188,10 +242,13 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                             catalog, plan, appearance=appearance, contact_solver=CONTACT_SOLVER,
                             stationarity_metric=STATIONARITY_METRIC,
                             velocity_tolerance=VELOCITY_TOLERANCE,
+                            before_recording_write=disk.before_frame,
                         )
+                        disk.wait(PAIR_WRITE_ALLOWANCE, "archive")
                         report = record_pair(sim, attempt)
                     if report["status"] != "complete":
                         raise ValueError("Independent command pair failed physical/recording acceptance")
+                    disk.wait(qualification_write_allowance(attempt), "qualification")
                     qualification = qualify_pair(attempt)
                     entry.update(status="qualified", qualification=qualification,
                                  audits=ledger.accept_pair(report))
@@ -200,6 +257,10 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                         "storage_sha256": qualification["storage_sha256"],
                         "release_id": report["release_id"], **qualification,
                     })
+                    disk.wait(sum((attempt / name).stat().st_size for name in (
+                        "collection.json", "episodes.sqlite", "qualification.json",
+                        "source/parts_catalog.json",
+                    )), "publication")
                     entry["release"] = str(publish_pair(root, attempt, report))
                 except (ValueError, RuntimeError, mujoco.FatalError) as error:
                     LOGGER.error("Curriculum attempt %s rejected: %s", sequence, error)

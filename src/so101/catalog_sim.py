@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 import hashlib
 import json
 import math
@@ -31,7 +32,9 @@ class CatalogSimulation(BeamSimulation):
         contact_solver: str = "model-default",
         stationarity_metric: str = "legacy-component-v1",
         velocity_tolerance: float = .005,
+        before_recording_write: Callable[[], None] | None = None,
     ):
+        self.before_recording_write = before_recording_write
         root = ET.fromstring(scene_xml(model_root, SCENE_VERSION))
         if contact_solver == "pyramidal-v1":
             option = root.find("option")
@@ -201,6 +204,8 @@ class CatalogSimulation(BeamSimulation):
     def step(self, target: np.ndarray, phase: str):
         if self.episode_root is None:
             return super().step(target, phase)
+        if self.before_recording_write is not None:
+            self.before_recording_write()
         index = len(self.rows)
         relative = f"external/{index:06}.jpg"
         if not cv2.imwrite(str(self.episode_root / relative),

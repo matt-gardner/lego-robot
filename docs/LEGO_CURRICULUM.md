@@ -12,6 +12,20 @@ The upstream CAD is not a hardware calibration; push-path/contact accuracy still
 requires separate validation. Existing releases are never rerendered or relabeled
 by selecting this profile for future recordings.
 
+Future producer source checks actual `statvfs` available bytes on its output
+filesystem. Admission/archive preparation requires an 8 GiB free-space floor
+plus a 2 GiB operational pair allowance; these are conservative operating
+budgets, not measured guarantees about unrelated writers. Every recorded step
+checks the floor plus 1 MiB before either camera write or physics advancement.
+Low space waits with the exact in-flight state retained in RAM and records
+`disk_status.json` as `resource_paused`, not a physics rejection. Consolidation
+requires twice the attempt's logical file bytes plus 64 MiB above the floor;
+publication checks the actual copy bytes above it. No automatic data deletion
+occurs. SIGTERM prevents new admission; an already paused in-flight pair still
+needs storage recovery to finish gracefully. Killing that process loses its RAM,
+so retain it rather than launching a replacement. This guard does not reserve
+space against unrelated host writers.
+
 ## Priorities and progression
 
 Use verified entries from `LEGO_PARTS_CATALOG.md` as they become available.

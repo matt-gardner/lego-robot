@@ -1,7 +1,9 @@
 import json
 from collections import Counter
+from types import SimpleNamespace
 
-from so101.produce_catalog import run, scheduled_scene
+from so101.produce_catalog import DISK_FREE_FLOOR, DiskBackpressure, run, scheduled_scene
+from so101.catalog_sim import CatalogSimulation
 
 
 def test_schedule_prioritizes_manipulation_and_reserves_views_for_dense_piles():
@@ -48,6 +50,9 @@ def test_worker_resumes_completed_pair_without_generating_again(tmp_path, monkey
         ],
     }
     (attempt / "collection.json").write_text(json.dumps(report))
+    (attempt / "episodes.sqlite").write_bytes(b"mock qualified storage")
+    (attempt / "source").mkdir()
+    (attempt / "source" / "parts_catalog.json").write_bytes(b"{}")
     monkeypatch.setattr("so101.produce_catalog.qualify_pair",
                         lambda path: {"storage_sha256": "fixture", "samples": 4})
     monkeypatch.setattr("so101.produce_catalog.publish_pair", lambda *args: "/release")
@@ -58,3 +63,56 @@ def test_worker_resumes_completed_pair_without_generating_again(tmp_path, monkey
     state = json.loads((root / "producer.json").read_text())
     assert state["attempts"][0]["status"] == "qualified"
     assert state["next_sequence"] == 1
+
+
+def test_disk_pause_preserves_state_until_exact_write_headroom(tmp_path, monkeypatch):
+    required = 1024**2
+    free = iter([DISK_FREE_FLOOR + required - 1, DISK_FREE_FLOOR + required])
+    monkeypatch.setattr("so101.produce_catalog.os.statvfs", lambda path: SimpleNamespace(
+        f_bavail=next(free), f_frsize=1,
+    ))
+    disk = DiskBackpressure(tmp_path)
+    pauses = []
+    monkeypatch.setattr(disk.wakeup, "wait", lambda timeout: pauses.append(
+        json.loads(disk.status_path.read_text())
+    ))
+    assert disk.wait(required, "recording")
+    assert len(pauses) == 1
+    assert pauses[0]["status"] == "resource_paused"
+    assert pauses[0]["preserves_inflight_state"]
+    status = json.loads(disk.status_path.read_text())
+    assert status["status"] == "ready"
+    assert status["available_bytes"] == DISK_FREE_FLOOR + required
+
+
+def test_stopped_admission_does_not_wait_for_disk_or_claim_an_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr("so101.produce_catalog.os.statvfs",
+                        lambda path: (_ for _ in ()).throw(AssertionError("disk access")))
+    disk = DiskBackpressure(tmp_path)
+    assert not disk.wait(1024, "admission", lambda: True)
+    assert not disk.status_path.exists()
+
+
+def test_recording_pause_precedes_camera_writes_and_simulation_steps(tmp_path, monkeypatch):
+    sim = object.__new__(CatalogSimulation)
+    sim.episode_root = tmp_path
+    sim.rows = []
+
+    class Paused(Exception):
+        pass
+
+    def pause():
+        raise Paused()
+
+    sim.before_recording_write = pause
+    monkeypatch.setattr("so101.catalog_sim.cv2.imwrite",
+                        lambda *args: (_ for _ in ()).throw(AssertionError("camera write")))
+    monkeypatch.setattr("so101.robot_sim.BeamSimulation.step",
+                        lambda *args: (_ for _ in ()).throw(AssertionError("physics step")))
+    try:
+        sim.step(None, "push")
+    except Paused:
+        pass
+    else:
+        raise AssertionError("Recording bypassed disk pause")
+    assert sim.rows == []
