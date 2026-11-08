@@ -24,7 +24,9 @@ async function legoFeedbackFetch(path, options = {}) {
       403: "Feedback origin authorization failed.", 404: "Feedback is disabled or this identity has no saved receipt.",
       409: "This key already belongs to different feedback. Do not send a replacement key.",
       422: "Feedback identity or recorded context was rejected.", 503: "Feedback target validation is unavailable."};
-    throw new Error(`${messages[response.status] || `HTTP ${response.status}`} ${JSON.stringify(value.detail || value.error || value)}`);
+    const error = new Error(`${messages[response.status] || `HTTP ${response.status}`} ${JSON.stringify(value.detail || value.error || value)}`);
+    error.status = response.status;
+    throw error;
   }
   return value;
 }
@@ -38,8 +40,10 @@ function legoFeedbackReceipt(receipt) {
   }
   legoElement("feedback-status").textContent =
     `Saved request ${receipt.request_id}. Owner: ${receipt.owner_delivery}; monitor: ${receipt.monitor_delivery}. ` +
-    (receipt.error || receipt.monitor_error || "Enqueue is not acknowledgment or resolution.");
-  legoElement("feedback-receipt").textContent = JSON.stringify(receipt, null, 2);
+    (receipt.error || receipt.monitor_error || "Enqueue is not acknowledgment or resolution.") +
+    " The previous comment's original target and context are preserved. Choose Write a new comment to comment on the open item.";
+  legoElement("feedback-receipt").textContent = JSON.stringify({feedback: legoFeedbackPending(), receipt}, null, 2);
+  legoElement("feedback-signin").hidden = true;
   legoElement("feedback-new").hidden = false;
 }
 async function legoFeedbackRecover(retry = false) {
@@ -54,6 +58,7 @@ async function legoFeedbackRecover(retry = false) {
       : await legoFeedbackFetch(`/${pending.idempotency_uuid}`);
     legoFeedbackReceipt(receipt);
   } catch (error) {
+    if (error.status === 401) legoElement("feedback-signin").hidden = false;
     legoElement("feedback-status").textContent = `${error.message} Saved feedback has not been discarded. Check the original receipt or retry the exact payload; do not create a duplicate.`;
   } finally {
     legoFeedbackBusy = false;
@@ -64,20 +69,21 @@ async function legoFeedbackOpen(detail, request) {
   legoElement("feedback-form").hidden = true;
   legoElement("feedback-receipt").textContent = "";
   legoElement("feedback-status").textContent = "Checking authenticated feedback availability...";
+  legoElement("feedback-signin").hidden = true;
   try {
     const pending = legoFeedbackPending();
     for (const name of ["check", "retry"]) legoElement(`feedback-${name}`).hidden = !pending;
     legoElement("feedback-new").hidden = true;
-    if (pending) {
-      legoElement("feedback-receipt").textContent = JSON.stringify(pending, null, 2);
-      legoElement("feedback-status").textContent = "A saved comment awaits receipt checking. Its original target and context are preserved, even if a different item is open.";
-      return;
-    }
     const capabilities = await legoFeedbackFetch("/capabilities");
     if (request !== legoDetailRequest) return;
     const kind = detail.release.kind === "parts" ? "part" : "example";
     if (!capabilities.supported_target_kinds?.includes(kind) || !capabilities.issue_categories?.length) {
       throw new Error("Feedback for this target is unavailable.");
+    }
+    if (pending) {
+      legoElement("feedback-receipt").textContent = JSON.stringify(pending, null, 2);
+      await legoFeedbackRecover();
+      return;
     }
     legoElement("feedback-category").replaceChildren(...capabilities.issue_categories.map(category => {
       const option = legoText("option", category);
@@ -92,7 +98,10 @@ async function legoFeedbackOpen(detail, request) {
     legoElement("feedback-form").hidden = false;
     legoElement("feedback-status").textContent = "Feedback routes through the request monitor to the responsible worker.";
   } catch (error) {
-    if (request === legoDetailRequest) legoElement("feedback-status").textContent = error.message;
+    if (request === legoDetailRequest) {
+      legoElement("feedback-status").textContent = error.message;
+      legoElement("feedback-signin").hidden = error.status !== 401;
+    }
   }
 }
 async function legoFeedbackSubmit(event) {

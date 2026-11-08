@@ -439,9 +439,15 @@ frame. They reuse the authenticated Family transport, immutable archive identity
 durable saved key, receipt checking and exact retries from the catalog viewer.
 Legacy directory demonstrations and policy recordings currently lack a supported
 immutable feedback target and are explicitly labeled unavailable.
-Original curriculum camera playback waits for both recorded views before advancing
-and retains the final frame. Slow image delivery buffers instead of skipping
-frames; the existing external recording needs no MuJoCo reconstruction.
+Opening an item checks any saved comment's original receipt automatically without
+resubmitting it. A confirmed receipt exposes Write a new comment; uncertain
+delivery keeps the original key and payload. Sign-in is shown only when the
+authenticated feedback endpoint actually rejects the session.
+Original curriculum recordings use cached native H.264 video combining both
+recorded cameras at their recorded frame rate, without MuJoCo reconstruction.
+Preparation uses the existing bounded movie worker and byte-range serving; the
+frame selector retains exact context for comments without fetching images during
+video playback.
 Curriculum cards show the task/target, generation category, object count, part mix,
 creation date and recording length instead of legacy difficulty or redundant
 acceptance labels. Category identifies the proposal recipe, not measured difficulty.

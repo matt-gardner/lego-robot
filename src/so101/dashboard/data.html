@@ -54,7 +54,7 @@
     <section class="data-feedback" aria-label="Comment on this example">
       <h3>Comment on this example</h3>
       <p id="lego-feedback-status" role="status"></p>
-      <a href="/family" target="_blank" rel="noopener">Sign in with a Family identity to comment</a>
+      <a id="lego-feedback-signin" href="/family" target="_blank" rel="noopener" hidden>Sign in to comment</a>
       <form id="lego-feedback-form" hidden>
         <p id="lego-feedback-target" class="hint"></p>
         <label>Feedback type<select id="lego-feedback-kind"><option value="comment">Comment</option><option value="looks_wrong">Looks wrong</option></select></label>
@@ -65,9 +65,9 @@
       </form>
       <button id="lego-feedback-check" type="button" hidden>Check original receipt</button>
       <button id="lego-feedback-retry" type="button" hidden>Retry exact saved comment</button>
-      <button id="lego-feedback-new" type="button" hidden>Start another comment</button>
+      <button id="lego-feedback-new" type="button" hidden>Write a new comment</button>
       <p class="hint">Comments retain this example's immutable identity and selected recorded frame. Delivery means enqueued to the responsible worker, not acknowledged or fixed. Uncertain submissions are kept for receipt checking or exact retry.</p>
-      <pre id="lego-feedback-receipt"></pre>
+      <details><summary>Saved comment and receipt details</summary><pre id="lego-feedback-receipt"></pre></details>
     </section>
     <svg id="action-plot" viewBox="0 0 800 180" role="img" aria-label="Five arm joint commanded positions over time"></svg>
     <pre id="detail-summary"></pre>

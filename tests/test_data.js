@@ -128,6 +128,30 @@ test("original paired camera playback buffers slow images without skipping or ca
   assert.equal(p.element("play-movie").textContent, "Play recorded views");
 });
 
+test("original archive prepares native video, autoplays on readiness and avoids per-frame HTTP while playing", async () => {
+  const p = page(), routes = [];
+  let ready;
+  p.context.fetch = async route => {
+    routes.push(route);
+    if (route.includes("movie=prepare")) return new Promise(resolve => { ready = resolve; });
+    return response(200, {...recording("native"), original_recording: true});
+  };
+  await p.run('showDetail({id:"native"}, "examples")');
+  await p.run("playMovie()");
+  assert.equal(p.run("wristPlayback"), null);
+  assert.match(p.element("movie-status").textContent, /Preparing native video/);
+  ready(response(200, {ready: true}));
+  await p.run("moviePreparation.promise");
+  p.element("detail-movie").duration = 2;
+  p.element("detail-movie").onloadedmetadata();
+  assert.equal(p.element("detail-movie").playCount, 1);
+  const before = p.element("detail-overview").src;
+  p.element("frame").value = 1;
+  p.run("showFrame(false)");
+  assert.equal(p.element("detail-overview").src, before);
+  assert.equal(routes.filter(route => route.includes("movie=prepare")).length, 1);
+});
+
 test("HTML gateway and sign-in responses are not parsed as JSON", async () => {
   const p = page();
   p.context.fetch = async () => ({

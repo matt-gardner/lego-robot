@@ -1,10 +1,13 @@
 """Read-only joins between source episodes, logged policy outcomes and solved entries."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import Future
@@ -12,10 +15,65 @@ from pathlib import Path
 
 from so101.generation_order import generation_order
 from so101.lego_data_browser import LegoDataBrowser
+from so101.episode_storage import EpisodeStorage
 
 
 def identifier(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:20]
+
+
+def encode_recorded_archive(archive: Path, source: Path, output: Path, expected_sha256: str) -> None:
+    # Load the image libraries only in the isolated encoder, not the dashboard process.
+    import cv2
+    import numpy as np
+
+    with archive.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != expected_sha256:
+            raise ValueError("Original recording archive checksum mismatch")
+    with EpisodeStorage(archive) as storage, tempfile.TemporaryFile() as errors:
+        metadata = json.loads(storage.read(source, "episode.json"))
+        frames = [json.loads(line) for line in storage.read(source, "frames.jsonl").splitlines()]
+        fps = metadata.get("fps")
+        if not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0 or not frames:
+            raise ValueError("Original recording requires frames and a positive recorded frame rate")
+        encoder = subprocess.Popen([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "rawvideo", "-pixel_format", "bgr24", "-video_size", "640x264",
+            "-framerate", str(fps), "-i", "-", "-an", "-c:v", "libx264",
+            "-preset", "ultrafast", "-threads", "2", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", str(output),
+        ], stdin=subprocess.PIPE, stderr=errors, bufsize=0)
+        try:
+            for frame in frames:
+                views = []
+                for key, label in (("external_image", "External (original recording)"),
+                                   ("image", "Wrist (original recording)")):
+                    content = storage.read(source, frame[key])
+                    image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if image is None:
+                        raise ValueError(f"Cannot decode original camera frame: {frame[key]}")
+                    panel = np.zeros((264, 320, 3), dtype=np.uint8)
+                    panel[24:] = cv2.resize(image, (320, 240), interpolation=cv2.INTER_AREA)
+                    cv2.putText(panel, label, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, .4, (255, 255, 255), 1)
+                    views.append(panel)
+                remaining = memoryview(np.concatenate(views, axis=1).tobytes())
+                while remaining:
+                    written = encoder.stdin.write(remaining)
+                    if not written:
+                        raise OSError("Original recording encoder stopped accepting frames")
+                    remaining = remaining[written:]
+            encoder.stdin.close()
+            if encoder.wait(timeout=30):
+                errors.seek(0)
+                raise OSError(f"Original recording encoding failed: {errors.read().decode()[-3000:]}")
+        except BrokenPipeError as error:
+            errors.seek(0)
+            raise OSError(f"Original recording encoding failed: {errors.read().decode()[-3000:]}") from error
+        finally:
+            encoder.stdin.close()
+            if encoder.poll() is None:
+                encoder.terminate()
+                encoder.wait(timeout=30)
 
 
 class TrainingDataBrowser:
@@ -271,10 +329,12 @@ class TrainingDataBrowser:
             return {**row, "metadata": archived["item"], "example_id": row["id"],
                     "feedback": {key: archived[key] for key in ("release", "item", "frames")},
                     "frames": [{"step": frame["frame_index"], **frame} for frame in archived["frames"]],
-                    "actions": [], "movie_available": False, "original_recording": True,
+                    "actions": [], "movie_available": bool(archived["frames"]) and all(
+                        frame["wrist"] and frame["external"] for frame in archived["frames"]),
+                    "original_recording": True,
                     "source_history": [], "recorded_trajectories": [], "source_rollout_total": 0,
-                    "playback_description": "Original synchronized wrist and external recordings. "
-                    "Development examples are not promoted training data."}
+                    "playback_description": "Native video of original synchronized wrist and external recordings; "
+                    "no MuJoCo reconstruction. Development examples are not promoted training data."}
         metadata = json.loads((self.source_path(row["source"]) / "episode.json").read_text())
         result = {**row, "metadata": metadata, "source_history": example["history"][-100:],
                   "source_history_total": len(example["history"]), "example_id": example["id"]}
@@ -316,6 +376,18 @@ class TrainingDataBrowser:
         if view not in ("examples", "rollouts", "solved") or item_id not in index[view]:
             raise FileNotFoundError("Example or rollout not found")
         row = index[view][item_id]
+        cache = self.workspace / "outputs" / ".data-browser-playback"
+        if cache.is_symlink():
+            raise ValueError("Playback cache must not be a symlink")
+        if row.get("origin") == "curriculum":
+            if self.curriculum is None:
+                raise ValueError("Curriculum archive adapter is unavailable")
+            release = self.curriculum.release(row["archive_release"])
+            archive = self.curriculum.contained(
+                self.curriculum.episode_root / release["path"], self.curriculum.episode_root)
+            revision = [release["artifact_sha256"], row["archive_item"],
+                        hashlib.sha256(Path(__file__).read_bytes()).hexdigest()]
+            return archive, Path(row["source"]), cache / f"{identifier(json.dumps(revision))}.mp4"
         source = self.source_path(row["source"])
         evidence = self.evidence_path(log_path, row) if view == "rollouts" else None
         if view == "rollouts" and (evidence is None or not evidence.exists()):
@@ -326,9 +398,6 @@ class TrainingDataBrowser:
         if evidence:
             inputs.append(evidence)
         revision = [(str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in inputs]
-        cache = self.workspace / "outputs" / ".data-browser-playback"
-        if cache.is_symlink():
-            raise ValueError("Playback cache must not be a symlink")
         target = cache / f"{identifier(json.dumps(revision))}.mp4"
         return source, evidence, target
 
@@ -373,7 +442,13 @@ class TrainingDataBrowser:
             temporary = target.with_suffix(".partial.mp4")
             command = [sys.executable, "-m", "so101.simulation_playback", "--source", str(source),
                        "--model-root", str(self.data_root / "model"), "--output", str(temporary)]
-            if evidence:
+            if source.suffix == ".sqlite":
+                row = self.index(log_path)[view][item_id]
+                digest = self.curriculum.release(row["archive_release"])["artifact_sha256"]
+                command = [sys.executable, "-m", "so101.training_data_browser", "--archive", str(source),
+                           "--logical-source", str(evidence), "--output", str(temporary),
+                           "--archive-sha256", digest]
+            elif evidence:
                 command.extend(("--evidence", str(evidence)))
             try:
                 completed = subprocess.run(command, capture_output=True, text=True, timeout=180)
@@ -433,3 +508,13 @@ class TrainingDataBrowser:
         if not path.is_relative_to(root) or path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
             raise ValueError("Invalid image reference")
         return path
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Encode original archive camera frames without reconstruction")
+    parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--logical-source", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--archive-sha256", required=True)
+    args = parser.parse_args()
+    encode_recorded_archive(args.archive, args.logical_source, args.output, args.archive_sha256)

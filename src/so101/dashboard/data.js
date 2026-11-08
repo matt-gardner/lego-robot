@@ -130,7 +130,7 @@ function showFrame(seek = true) {
     if (wrist.getAttribute("src") !== source) wrist.src = source;
   }
   $("frame-value").textContent = `${frame + 1}/${detail.frames.length} | policy/source step ${detail.frames[frame].step}`;
-  if (detail.original_recording) {
+  if (detail.original_recording && !$("detail-preview").hidden) {
     const external = image(detail, detail.view, `external:${frame}`);
     if ($("detail-overview").getAttribute("src") !== external) $("detail-overview").src = external;
     $("overview-caption").textContent = "Original external camera / same recorded frame";
@@ -147,7 +147,7 @@ function showFrame(seek = true) {
 function updatePlayButton() {
   const video = $("detail-movie"), combined = !!video.getAttribute("src");
   $("play-movie").disabled = combined ? !detail?.movie_available : !detail?.frames.length;
-  $("play-movie").textContent = `${playbackWanted ? "Pause" : "Play"} ${combined ? "combined view" : detail?.original_recording ? "recorded views" : "wrist view"}`;
+  $("play-movie").textContent = `${playbackWanted ? "Pause" : "Play"} ${combined ? "combined view" : detail?.original_recording ? detail.movie_available ? "recorded video" : "recorded views" : "wrist view"}`;
 }
 function stopWristPlayback() {
   if (wristPlayback) clearTimeout(wristPlayback.timer);
@@ -274,6 +274,12 @@ async function playMovie() {
     updatePlayButton();
     return;
   }
+  if (detail.original_recording && detail.movie_available) {
+    playbackWanted = !playbackWanted;
+    if (!moviePreparation) prepareMovie();
+    updatePlayButton();
+    return;
+  }
   if (wristPlayback) {
     stopWristPlayback();
     playbackWanted = false;
@@ -286,7 +292,10 @@ async function playMovie() {
 }
 async function loadMovie(version, selected, video) {
   updatePlayButton();
-  $("movie-status").textContent = "Preparing synchronized views (first playback may take up to 3 minutes)...";
+  const preparing = selected.original_recording
+    ? "Preparing native video from original camera recordings..."
+    : "Preparing synchronized views (first playback may take up to 3 minutes)...";
+  $("movie-status").textContent = preparing;
   try {
     const prepareURL = endpoint({view: selected.view, item: selected.id, movie: "prepare"});
     const deadline = Date.now() + 6 * 60 * 1000;
@@ -297,7 +306,7 @@ async function loadMovie(version, selected, video) {
       if (Date.now() >= deadline) throw new Error("Playback preparation timed out. Retry playback.");
       $("movie-status").textContent = status.status === "waiting"
         ? "Waiting for another recording to finish preparing..."
-        : "Preparing synchronized views (first playback may take up to 3 minutes)...";
+        : preparing;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     if (version !== detailRequest || !$("detail").open) return false;
@@ -359,7 +368,7 @@ async function showDetail(item, view) {
   renderTrajectoryNavigation();
   updatePlayButton();
   $("movie-status").textContent = result.original_recording
-    ? `${result.frames.length} original wrist/external camera frames. Playback waits for both views; no MuJoCo reconstruction is needed.`
+    ? `${result.frames.length} original camera frames; ${result.movie_available ? "native video prepares automatically" : "combined video unavailable: a recorded camera is missing"}. No MuJoCo reconstruction is needed.`
     : result.movie_available ? result.playback_description : "No retained trajectory recording is available for playback.";
   $("detail-title").textContent = `${item.task} / ${item.target}`;
   $("detail-kind").textContent = view === "rollouts"
@@ -381,7 +390,7 @@ async function showDetail(item, view) {
   } else $("detail-image").removeAttribute("src");
   plotActions(result.actions);
   $("trace-note").textContent = result.original_recording
-    ? "Both camera views are original recorded frames, not reconstructed MuJoCo views. Slow image delivery pauses playback instead of skipping ahead."
+    ? "Native video combines the original camera recordings, not reconstructed MuJoCo views. Frame controls retain exact recorded context for comments."
     : result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. Play the recorded wrist view immediately while synchronized video prepares. The source overview stays static until the combined video is ready; playback then continues there at the selected position. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
   const {metadata, source_history, frames, actions, states, qpos, recorded_trajectories, ...summary} = result;
   $("detail-summary").textContent = JSON.stringify(summary, null, 2);

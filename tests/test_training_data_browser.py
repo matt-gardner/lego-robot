@@ -1,6 +1,7 @@
 import json
 import hashlib
 import sqlite3
+import shutil
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ import pytest
 
 from so101.rl_dashboard import make_server, RunStore
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
-from so101.training_data_browser import TrainingDataBrowser, identifier
+from so101.training_data_browser import TrainingDataBrowser, encode_recorded_archive, identifier
 from so101.lego_data_browser import LegoDataBrowser
 
 
@@ -130,7 +131,7 @@ def test_curriculum_archive_appears_with_creation_date_and_original_views(datase
     assert row["origin"] == "curriculum" and row["generated_at"] == metadata["generated_at"]
     assert row["split"] == "development"
     detail = browser.detail(None, "examples", row["id"])
-    assert detail["original_recording"] and not detail["movie_available"]
+    assert detail["original_recording"] and detail["movie_available"]
     assert detail["frames"][0]["timestamp"] == 0
     assert detail["feedback"]["release"]["id"] == row["archive_release"]
     assert detail["feedback"]["release"]["artifact_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -141,6 +142,56 @@ def test_curriculum_archive_appears_with_creation_date_and_original_views(datase
     (archive_root / "copy.sqlite").write_bytes(archive.read_bytes())
     assert browser.list(None, {})["curriculum_example_count"] == 1
     assert browser.list(None, {})["items"][0]["id"] == row["id"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="Native recording encoder requires ffmpeg")
+def test_original_archive_native_movie_preserves_all_frames_and_cameras_without_model(dataset):
+    import cv2
+
+    root, _, _, _, _, _ = dataset
+    archive_root = root / "data" / "curriculum"
+    archive_root.mkdir()
+    archive = archive_root / "episodes.sqlite"
+    frames = [{"image": f"w{i}.jpg", "external_image": f"e{i}.jpg", "elapsed": i / 10} for i in range(3)]
+    files = {
+        "episode.json": json.dumps({"example_id": "video-example", "task": "view",
+                                   "fps": 10, "initial": {"objects": {}}}).encode(),
+        "frames.jsonl": "\n".join(json.dumps(frame) for frame in frames).encode(),
+        "model.mjb": b"must not be loaded",
+    }
+    for i in range(3):
+        for name, color in ((f"e{i}.jpg", (10 + 30 * i, 30, 100)),
+                            (f"w{i}.jpg", (180 - 30 * i, 50, 40))):
+            ok, image = cv2.imencode(".jpg", np.full((24, 32, 3), color, dtype=np.uint8))
+            assert ok
+            files[name] = image.tobytes()
+    with sqlite3.connect(archive) as db:
+        db.executescript("PRAGMA user_version=1; CREATE TABLE catalog(content BLOB); "
+                         "CREATE TABLE files(source TEXT,name TEXT,content BLOB,sha256 TEXT);")
+        db.execute("INSERT INTO catalog VALUES (?)", (b'{"successful_episodes":["logical/source"]}',))
+        for name, content in files.items():
+            db.execute("INSERT INTO files VALUES (?,?,?,?)",
+                       ("logical/source", name, content, hashlib.sha256(content).hexdigest()))
+    browser = TrainingDataBrowser(root, LegoDataBrowser(root, episode_root=archive_root))
+    row = next(row for row in browser.list(None, {})["items"] if row.get("origin") == "curriculum")
+    movie = browser.movie(None, "examples", row["id"])
+    assert browser.movie(None, "examples", row["id"]) == movie
+    capture = cv2.VideoCapture(str(movie))
+    assert capture.get(cv2.CAP_PROP_FPS) == 10
+    decoded = []
+    while True:
+        ok, image = capture.read()
+        if not ok:
+            break
+        decoded.append(image)
+    capture.release()
+    assert len(decoded) == 3
+    for i, image in enumerate(decoded):
+        assert image.shape == (264, 640, 3)
+        assert np.abs(image[40:, :320].mean(axis=(0, 1)) - (10 + 30 * i, 30, 100)).max() < 10
+        assert np.abs(image[40:, 320:].mean(axis=(0, 1)) - (180 - 30 * i, 50, 40)).max() < 10
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        encode_recorded_archive(archive, Path("logical/source"), root / "bad.mp4", "0" * 64)
 
 
 def test_source_generation_order_is_not_policy_usage_and_preserves_filters(dataset):

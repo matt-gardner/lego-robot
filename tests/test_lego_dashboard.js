@@ -245,4 +245,7 @@ test("storage failure prevents sending, and navigating preserves a saved comment
   assert.equal(ui.get("lego-feedback-form").hidden, true);
   assert.match(ui.get("lego-feedback-receipt").textContent, /prior-part/);
   assert.match(ui.get("lego-feedback-status").textContent, /original target and context are preserved/);
+  assert.ok(ui.requests.some(request => request.route === "/family/api/lego/feedback/saved"));
+  assert.equal(ui.get("lego-feedback-signin").hidden, true);
+  assert.equal(ui.get("lego-feedback-new").hidden, false);
 });
