@@ -31,6 +31,7 @@ class Part:
     mjcf: str
     assets: tuple[tuple[str, str], ...]
     vertical_bounds_m: tuple[float, float] | None = None
+    horizontal_radius_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,7 @@ def load_catalog(manifest: Path) -> Catalog:
             raise ValueError(f"Invalid dimensions_m: {part_id}")
         bounds = geometry.get("bounds_m")
         vertical_bounds = None
+        horizontal_radius = None
         if bounds is not None:
             if (not isinstance(bounds, list) or len(bounds) != 2
                     or any(not isinstance(row, list) or len(row) != 3 for row in bounds)
@@ -110,6 +112,10 @@ def load_catalog(manifest: Path) -> Catalog:
                     or any(bounds[0][axis] >= bounds[1][axis] for axis in range(3))):
                 raise ValueError(f"Invalid geometry bounds_m: {part_id}")
             vertical_bounds = (float(bounds[0][2]), float(bounds[1][2]))
+            horizontal_radius = math.hypot(
+                max(abs(bounds[0][0]), abs(bounds[1][0])),
+                max(abs(bounds[0][1]), abs(bounds[1][1])),
+            )
         mjcf, _ = _asset(root, entry.get("mjcf"))
         assets = entry.get("assets")
         if not isinstance(assets, list) or not assets:
@@ -133,7 +139,7 @@ def load_catalog(manifest: Path) -> Catalog:
         if mjcf not in names:
             raise ValueError(f"MJCF missing from checksummed assets: {part_id}")
         parts.append(Part(part_id, family, tuple(float(v) for v in dimensions),
-                          mjcf, tuple(hashes), vertical_bounds))
+                          mjcf, tuple(hashes), vertical_bounds, horizontal_radius))
     if not parts:
         raise CatalogUnavailable(f"No verified LEGO parts in catalog {catalog_id}")
     return Catalog(catalog_id, hashlib.sha256(raw).hexdigest(),
@@ -170,7 +176,7 @@ def prepare_scene(
     if not catalog.parts:
         raise CatalogUnavailable("No verified LEGO parts")
     identity = {
-        "generator": "lego-scene-plan-v8", "catalog_sha256": catalog.manifest_sha256,
+        "generator": "lego-scene-plan-v9", "catalog_sha256": catalog.manifest_sha256,
         "seed": seed, "sequence": sequence, "category": category,
         "task": task, "object_count": object_count,
         "sampleable_part_ids": sorted(part.part_id for part in catalog.parts),
@@ -188,6 +194,7 @@ def prepare_scene(
     spacing = max(.04, max(max(part.dimensions_m[:2]) for part in catalog.parts) * 1.5)
     used_parts = set()
     previous_top = 0.
+    placement_radii = []
     for index in range(object_count):
         if len(used_parts) == len(catalog.parts):
             used_parts.clear()
@@ -198,12 +205,23 @@ def prepare_scene(
         available = {name: parts for name, parts in available.items() if parts}
         part = rng.choice(available[rng.choice(sorted(available))])
         used_parts.add(part.part_id)
+        radius = part.horizontal_radius_m or math.hypot(*part.dimensions_m[:2]) / 2
         if category == "separated":
             x = (index % columns - (columns - 1) / 2) * spacing
             y = (index // columns - (rows - 1) / 2) * spacing
         else:
             spread = {"cluster": .06, "overlap": .035, "pile": .02}[category]
             x, y = rng.uniform(-spread, spread), rng.uniform(-spread, spread)
+            if category == "cluster":
+                for _ in range(100):
+                    if all(math.hypot(x - obj["position_relative_to_scene_m"][0],
+                                      y - obj["position_relative_to_scene_m"][1])
+                           >= radius + other_radius + .0001
+                           for obj, other_radius in zip(objects, placement_radii)):
+                        break
+                    x, y = rng.uniform(-spread, spread), rng.uniform(-spread, spread)
+                else:
+                    raise ValueError("Cannot place nonintersecting cluster inside proposal footprint")
         # Only stacked proposals need staggered drop heights.
         lower_z, upper_z = part.vertical_bounds_m or (
             -part.dimensions_m[2] / 2, part.dimensions_m[2] / 2,
@@ -218,6 +236,7 @@ def prepare_scene(
             "position_relative_to_scene_m": [x, y, height],
             "yaw_rad": rng.uniform(-math.pi, math.pi),
         })
+        placement_radii.append(radius)
     selected = rng.sample(objects, 2)
     if task in ("grasp", "view") and selected[0]["color"] == selected[1]["color"]:
         selected[1]["color"] = rng.choice([

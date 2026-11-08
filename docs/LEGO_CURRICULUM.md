@@ -56,6 +56,20 @@ assuming symmetric half-heights caused an eight-piece proposal to intersect at
 time zero. Source bounds are used when present; older bounds-free catalogs keep
 the explicitly approximate symmetric-dimension fallback. Actual contact-valid
 settling remains required.
+Plan v9 resamples clustered horizontal positions until conservative source-origin
+bounding circles are disjoint with 0.1 mm clearance. This prevents verified
+time-zero intersections in four-piece clusters; it does not establish touching
+clusters, approach clearance, or contact-valid manipulation.
+
+Settling exposes an opt-in `stationarity_metric="surface-speed-v2"` in
+`settle_scene` and `settle_data`: its conservative surface-speed bound combines
+linear speed with rotation and a geometry radius measured from the body COM,
+in metres per second. Snapshots record the metric, units, tolerance, continuous
+stationary interval and final maximum speed. The default remains
+`legacy-component-v1`; the active producer has not adopted the new metric.
+This changes stationarity measurement, not penetration checks or collision
+geometry. Quiet convex-visual-hull demos do not qualify native catalog cavities
+or resolve the producer's early-impact failures.
 
 Manipulation now takes 15 of every 16 scheduled proposals: grasp, place and push
 each receive five. The remaining view proposal uses an eight-piece pile, not a

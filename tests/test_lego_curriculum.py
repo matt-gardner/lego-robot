@@ -1,6 +1,7 @@
 import hashlib
 from dataclasses import replace
 import json
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -101,6 +102,21 @@ class CurriculumTests(unittest.TestCase):
                 center = obj["position_relative_to_scene_m"][2]
                 self.assertGreaterEqual(center + lower + 1e-12, previous_top + .002)
                 previous_top = center + upper
+
+    def test_cluster_proposals_do_not_start_with_intersecting_planar_bounds(self):
+        self.report["parts"][0]["geometry"]["bounds_m"] = [
+            [-.002, -.004, -.003], [.014, .004, .003],
+        ]
+        catalog = self.write_catalog()
+        radius = math.hypot(.014, .004)
+        for sequence in range(32):
+            plan = self.plan(catalog, sequence=sequence, category="cluster", object_count=4)
+            objects = plan["objects"]
+            for index, obj in enumerate(objects):
+                for other in objects[:index]:
+                    distance = math.dist(obj["position_relative_to_scene_m"][:2],
+                                         other["position_relative_to_scene_m"][:2])
+                    self.assertGreaterEqual(distance, 2 * radius + .0001)
 
     def test_deterministic_pairing_and_catalog_version_binding(self):
         catalog = self.write_catalog()
