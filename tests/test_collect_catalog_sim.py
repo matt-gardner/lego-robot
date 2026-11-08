@@ -225,3 +225,16 @@ def test_v4_recording_preserves_both_parent_profiles_and_all_implementations(tmp
     for suffix in ("", "_v2", "_v3", "_v4"):
         name = f"renderer_appearance{suffix}.py"
         assert hashlib.sha256((source / name).read_bytes()).hexdigest() == hashes[name]
+
+
+def test_producer_publishes_cross_uid_readable_archive(tmp_path):
+    from so101.produce_catalog import qualify_pair
+
+    output = tmp_path / "pair"
+    record_pair(fixture_sim(tmp_path), output)
+    result = qualify_pair(output)
+    assert result["samples"] == 4
+    archive = output / "episodes.sqlite"
+    assert archive.stat().st_mode & 0o777 == 0o444
+    assert not (output / ".qualified-episodes.sqlite").exists()
+    assert qualify_pair(output) == result

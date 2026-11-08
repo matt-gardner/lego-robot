@@ -36,7 +36,17 @@ def qualify_pair(root: Path) -> dict:
         raise ValueError("Cannot qualify incomplete pair")
     storage_path = root / "episodes.sqlite"
     if not storage_path.exists():
-        consolidate(root, storage_path)
+        staging = root / ".qualified-episodes.sqlite"
+        if not staging.exists():
+            consolidate(root, staging)
+        with EpisodeStorage(staging) as storage:
+            storage.verify_sources(root)
+            storage.verify()
+        staging.chmod(0o444)
+        os.link(staging, storage_path)
+        staging.unlink()
+    else:
+        storage_path.chmod(0o444)
     with EpisodeStorage(storage_path) as storage:
         storage.verify_sources(root)
         population = storage.verify()
