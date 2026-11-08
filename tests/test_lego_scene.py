@@ -10,7 +10,10 @@ import mujoco
 import numpy as np
 
 from so101.lego_curriculum import load_catalog, prepare_scene
-from so101.lego_scene import assemble_scene, capture_scene_state, restore_scene, settle_scene
+from so101.lego_scene import (
+    assemble_scene, body_surface_speed_bound, capture_scene_state, restore_scene,
+    settle_data, settle_scene,
+)
 from so101.catalog_sim import CatalogSimulation
 
 
@@ -111,6 +114,53 @@ class LegoSceneTests(unittest.TestCase):
             settle_scene(self.assemble(plan), plan)
         with self.assertRaisesRegex(ValueError, "did not settle"):
             settle_scene(self.assemble(), self.plan, maximum_seconds=.001)
+
+    def test_surface_stationarity_uses_metres_not_angular_velocity_components(self):
+        for radius, should_settle in ((.001, True), (1., False)):
+            xml = (
+                '<mujoco><compiler angle="radian"/><option gravity="0 0 0" timestep=".001"/>'
+                '<worldbody><body name="rotating"><freejoint/>'
+                f'<geom type="sphere" size="{radius}"/></body></worldbody></mujoco>'
+            )
+            model = mujoco.MjModel.from_xml_string(xml)
+            data = mujoco.MjData(model)
+            data.qvel[5] = .01
+            mujoco.mj_forward(model, data)
+            self.assertAlmostEqual(body_surface_speed_bound(model, data, 1), radius * .01)
+            plan = {"objects": [{"instance_id": "rotating", "part_id": "fixture"}],
+                    "scene_id": "rotation-test", "catalog_sha256": "fixture"}
+            if should_settle:
+                _, _, snapshot = settle_data(
+                    model, data, xml, plan, maximum_seconds=.02, stationary_seconds=.01,
+                    velocity_tolerance=.0005, stationarity_metric="surface-speed-v2",
+                )
+                self.assertEqual(snapshot["stationarity"]["units"], "m/s")
+                self.assertLess(snapshot["stationarity"]["maximum_final_speed"], .0005)
+            else:
+                with self.assertRaisesRegex(ValueError, "did not settle"):
+                    settle_data(
+                        model, data, xml, plan, maximum_seconds=.02, stationary_seconds=.01,
+                        velocity_tolerance=.0005, stationarity_metric="surface-speed-v2",
+                    )
+
+    def test_surface_speed_includes_translation_and_offset_geometry(self):
+        xml = (
+            '<mujoco><worldbody><body><freejoint/>'
+            '<inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>'
+            '<geom type="sphere" size=".01" pos=".1 0 0"/>'
+            '</body></worldbody></mujoco>'
+        )
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        data.qvel[:] = [.02, 0, 0, 0, 0, .1]
+        mujoco.mj_forward(model, data)
+        self.assertAlmostEqual(body_surface_speed_bound(model, data, 1), .031)
+        model.body_ipos[1] = [.05, 0, 0]
+        data.qvel[:] = [0, 0, 0, 0, 0, .1]
+        mujoco.mj_forward(model, data)
+        self.assertAlmostEqual(body_surface_speed_bound(model, data, 1), .011)
+        with self.assertRaisesRegex(ValueError, "Unknown stationarity metric"):
+            settle_data(model, data, xml, {"objects": []}, stationarity_metric="invalid")
 
     def test_template_cannot_change_global_physics(self):
         template = ET.fromstring(PART)

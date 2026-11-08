@@ -184,6 +184,7 @@ def settle_scene(
     xml: str, plan: dict, *, maximum_seconds: float = 10.,
     stationary_seconds: float = .5, velocity_tolerance: float = .005,
     contact_limit_m: float = .001,
+    stationarity_metric: str = "legacy-component-v1",
 ) -> tuple[mujoco.MjModel, mujoco.MjData, dict]:
     """Require finite, stationary physics with acceptable interval penetration."""
     limits = (maximum_seconds, stationary_seconds, velocity_tolerance, contact_limit_m)
@@ -197,18 +198,36 @@ def settle_scene(
         model, data, xml, plan, maximum_seconds=maximum_seconds,
         stationary_seconds=stationary_seconds, velocity_tolerance=velocity_tolerance,
         contact_limit_m=contact_limit_m,
+        stationarity_metric=stationarity_metric,
     )
+
+
+def body_surface_speed_bound(model: mujoco.MjModel, data: mujoco.MjData, body: int) -> float:
+    """Bound rigid-body surface speed in m/s, including rotation about its COM."""
+    velocity = np.empty(6)
+    mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_BODY, body, velocity, 0)
+    start = int(model.body_geomadr[body])
+    stop = start + int(model.body_geomnum[body])
+    radius = max(
+        (float(np.linalg.norm(data.geom_xpos[index] - data.xipos[body]))
+         + float(model.geom_rbound[index]) for index in range(start, stop)),
+        default=0.,
+    )
+    return float(np.linalg.norm(velocity[3:]) + radius * np.linalg.norm(velocity[:3]))
 
 
 def settle_data(
     model: mujoco.MjModel, data: mujoco.MjData, xml: str, plan: dict, *,
     maximum_seconds: float = 10., stationary_seconds: float = .5,
     velocity_tolerance: float = .005, contact_limit_m: float = .001,
+    stationarity_metric: str = "legacy-component-v1",
 ) -> tuple[mujoco.MjModel, mujoco.MjData, dict]:
     """Settle initialized robot controls and catalog objects without resetting."""
     limits = (maximum_seconds, stationary_seconds, velocity_tolerance, contact_limit_m)
     if any(not math.isfinite(value) or value <= 0 for value in limits):
         raise ValueError("Settling parameters must be positive and finite")
+    if stationarity_metric not in {"legacy-component-v1", "surface-speed-v2"}:
+        raise ValueError(f"Unknown stationarity metric: {stationarity_metric}")
     deadline = data.time + maximum_seconds
     mujoco.mj_forward(model, data)
     addresses = []
@@ -235,8 +254,13 @@ def settle_data(
             raise ValueError("Non-finite catalog scene physics")
         if any(warning.number for warning in data.warning):
             raise ValueError("MuJoCo emitted a warning while settling catalog scene")
-        moving = any(np.max(np.abs(data.qvel[v:v + 6])) > velocity_tolerance
-                     for _, _, v in addresses)
+        speeds = [
+            body_surface_speed_bound(model, data, model.body(obj["instance_id"]).id)
+            if stationarity_metric == "surface-speed-v2"
+            else float(np.max(np.abs(data.qvel[v:v + 6])))
+            for obj, _, v in addresses
+        ]
+        moving = any(speed > velocity_tolerance for speed in speeds)
         stationary_since = None if moving else (
             data.time if stationary_since is None else stationary_since
         )
@@ -252,6 +276,11 @@ def settle_data(
     ]
     snapshot = capture_scene_state(model, data, xml, plan, status="settled")
     snapshot.update(maximum_penetration_m=maximum_penetration, objects=objects)
+    snapshot["stationarity"] = {
+        "metric": stationarity_metric, "tolerance": velocity_tolerance,
+        "units": "m/s" if stationarity_metric == "surface-speed-v2" else "mixed m/s and rad/s",
+        "continuous_seconds": stationary_seconds, "maximum_final_speed": max(speeds),
+    }
     return model, data, snapshot
 
 
