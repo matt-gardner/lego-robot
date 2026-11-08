@@ -27,6 +27,9 @@ from so101.lego_curriculum import load_catalog, prepare_scene
 
 
 LOGGER = logging.getLogger(__name__)
+CONTACT_SOLVER = "pyramidal-v1"
+STATIONARITY_METRIC = "surface-speed-v2"
+VELOCITY_TOLERANCE = .005
 
 
 def scheduled_scene(sequence: int) -> tuple[str, str, int]:
@@ -84,6 +87,10 @@ def recipe(catalog_path: Path, appearance_path: Path, part_ids: list[str], seed:
         "source_sha256": digest.hexdigest(), "catalog_sha256": sha256(catalog_path),
         "appearance_sha256": sha256(appearance_path), "part_ids": sorted(part_ids),
         "seed": seed, "split": "development", "mujoco_version": mujoco.__version__,
+        "settling": {
+            "contact_solver": CONTACT_SOLVER, "stationarity_metric": STATIONARITY_METRIC,
+            "velocity_tolerance": VELOCITY_TOLERANCE,
+        },
     }
 
 
@@ -177,7 +184,11 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                             raise ValueError("Interrupted attempt has no complete collection")
                         report = json.loads(report_path.read_bytes())
                     else:
-                        sim = CatalogSimulation(catalog, plan, appearance=appearance)
+                        sim = CatalogSimulation(
+                            catalog, plan, appearance=appearance, contact_solver=CONTACT_SOLVER,
+                            stationarity_metric=STATIONARITY_METRIC,
+                            velocity_tolerance=VELOCITY_TOLERANCE,
+                        )
                         report = record_pair(sim, attempt)
                     if report["status"] != "complete":
                         raise ValueError("Independent command pair failed physical/recording acceptance")

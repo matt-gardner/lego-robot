@@ -20,6 +20,40 @@ from so101.catalog_sim import CatalogSimulation
 from so101.robot_sim import BeamSimulation
 
 
+@pytest.mark.parametrize("half_width,needs_shift", [(.004, False), (.008, True)])
+def test_open_grasp_aligns_fixed_jaw_without_moving_target(half_width, needs_shift):
+    model = mujoco.MjModel.from_xml_string(f"""
+    <mujoco><worldbody>
+      <body name="target"><geom type="box" size=".004 {half_width} .02"/></body>
+      <body name="gripper">
+        <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/><joint axis="0 0 1"/><joint axis="1 0 0"/>
+        <geom name="actual_fixed_tip" type="sphere" pos="0 -.007 0" size=".001"/>
+        <body name="moving"><joint type="slide" axis="0 1 0"/>
+          <geom type="sphere" pos="0 .1 0" size=".001"/>
+        </body>
+      </body>
+    </worldbody></mujoco>
+    """)
+    sim = object.__new__(CatalogSimulation)
+    sim.model = model
+    sim.data = mujoco.MjData(model)
+    sim.scratch = mujoco.MjData(model)
+    sim.qadr = np.arange(6)
+    sim.limits = np.tile([-1., 1.], (6, 1))
+    sim.gripper = model.body("gripper").id
+    sim.ik = lambda position, yaw: np.r_[position, 0., 0., 0.]
+    initial = sim.data.qpos.copy()
+    xy, hover, grasp = sim._open_grasp_pose("target", np.zeros(3), .01, math.pi / 2)
+    assert (np.linalg.norm(xy) > 0) == needs_shift
+    if needs_shift:
+        assert xy[1] < -.002
+    np.testing.assert_array_equal(sim.data.qpos, initial)
+    np.testing.assert_allclose(hover[:2], grasp[:2])
+    assert not any(sim.gripper in {model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]}
+                   for c in sim.scratch.contact)
+
+
 def fixture_sim(tmp_path, *, recovered=False):
     manifest = tmp_path / "fixture_catalog.json"
     manifest.write_text(json.dumps({"schema_version": 1, "catalog_id": "fixture", "parts": []}))
@@ -320,6 +354,10 @@ def test_catalog_place_checks_destination_before_selecting_grasp_heading():
         assert len(calls) == 10
 
     sim.ik = ik
+    sim._open_grasp_pose = lambda target, center, height, heading: (
+        center[:2], ik(np.r_[center[:2], .065], heading),
+        ik(np.r_[center[:2], height], heading),
+    )
     sim.move = move
     _, result = sim._grasp("target")
     assert not result["success"]

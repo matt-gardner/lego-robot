@@ -28,8 +28,16 @@ class CatalogSimulation(BeamSimulation):
     def __init__(
         self, catalog: Catalog, plan: dict, *, model_root: Path = MODEL_ROOT,
         render: bool = True, appearance: RendererAppearance | None = None,
+        contact_solver: str = "model-default",
+        stationarity_metric: str = "legacy-component-v1",
+        velocity_tolerance: float = .005,
     ):
         root = ET.fromstring(scene_xml(model_root, SCENE_VERSION))
+        if contact_solver == "pyramidal-v1":
+            option = root.find("option")
+            if option is None:
+                option = ET.SubElement(root, "option")
+            option.set("cone", "pyramidal")
         world = root.find("worldbody")
         if world is None:
             raise ValueError("Robot base has no worldbody")
@@ -74,7 +82,10 @@ class CatalogSimulation(BeamSimulation):
         home[-1] = self.limits[-1, 0] + .55 * np.ptp(self.limits[-1])
         self.data.qpos[self.qadr] = home
         self.data.ctrl[self.actuators] = home
-        _, _, self.settled_snapshot = settle_data(self.model, self.data, self.xml, plan)
+        _, _, self.settled_snapshot = settle_data(
+            self.model, self.data, self.xml, plan, contact_solver=contact_solver,
+            stationarity_metric=stationarity_metric, velocity_tolerance=velocity_tolerance,
+        )
         self.yaws = {name: self.object_yaw(name) for name in names}
         self.initial = {
             "seed": plan["seed"], "scene_version": 4,
@@ -86,6 +97,8 @@ class CatalogSimulation(BeamSimulation):
             "appearance": {"target_labels": dict(self.target_labels)},
             "catalog_id": catalog.catalog_id, "catalog_sha256": catalog.manifest_sha256,
             "scene_id": plan["scene_id"],
+            "contact_solver": self.settled_snapshot["contact_solver"],
+            "stationarity": self.settled_snapshot["stationarity"],
         }
         self.initial["settled_configuration"] = self.configuration_metrics()
         if appearance is not None:
@@ -199,6 +212,38 @@ class CatalogSimulation(BeamSimulation):
             if len(self.rows) > index:
                 self.rows[index]["external_image"] = relative
 
+    def _open_grasp_pose(self, target: str, center: np.ndarray, height: float, yaw: float):
+        xy = center[:2].copy()
+        target_body = self.model.body(target).id
+        for _ in range(8):
+            grasp = self.ik(np.r_[xy, height], yaw)
+            grasp[-1] = self.limits[-1, 0] + .55 * np.ptp(self.limits[-1])
+            self.scratch.qpos[:] = self.data.qpos
+            self.scratch.qpos[self.qadr] = grasp
+            mujoco.mj_forward(self.model, self.scratch)
+            collisions = []
+            for contact in self.scratch.contact:
+                bodies = [int(self.model.geom_bodyid[g])
+                          for g in (contact.geom1, contact.geom2)]
+                if (target_body in bodies and self.gripper in bodies
+                        and contact.dist < .0002):
+                    normal = contact.frame[:2].copy()
+                    if bodies[0] == target_body:
+                        normal *= -1
+                    collisions.append((float(contact.dist), normal))
+            if not collisions:
+                hover = self.ik(np.r_[xy, max(.065, height + .05)], yaw)
+                hover[-1] = grasp[-1]
+                return xy, hover, grasp
+            depth, normal = min(collisions, key=lambda item: item[0])
+            squared_length = float(normal @ normal)
+            if squared_length < .25:
+                raise RuntimeError("Fixed-jaw collision cannot be cleared by lateral alignment")
+            xy -= normal * ((.0002 - depth) / squared_length)
+            if np.linalg.norm(xy - center[:2]) > .02:
+                raise RuntimeError("Fixed-jaw clearance exceeds 20 mm grasp alignment budget")
+        raise RuntimeError("Cannot align an open fixed jaw clear of the catalog object")
+
     def _grasp(self, target: str, *, lift_height: float = .07, approach_waypoints=()):
         if approach_waypoints:
             raise ValueError("Catalog obstacle routing is not implemented")
@@ -219,9 +264,8 @@ class CatalogSimulation(BeamSimulation):
         failures = []
         for heading in (yaw, yaw + math.pi):
             try:
-                hover = self.ik(np.r_[center[:2], max(.065, contact_height + .05)], heading)
-                grasp = self.ik(np.r_[center[:2], contact_height], heading)
-                self.ik(np.r_[center[:2], max(lift_height, contact_height + .06)], heading)
+                grasp_xy, hover, grasp = self._open_grasp_pose(target, center, contact_height, heading)
+                self.ik(np.r_[grasp_xy, max(lift_height, contact_height + .06)], heading)
                 if destination_xy is not None:
                     for height in (.070, .018, .080):
                         self.ik(np.r_[destination_xy, height], heading)
