@@ -12,7 +12,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from so101.control_broker import (
-    Broker, canonical, make_server, trusted_json,
+    AllocationFailure, Broker, canonical, make_server, trusted_json,
     validate_controller_profile, validate_controller_settings, validate_spec,
     verify_controller, wait_for_dashboard,
 )
@@ -434,8 +434,46 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.broker.start("session", job["id"])
 
+    def test_allocation_request_uuid_is_idempotent_and_owner_scoped(self):
+        request = "ff24f35c-52d1-46b8-a98f-78a353f99763"
+        first = self.broker.submit("session", "approved", self.digest(), request_id=request)
+        second = self.broker.submit("session", "approved", self.digest(), request_id=request)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(sum("run-instances" in args for args in self.calls), 1)
+        self.assertIsNone(self.broker.request("other", request)["job"])
+        with self.assertRaisesRegex(ValueError, "rebound"):
+            self.broker.submit("session", "approved", "a" * 64, request_id=request)
+
+    def test_explicit_capacity_rejection_returns_owned_receipt_and_is_not_replayed(self):
+        original = self.broker.run
+        def run(args, **kwargs):
+            if "run-instances" in args:
+                raise subprocess.CalledProcessError(
+                    254, args, stderr="An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation: unavailable",
+                )
+            return original(args, **kwargs)
+        self.broker.run = run
+        self.broker.instances = lambda _: []
+        request = "ff24f35c-52d1-46b8-a98f-78a353f99763"
+        with self.assertRaises(AllocationFailure) as failure:
+            self.broker.submit("session", "approved", self.digest(), request_id=request)
+        self.assertEqual(failure.exception.aws_error_code, "InsufficientInstanceCapacity")
+        self.assertEqual(failure.exception.job["status"], "failed")
+        self.assertEqual(failure.exception.job["reserved"], 0)
+        repeated = self.broker.submit("session", "approved", self.digest(), request_id=request)
+        self.assertEqual(repeated["id"], failure.exception.job["id"])
+        self.assertEqual(repeated["status"], "failed")
+
+    def test_idle_stop_terminates_without_requesting_a_nonexistent_training_checkpoint(self):
+        job = self.broker.submit("session", "approved", self.digest())
+        result = self.broker.stop("session", job["id"])
+        self.assertEqual(result["status"], "terminating")
+        self.assertTrue(any("terminate-instances" in args for args in self.calls))
+        self.assertFalse(any("send-command" in args for args in self.calls))
+
     def test_checkpoint_stop_is_asynchronous_then_terminates(self):
         job = self.broker.submit("session", "approved", self.digest())
+        self.broker.update(job["id"], status="start-requested")
         result = self.broker.stop("session", job["id"])
         self.assertEqual(result["status"], "stopping")
         command = next(args for args in self.calls if "send-command" in args)
@@ -456,6 +494,7 @@ class BrokerTests(unittest.TestCase):
 
     def test_expired_stop_terminates_even_if_ssm_unavailable(self):
         job = self.broker.submit("session", "approved", self.digest())
+        self.broker.update(job["id"], status="start-requested")
         self.broker.stop("session", job["id"])
         self.broker.update(job["id"], stop_deadline=0)
         self.broker.status("session", job["id"])

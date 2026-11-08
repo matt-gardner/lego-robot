@@ -21,6 +21,13 @@ are persisted. Repeating a request observes the accepted command rather than
 dispatching it twice. An uncertain response is reconciled against AWS command
 history, never assumed to mean nothing happened.
 
+Allocations accept a client-generated `request_id`; the same session/request
+returns the same owned job rather than allocating twice. Failure responses
+retain that job receipt and the AWS error code. `gpu.request` retrieves it
+without needing a host-side handoff. The lifecycle CLI automatically tries
+installed equivalent-zone alternatives only after an explicit, unallocated AWS
+capacity rejection; it does not change the model, inputs, or training recipe.
+
 For the end-to-end CUDA lifecycle check, from the repository root:
 
 ```sh
@@ -31,8 +38,10 @@ PYTHONPATH=src uv run --no-project python -m so101.gpu_smoke \
 This allocates a real GPU, stages the registered inputs, executes CUDA/BF16/EGL
 and exact-state recovery checks, then requests stop and observes actual
 termination. It does **not** train a sweep cell or claim the sweep is complete.
-Its receipts are retained in the chosen state directory. Do not reuse a
-directory with an uncertain submission intent to allocate another machine.
+Its receipts are retained in the chosen state directory. Re-running with the
+same keyed intent recovers the same allocation; never clear that intent to
+force a second machine after an uncertain response. Old unkeyed intents remain
+historical evidence and are not replayed.
 Automatic EC2 lease termination remains active if the client disappears.
 
 The installation instructions and historical qualifications below are host
