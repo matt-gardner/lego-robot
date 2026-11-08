@@ -87,9 +87,36 @@ PYTHONPATH=src python -m so101.control_broker call dashboard.status \
 ```
 
 Replace `dashboard.status` with `dashboard.restart` to restart exactly
-`so101-web.service`. Both actions check the actual catalog health endpoint;
+`so101-web.service` through the legacy broker. Both actions check the actual catalog health endpoint;
 failed commands return errors, not success-shaped defaults.
 Reinstall the root-owned code copy and restart the broker after source changes.
+
+The native Dockyard `lego_dashboard_restart` registration instead invokes the
+root-installed `scripts/lego_dashboard_deploy.py` copy with Python isolated mode
+and no arguments. It deploys current **published main** dashboard modules/assets
+before restarting; it never adopts the shared checkout's dirty or unpublished
+changes. The generic Dockyard server contains no LEGO-specific deployment code.
+
+Its root-owned `/etc/lego-robot-control/dashboard-deploy.json` manifest selects
+`repository` (a private bare published-source mirror), `baseline` and
+`baseline_sha256` (a frozen compatible dependency tree), `releases`, `override`,
+`python`, `health_url`, and the exact `paths` allowlist. The installed scope is
+`rl_dashboard.py`, `training_data_browser.py`, `lego_data_browser.py`,
+`part_preview.py`, `generation_order.py`, and the ten `dashboard/` assets.
+Producer modules remain frozen; scope/dependency changes require an operator
+manifest update. Coding containers cannot replace the helper or manifest.
+
+Deployment pins the fetched commit, stages regular files with SHA-256 evidence,
+checks imports as the dashboard user, then atomically installs a PYTHONPATH-only
+systemd override. Existing flags, playback runtime, authentication/front proxy,
+CPU/memory limits and read-only data mounts remain intact. The helper restarts
+and checks the real `/lego-robot/api/lego` JSON API and live process source path.
+Staging failures leave the current service unchanged; activation failures restore
+the previous override and restart it, explicitly reporting rollback failures.
+The native tool's sender-owned durable receipt prevents uncertain-call replay;
+inspect `server_tool_status` instead of repeating the request. Successful
+releases retain `manifest.json`; `last-success.json` records the PID/source hashes.
+The separate `lego_dashboard_status` tool remains read-only.
 
 ## Immutable GPU jobs
 
