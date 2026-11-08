@@ -22,8 +22,8 @@ def test_recursive_transform_scale_frame_and_provenance(tmp_path):
         "0 Triangle\n3 16 0 0 0 1 0 0 0 1 0\n")
     triangles, deps = Library(tmp_path).triangles("1")
     np.testing.assert_allclose(triangles[0],
-                               [[.004, -.008, -.012], [.0048, -.008, -.012],
-                                [.004, -.0088, -.012]])
+                               [[.004, .012, -.008], [.0048, .012, -.008],
+                                [.004, .012, -.0088]])
     assert len(deps) == 2
     assert deps[0]["licenses"] == ["Test license"]
     assert all(len(d["sha256"]) == 64 for d in deps)
@@ -67,21 +67,21 @@ def test_import_publication_hashes_and_immutability(tmp_path):
         validate(path.parent)
 
 
-def test_surface_prisms_do_not_fill_tetrahedron_interior(tmp_path):
+def test_surface_prisms_preserve_cavity_and_convert_y_height_to_z(tmp_path):
     library_root = tmp_path / "ldraw"
     (library_root / "parts").mkdir(parents=True)
     (library_root / "parts/1.dat").write_text(
         "0 Tetrahedron\n0 BFC CERTIFY CCW\n"
-        "3 16 0 0 0 0 10 0 10 0 0\n"
+        "3 16 0 0 0 0 20 0 10 0 0\n"
         "3 16 0 0 0 10 0 0 0 0 10\n"
-        "3 16 0 0 0 0 0 10 0 10 0\n"
-        "3 16 10 0 0 0 10 0 0 0 10\n")
+        "3 16 0 0 0 0 0 10 0 20 0\n"
+        "3 16 10 0 0 0 20 0 0 0 10\n")
     release = tmp_path / "release"
     entry = prepare(Library(library_root), release, "1")
     model = mujoco.MjModel.from_xml_path(str(release / entry["mjcf"]))
     assert model.ngeom == 5
     assert entry["geometry"]["collision_method"] == "compound_triangle_prisms"
-    np.testing.assert_allclose(entry["dimensions_m"], [.004, .004, .004])
+    np.testing.assert_allclose(entry["dimensions_m"], [.004, .004, .008])
     # Every convex collider stays near its source face, not across the cavity.
     triangles, _ = Library(library_root).triangles("1")
     meshes = ET.parse(release / entry["mjcf"]).findall("asset/mesh")[1:]
@@ -162,3 +162,11 @@ def test_next_undecorated_skips_prints_and_requires_same_source(tmp_path):
         bundle.writestr("ldraw/parts/3.dat", "0 Tile\n")
     with pytest.raises(ValueError, match="different official source"):
         publish(archive, output, "changed-source", (), first)
+
+
+def test_non_library_archive_is_not_successfully_imported(tmp_path):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("unrelated.txt", "not an official library")
+    with pytest.raises(ValueError, match="lacks the official"):
+        publish(archive, tmp_path / "catalog", "invalid", ())

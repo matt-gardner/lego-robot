@@ -31,10 +31,10 @@ import numpy as np
 
 
 SOURCE_URL = "https://library.ldraw.org/library/updates/complete.zip"
-CONVERTER_VERSION = "surface-prisms-v2"
+CONVERTER_VERSION = "surface-prisms-v3-zup"
 LDU_M = 0.0004
 CONTACT_HALF_THICKNESS_M = 0.00002
-FRAME = np.diag([1.0, -1.0, -1.0])
+FRAME = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
 DEFAULT_PARTS = ("54200", "3062b", "3626c", "3005", "3024", "3070b", "3700")
 
 
@@ -237,6 +237,12 @@ def prepare(library: Library, release: Path, part_id: str) -> dict:
 
 
 def qualify(release: Path, entry: dict) -> dict:
+    if not np.array_equal(FRAME @ np.array([0., 1., 0.]), [0., 0., -1.]):
+        raise ValueError("LDraw Y-down must map to MuJoCo Z-down")
+    if entry["part_id"] == "3005":
+        if not np.allclose(entry["dimensions_m"], [.008, .008, .0112],
+                           rtol=0, atol=.00002):
+            raise ValueError("Reference 1x1 brick must measure 8x8x11.2 mm including stud")
     path = release / entry["mjcf"]
     compile_started = time.perf_counter()
     standalone = mujoco.MjModel.from_xml_path(str(path))
@@ -286,7 +292,9 @@ def qualify(release: Path, entry: dict) -> dict:
                      "final_velocity_norm": speed, "table_contact_steps": contact_steps,
                      "max_penetration_m": max_penetration,
                      "final_qpos": data.qpos.tolist()})
-    return {"version": "table-shell-v2", "mujoco_version": mujoco.__version__,
+    return {"version": "table-shell-v3-zup", "mujoco_version": mujoco.__version__,
+            "frame_check": "LDraw +Y maps to MuJoCo -Z; right-handed rotation",
+            "scale_check": "0.0004 metres/LDU; 3005 reference includes stud height",
             "compile_wall_seconds": compile_wall_s,
             "collision_geom_count": standalone.ngeom - 1,
             "loadable": True, "finite_dynamics": True, "settling_runs": runs,
@@ -328,6 +336,8 @@ def publish(archive: Path, output: Path, catalog_id: str,
                     with bundle.open(info) as reader, path.open("xb") as writer:
                         shutil.copyfileobj(reader, writer)
         library = Library(source / "ldraw")
+        if not library.root.is_dir() or not library.files:
+            raise ValueError("Archive lacks the official ldraw source library")
         inventory = []
         entries = []
         for key, path in sorted(library.files.items()):
@@ -342,6 +352,8 @@ def publish(archive: Path, output: Path, catalog_id: str,
                             "decoration": decoration(details["description"], path.stem),
                             "source": {"path": relative_source, "sha256": sha256(path)}})
         write_json(source / "files.json", inventory)
+        if not entries:
+            raise ValueError("Archive contains no top-level official LDraw parts")
         if previous is not None:
             validate(previous.parent)
             prior = json.loads(previous.read_text())
