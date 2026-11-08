@@ -9,7 +9,7 @@ import torch
 from so101.cloud_checkpoint import atomic_json, sha256, validate_state
 
 
-def prepare(reference, directory, batch_size, learning_rate):
+def prepare(reference, directory, batch_size, learning_rate, repair_existing=False):
     if (batch_size <= 0 or batch_size % 2 or 24576 % batch_size
             or (24576 // batch_size) % 4
             or not math.isfinite(learning_rate) or learning_rate <= 0):
@@ -34,6 +34,7 @@ def prepare(reference, directory, batch_size, learning_rate):
     config.update({
         "output": output, "steps": steps, "batch_size": batch_size,
         "learning_rate": learning_rate, "validation_interval": steps // 4,
+        "training_state": f"{output}/training_state.pt",
         "gradient_accumulation": True, "micro_batch_size": 8,
     })
     for group in state["optimizer"]["param_groups"]:
@@ -52,9 +53,16 @@ def prepare(reference, directory, batch_size, learning_rate):
         "source": str(reference), "source_sha256": source_digest,
         "source_step": 0, "samples": 24576,
     }
-    directory.mkdir(parents=True, exist_ok=False)
+    if repair_existing:
+        previous = torch.load(directory / "training_state.pt", map_location="cpu", weights_only=False)
+        validate_state(previous, allow_untrained=True)
+        if (previous["step"] != 0 or previous["optimizer"]["state"]
+                or previous["log"]["steps"]
+                or previous["log"]["adaptive_initialization"]["source_sha256"] != source_digest):
+            raise ValueError("Only a never-trained initialization from this exact baseline may be repaired")
+    directory.mkdir(parents=True, exist_ok=repair_existing)
     checkpoints = directory / "checkpoints"
-    checkpoints.mkdir()
+    checkpoints.mkdir(exist_ok=repair_existing)
     torch.save(state, directory / "training_state.pt")
     torch.save(state, checkpoints / "training_state_000000.pt")
     receipt = {
@@ -73,8 +81,10 @@ def main():
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--learning-rate", type=float, required=True)
+    parser.add_argument("--repair-existing", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(prepare(args.reference, args.directory, args.batch_size, args.learning_rate)))
+    print(json.dumps(prepare(args.reference, args.directory, args.batch_size,
+                             args.learning_rate, args.repair_existing)))
 
 
 if __name__ == "__main__":

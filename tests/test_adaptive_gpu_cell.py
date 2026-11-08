@@ -41,10 +41,24 @@ def test_preparation_reuses_only_untrained_model_and_initial_evaluation(monkeypa
     torch.testing.assert_close(prepared["rng"]["torch"], original["rng"]["torch"])
     assert prepared["optimizer"]["state"] == {}
     assert prepared["optimizer"]["param_groups"][0]["lr"] == 1e-4
+    assert prepared["log"]["run_config"]["training_state"] == (
+        "outputs/entity_smolvla_sft_lr_sweep/entity_smolvla_sft_b32_lr1e-04/training_state.pt")
     assert prepared["log"]["validation"][0]["evaluation_seconds"] == 0
     assert prepared["log"]["validation"][0]["cached_initial_evaluation"]["source_evaluation_seconds"] == 123
     assert (output / "checkpoints/training_state_000000.pt").is_file()
     assert source.read_bytes() == before
+
+
+def test_initialization_repair_refuses_any_trained_target(monkeypatch, tmp_path):
+    monkeypatch.setattr(module, "validate_state", lambda state, **kwargs: None)
+    source = reference(tmp_path)
+    target = tmp_path / "target"
+    module.prepare(source, target, 64, 1e-4)
+    state = torch.load(target / "training_state.pt", weights_only=False)
+    state["step"] = 1
+    torch.save(state, target / "training_state.pt")
+    with pytest.raises(ValueError, match="never-trained"):
+        module.prepare(source, target, 64, 1e-4, repair_existing=True)
 
 
 def test_trained_state_cannot_be_relabelled_as_fresh(monkeypatch, tmp_path):
