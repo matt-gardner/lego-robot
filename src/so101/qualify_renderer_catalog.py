@@ -57,7 +57,7 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
     try:
         baseline.reset(10)
         grasp = baseline.data.site_xpos[baseline.site].copy()
-        grasp[2] = .020 if reference_assembly else .010
+        grasp[2] = .015 if reference_assembly else .010
         arm = baseline.ik(grasp, 0, rng=np.random.default_rng(10))
         arm[-1] = baseline.limits[-1, 0] + .3 * np.ptp(baseline.limits[-1])
         selected = (("orange_brick", "3003", "orange"),
@@ -147,7 +147,7 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                         yaw += .6
                     if name == "teal_separator":
                         surface += .0096
-                        yaw += np.pi - .4
+                        yaw += np.pi - .7
                 xyz = table_point(sim, center, surface - low[2])
                 if reference_assembly:
                     xyz = table_point(sim, center, surface + (high[2] - low[2]) / 2)
@@ -229,8 +229,10 @@ def qualify_catalog(manifest: Path, output: Path, *, reference_assembly: bool = 
                           "reference_assembly_hypothesis": reference_assembly,
                           "reference_composition_notes": (
                               "Three distinct 3702 instances supply gray context without scaling "
-                              "or pretending a single verified longer part. Teal diagnostic RGB "
-                              "is .015/.40/.43; no calibrated reflectance claim."
+                              "or pretending a single verified longer part. "
+                              + ("Teal diagnostic RGB is .015/.40/.43. "
+                                 if diagnostic is not None else "Teal uses the scene palette. ")
+                              + "No calibrated reflectance claim."
                               if reference_assembly else None),
                           "diagnostic_unqualified_geometry": diagnostic,
                           "qualification": ("Verified molded parts plus explicitly UNQUALIFIED static separator visual; "
