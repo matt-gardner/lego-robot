@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "profile_id": "wrist-soft-v2",
+  "reference_sha256": {
+    "autopilot_scene_wrist.jpg": "b38d987a6fe67154ad6741647dafc73936b9b86779d1c66e88acf81ef31ac84c",
+    "target_teal_current_wrist.jpg": "ea01a1615e8efbbbeadcb94f2e7c6d3b036be51d9f043a1bec8b85be0c19b305",
+    "wrist_current.jpg": "3b2ac449bbf67f4cf500e2c89e55247196d50b3b17c0fde3c9c34f7797e54602"
+  },
+  "camera": {
+    "name": "wrist_cam",
+    "pos": [0.012, 0.05436, -0.05310],
+    "quat": [0.958280, -0.285792, -0.001556, 0.004547],
+    "fovy": 85
+  },
+  "table_rgb": [0.60, 0.61, 0.59],
+  "jaw_rgb": [0.89, 0.89, 0.86],
+  "jaw_emission": 0.08,
+  "light_ambient": [0.52, 0.52, 0.52],
+  "light_diffuse": [0.48, 0.48, 0.48],
+  "light_specular": [0.01, 0.01, 0.01],
+  "shadow_scale": 1.0,
+  "shadow_strength": 0.08,
+  "light_spread_m": 0.18,
+  "texture_seed": 1108,
+  "texture_sigma": 2.2,
+  "blur_sigma_px": 1.15,
+  "jaw_blur_sigma_px": 2.4,
+  "noise_sigma_u8": 1.1,
+  "saturation_scale": 0.72,
+  "jaw_visual_geometry": "contact-anchored-tapered-sleeves",
+  "jaw_root_half_width_m": 0.016,
+  "jaw_tip_half_width_m": 0.0045,
+  "jaw_half_thickness_m": 0.0015,
+  "jaw_root_outward_extent_m": 0.020,
+  "visual_cable_radius_m": 0.0015,
+  "visual_cable_rgb": [0.025, 0.025, 0.025]
+}

@@ -6,15 +6,16 @@ import pytest
 
 mujoco = pytest.importorskip("mujoco")
 from so101.renderer_appearance import RendererAppearance
+from so101.renderer_appearance_v2 import WristAppearanceV2
 from so101.robot_sim import BeamSimulation, MODEL_ROOT, restore_episode
 
 
-@pytest.fixture
-def pair():
+@pytest.fixture(params=[RendererAppearance, WristAppearanceV2])
+def pair(request):
     if not (MODEL_ROOT / "revision.json").exists():
         pytest.skip("Pinned SO101 assets unavailable")
     baseline = BeamSimulation(render=False)
-    styled = BeamSimulation(render=False, appearance=RendererAppearance())
+    styled = BeamSimulation(render=False, appearance=request.param())
     try:
         yield baseline, styled
     finally:
@@ -62,10 +63,37 @@ def test_photometric_processing_is_reproducible_without_spatial_warp():
     assert not np.array_equal(first, profile.process_rgb(image, seed=10, frame=2))
 
 
+def test_v2_desaturates_without_changing_gray_or_parent_identity():
+    baseline = RendererAppearance()
+    profile = WristAppearanceV2()
+    assert profile.identity()["parent_implementation_sha256"] == baseline.implementation_sha256
+    image = np.full((240, 320, 3), [220, 60, 20], dtype=np.uint8)
+    processed = profile.process_rgb(image, seed=10, frame=1).mean(axis=(0, 1))
+    original = baseline.process_rgb(image, seed=10, frame=1).mean(axis=(0, 1))
+    assert np.ptp(processed) < np.ptp(original) * .8
+    gray = np.full((240, 320, 3), 128, dtype=np.uint8)
+    assert abs(profile.process_rgb(gray, seed=10, frame=1).mean()
+               - baseline.process_rgb(gray, seed=10, frame=1).mean()) < .1
+
+
+def test_visual_cable_is_explicit_noncontact_world_context():
+    profile = WristAppearanceV2()
+    source = "<mujoco><worldbody/></mujoco>"
+    points = np.array([[0, 0, .0015], [.03, .01, .0015], [.06, .01, .0015]])
+    model = mujoco.MjModel.from_xml_string(profile.add_visual_cable(source, points))
+    assert model.nq == 0
+    assert not model.geom_contype.any() and not model.geom_conaffinity.any()
+    assert model.body("appearance_cable").mass == 0
+    for invalid in (points[:1], np.full((2, 3), np.nan), np.zeros((2, 3))):
+        with pytest.raises(ValueError, match="cable"):
+            profile.add_visual_cable(source, invalid)
+
+
 @pytest.mark.skipif(os.environ.get("MUJOCO_GL") not in ("osmesa", "egl"),
                     reason="Requires explicit headless rendering backend")
-def test_rgb_area_lighting_preserves_segmentation_depth_and_model():
-    sim = BeamSimulation(appearance=RendererAppearance())
+@pytest.mark.parametrize("profile_type", [RendererAppearance, WristAppearanceV2])
+def test_rgb_area_lighting_preserves_segmentation_depth_and_model(profile_type):
+    sim = BeamSimulation(appearance=profile_type())
     try:
         sim.reset(10)
         positions = sim.model.light_pos.copy()

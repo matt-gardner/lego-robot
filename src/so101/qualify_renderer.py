@@ -13,20 +13,27 @@ import numpy as np
 from OpenGL import GL
 
 from so101.renderer_appearance import RendererAppearance
+from so101.renderer_appearance_v2 import WristAppearanceV2
 from so101.robot_sim import BEAM_HALF_HEIGHT, MODEL_COMMIT, OBJECT_NAMES, TABLE_Z, BeamSimulation
 
 
-def place_in_image(sim: BeamSimulation, name: str, center: tuple[float, float], color) -> None:
+def table_point(sim: BeamSimulation, center: tuple[float, float], height: float) -> np.ndarray:
     camera = sim.model.camera("wrist_cam").id
     rotation = sim.data.cam_xmat[camera].reshape(3, 3)
     position = sim.data.cam_xpos[camera]
     half_height = math.tan(math.radians(float(sim.model.cam_fovy[camera])) / 2)
     ray = rotation @ np.array([(center[0] - .5) * 2 * half_height * 4 / 3,
                                (.5 - center[1]) * 2 * half_height, -1])
-    distance = (TABLE_Z + BEAM_HALF_HEIGHT - position[2]) / ray[2]
+    distance = (height - position[2]) / ray[2]
     if distance <= 0:
         raise ValueError("Composition ray does not intersect tabletop in front of camera")
-    xyz = position + distance * ray
+    return position + distance * ray
+
+
+def place_in_image(sim: BeamSimulation, name: str, center: tuple[float, float], color) -> None:
+    xyz = table_point(sim, center, TABLE_Z + BEAM_HALF_HEIGHT)
+    camera = sim.model.camera("wrist_cam").id
+    rotation = sim.data.cam_xmat[camera].reshape(3, 3)
     yaw = math.atan2(rotation[1, 0], rotation[0, 0])
     address = sim.model.joint(f"{name}_free").qposadr[0]
     sim.data.qpos[address:address + 7] = [*xyz, math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)]
@@ -34,9 +41,9 @@ def place_in_image(sim: BeamSimulation, name: str, center: tuple[float, float], 
     mujoco.mj_forward(sim.model, sim.data)
 
 
-def qualify(references: Path, output: Path) -> None:
+def qualify(references: Path, output: Path, *, appearance: RendererAppearance | None = None) -> None:
     output.mkdir(parents=True, exist_ok=False)
-    profile = RendererAppearance()
+    profile = appearance if appearance is not None else RendererAppearance()
     comparisons = []
     frames = []
     sim = BeamSimulation(appearance=profile)
@@ -58,6 +65,8 @@ def qualify(references: Path, output: Path) -> None:
             grasp[2] = .010
             arm = sim.ik(grasp, 0, rng=np.random.default_rng(10))
             arm[-1] = sim.data.qpos[sim.qadr[-1]]
+            if isinstance(profile, WristAppearanceV2):
+                arm[-1] = sim.limits[-1, 0] + .3 * np.ptp(sim.limits[-1])
             sim.data.qpos[sim.qadr] = arm
             sim.data.ctrl[sim.actuators] = arm
             for object_index, name in enumerate(OBJECT_NAMES):
@@ -101,8 +110,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--references", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--appearance", choices=("v1", "v2"), default="v1")
     args = parser.parse_args()
-    qualify(args.references, args.output)
+    qualify(args.references, args.output,
+            appearance=WristAppearanceV2() if args.appearance == "v2" else None)
 
 
 if __name__ == "__main__":
