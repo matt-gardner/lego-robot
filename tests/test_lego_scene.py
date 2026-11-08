@@ -37,6 +37,8 @@ class LegoSceneTests(unittest.TestCase):
                 "part_id": "fixture", "description": "Synthetic test box",
                 "family": "brick", "status": "verified",
                 "dimensions_m": [.008, .008, .006], "mjcf": "part.xml",
+                "geometry": {"frame_ldraw_to_mujoco": [[1, 0, 0], [0, 0, 1], [0, -1, 0]],
+                             "metres_per_ldu": .0004},
                 "assets": [{"path": "part.xml", "sha256": hashlib.sha256(PART.encode()).hexdigest()}],
             }],
         }

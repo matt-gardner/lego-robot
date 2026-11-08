@@ -23,6 +23,8 @@ class CurriculumTests(unittest.TestCase):
                 "part_id": "test-slope", "description": "Test fixture",
                 "family": "slope", "status": "verified",
                 "dimensions_m": [.008, .008, .006],
+                "geometry": {"frame_ldraw_to_mujoco": [[1, 0, 0], [0, 0, 1], [0, -1, 0]],
+                             "metres_per_ldu": .0004},
                 "mjcf": "part.xml",
                 "assets": [{"path": "part.xml",
                             "sha256": hashlib.sha256(self.asset.read_bytes()).hexdigest()}],
@@ -104,6 +106,13 @@ class CurriculumTests(unittest.TestCase):
                 if visual_audit_due(category=category, accepted_count=count, seed=42)
             ]
             self.assertEqual(resumed, selected[2:])
+
+    def test_old_y_down_sign_flip_is_not_z_up_conversion(self):
+        self.report["parts"][0]["geometry"]["frame_ldraw_to_mujoco"] = [
+            [1, 0, 0], [0, -1, 0], [0, 0, -1],
+        ]
+        with self.assertRaisesRegex(ValueError, "coordinate frame"):
+            self.write_catalog()
 
 
 if __name__ == "__main__":

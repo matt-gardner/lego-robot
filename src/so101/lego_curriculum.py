@@ -16,6 +16,7 @@ CATEGORIES = ("separated", "cluster", "overlap", "pile")
 TASKS = ("grasp", "view", "push", "place")
 STATUSES = {"imported", "prepared", "verified", "unavailable"}
 COLORS = ("gray", "green", "orange", "navy", "teal", "brown")
+LDRAW_TO_MUJOCO = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
 
 
 class CatalogUnavailable(ValueError):
@@ -87,6 +88,11 @@ def load_catalog(manifest: Path) -> Catalog:
             raise ValueError(f"Invalid catalog status: {part_id}")
         if entry["status"] != "verified":
             continue
+        geometry = entry.get("geometry")
+        if (not isinstance(geometry, dict)
+                or geometry.get("frame_ldraw_to_mujoco") != LDRAW_TO_MUJOCO
+                or geometry.get("metres_per_ldu") != .0004):
+            raise ValueError(f"Unsupported LEGO coordinate frame or units: {part_id}")
         dimensions = entry.get("dimensions_m")
         if (not isinstance(dimensions, list) or len(dimensions) != 3
                 or any(type(value) not in (int, float)

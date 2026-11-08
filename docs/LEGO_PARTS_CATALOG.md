@@ -46,6 +46,10 @@ Publish an immutable versioned directory with `catalog.json`, schema version 1:
       "family": "slope",
       "status": "verified",
       "dimensions_m": [0.008, 0.008, 0.006],
+      "geometry": {
+        "frame_ldraw_to_mujoco": [[1, 0, 0], [0, 0, 1], [0, -1, 0]],
+        "metres_per_ldu": 0.0004
+      },
       "mjcf": "parts/54200/part.xml",
       "assets": [
         {"path": "parts/54200/part.xml", "sha256": "64 lowercase hex digits"}
@@ -62,6 +66,12 @@ not symlinks. All entries have stable IDs, descriptions, families and status;
 only verified entries need the prepared geometry fields. Add qualification,
 source/license provenance and failure metadata without changing those fields.
 The example dimensions are illustrative, not a qualification measurement.
+
+The frame is `x'=x, y'=z, z'=-y`: LDraw's vertical axis must become MuJoCo Z,
+not merely have its sign flipped. The curriculum reader rejects the older
+diagonal sign-flip frame even if a historical manifest labels it verified.
+Qualification must check known physical dimensions on the appropriate axes,
+not just stationary contacts; a sideways part can still settle successfully.
 
 MJCF naming/asset namespaces and grasp geometry must be coordinated with the
 curriculum worker before scene integration. Publish a small verified release
