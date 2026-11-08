@@ -77,7 +77,7 @@ class BrokerTests(unittest.TestCase):
         results = []
 
         def first_trace(statement):
-            if statement.startswith("SELECT COALESCE(SUM"):
+            if statement.startswith("INSERT INTO jobs"):
                 first_read.set()
                 if not release.wait(5):
                     raise RuntimeError("Reservation test timed out")
@@ -85,7 +85,7 @@ class BrokerTests(unittest.TestCase):
         def second_trace(statement):
             if statement == "BEGIN IMMEDIATE":
                 second_begin.set()
-            if statement.startswith("SELECT COUNT"):
+            if statement.startswith("INSERT INTO jobs"):
                 second_read.set()
 
         def reserve(broker):
@@ -113,9 +113,9 @@ class BrokerTests(unittest.TestCase):
             second.db.close()
         self.assertFalse(first.is_alive())
         self.assertFalse(other.is_alive())
-        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
-        self.assertEqual(sum(isinstance(result, ValueError) for result in results), 1)
-        self.assertEqual(self.broker.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 2)
+        self.assertEqual(sum(isinstance(result, ValueError) for result in results), 0)
+        self.assertEqual(self.broker.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 2)
         self.assertFalse(self.broker.db.in_transaction)
 
     def command(self, args, **kwargs):
@@ -182,7 +182,7 @@ class BrokerTests(unittest.TestCase):
     def reserve(self):
         return self.broker.reserve("session", "approved", self.digest(), None)
 
-    def test_account_gpu_inventory_blocks_submit_before_reserving_or_launching(self):
+    def test_existing_inventory_does_not_duplicate_aws_quota_admission(self):
         def command(args, **kwargs):
             if "describe-instance-types" in args:
                 return subprocess.CompletedProcess(args, 0, stdout=json.dumps({
@@ -190,10 +190,9 @@ class BrokerTests(unittest.TestCase):
                 }))
             return self.command(args, **kwargs)
         self.broker.run = command
-        with self.assertRaisesRegex(ValueError, "Existing GPU"):
-            self.broker.submit("session", "approved", self.digest())
-        self.assertEqual(self.broker.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
-        self.assertFalse(any("run-instances" in call for call in self.calls))
+        self.broker.submit("session", "approved", self.digest())
+        self.assertEqual(self.broker.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
+        self.assertTrue(any("run-instances" in call for call in self.calls))
 
     def test_strict_spec(self):
         validate_spec(self.spec, self.policy)
@@ -313,14 +312,20 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "digest"):
             self.broker.reserve("session", "approved", "0" * 64, None)
 
-    def test_one_active_and_durable_budget(self):
+    def test_aws_quota_and_alerts_replace_software_admission_limits(self):
         first = self.reserve()
-        with self.assertRaisesRegex(ValueError, "one nonterminal"):
-            self.reserve()
-        self.broker.update(first["id"], status="stopped")
         self.policy["total_compute_usd"] = .5
-        with self.assertRaisesRegex(ValueError, "budget"):
+        second = self.reserve()
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(self.broker.db.execute("SELECT SUM(reserved) FROM jobs").fetchone()[0], 1)
+
+    def test_session_preset_restricts_exact_specs_before_reservation(self):
+        self.policy["clients"][0]["spec_sha256"] = ["f" * 64]
+        with self.assertRaisesRegex(PermissionError, "specification"):
             self.reserve()
+        self.assertEqual(self.broker.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
+        self.policy["clients"][0]["spec_sha256"] = [self.digest()]
+        self.reserve()
 
     def test_submit_pins_template_creates_backstop_and_never_starts_training(self):
         job = self.broker.submit("session", "approved", self.digest())

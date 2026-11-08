@@ -3,8 +3,12 @@
 Updated November 8, 2026. Matt explicitly reaffirmed continuing the whole
 approved learning-rate sweep, not stopping after one recovered trial. See
 the GPU operating handoff below for current state and execution boundaries.
-This document does not authorize additional grids, increased spending limits,
-or physical robot motion.
+This document does not authorize additional grids or physical robot motion.
+Matt subsequently chose AWS GPU quota and account budget alerts instead of
+duplicated broker lifetime-reservation and one-GPU admission checks. Keep
+independent shutdown, cleanup, private credentials, TLS and ownership checks.
+Future authorized non-host sessions must operate the approved workflow without
+depending on any current agent or per-job host-operator messages.
 
 ## Project and code
 
@@ -418,7 +422,8 @@ wall-time comparison.
 
 ### Lease, capacity, budget and continuous monitoring
 
-Keep at most one actual GPU and one loaded training policy. Existing A10G Spot
+The sweep remains serial. AWS quota, not a broker inventory/count gate, controls
+GPU admission. Existing A10G Spot
 capacity attempts were explicitly rejected; conditional On-Demand L4 was
 authorized. The proven L4 rate is $0.9776/hour. The prior full jobs had two-hour
 leases; use only operator-approved templates, purchase options and bounds.
@@ -426,15 +431,14 @@ Capacity changes by zone: zoneB was rejected before the successful zoneD run.
 Do not assume availability, repeatedly replay tokens, or claim a rejection is
 unallocated without actual AWS error/inventory evidence.
 
-The root policy still limits lifetime reservations to $20. At this handoff the
-ledger reserves $19.3972, leaving $0.6028, insufficient for another two-hour
-$1.9552 reservation. Reservations include historical failed/shortened attempts
-and are not actual billed spend. Reconcile only provably unallocated attempts
-or conservatively accounted, actually terminated usage using preserved AWS
-receipts. Never reset the ledger, erase paid history, shorten a lease merely
-to evade accounting, or raise the limit silently. If supported reconciliation
-cannot provide the remaining sweep's bounded allowance, surface the precise
-budget decision needed from Matt, not a new experiment-choice question.
+The historical ledger reserved $19.3972 against a software $20 ceiling; this
+was reservation accounting, not actual billed spend. Matt explicitly removed
+that broker admission ceiling in favor of AWS account budget alerts, which
+notify rather than cap spending. Historical reconciliation is not a launch
+prerequisite. Preserve all audit rows, paid history, idempotent intents and
+independent deadlines; do not reset the ledger or shorten leases to evade
+accounting. Install the current maintained broker changes before relying on
+the new admission behavior; an old deployed broker still has the old checks.
 
 For every fresh allocation, verify the independent one-shot AWS termination
 schedule and the actual guest self-expiry guard before long work. Persist job,

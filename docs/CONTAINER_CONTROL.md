@@ -122,33 +122,39 @@ Commands:
 
 Requests use JSON `--body`, e.g. `{"job_id":"..."}` or
 `{"spec_id":"sft-b64","spec_sha256":"..."}`. Resume also requires `parent`.
-The persisted SQLite ledger reserves the full compute allowance before
-allocation, allows only one nonterminal attempt, and retains reservations
-after failures. The active-attempt count, cumulative reservation read, and insert
-share SQLite `BEGIN IMMEDIATE`; separate broker processes cannot both reserve
-the same empty slot. Failed reservations roll back before releasing the lock.
-Compute reservations do **not** cover S3, storage, network,
-taxes, or all account spend. Those need independent AWS budget controls.
+The persisted SQLite ledger retains job ownership, independent deadlines,
+allocation intents and estimated compute allowances for audit and recovery.
+It does not enforce a cumulative spending cap or count existing GPUs to
+duplicate AWS admission. Matt chose AWS GPU quota and account budget alerts
+as those controls; budget alerts notify rather than impose a spending cap.
+AWS quota/capacity errors remain explicit, and every launched worker still has
+independent shutdown and cleanup.
 
-### Historical reservation accounting
+### Trusted future-session provisioning
 
-The installed trusted host can run `so101.aws_budget_reconcile` with a
-root-owned evidence receipt and its explicitly reviewed SHA256. The default
-is a dry run; `--apply` is a separate activation. This is not a container
-capability or a permission to change the spending limit.
+The maintained root-only registration command is
+`so101.control_session`. The trusted Dockyard launch integration validates the
+session/container mapping and actual bridge IP, generates the private token
+inside that container, and passes only its SHA256 to the installed command:
 
-The reconciler checks live empty GPU inventory, exact EC2 terminated instance
-and client-token/spec identity for paid attempts, and exact CloudTrail negative
-acknowledgments plus empty client-token inventory for unallocated attempts.
-Paid bounds start at reservation time (before allocation), end at the retained
-termination observation, include the 60-second minimum, and round upward.
-An overrun can increase a reservation; do not discard it to maximize refunds.
-Already released zero reservations are not refunded again.
+```sh
+/opt/lego-robot-control/session-register register \
+  --session-id UUID --container-id FULL_CONTAINER_ID \
+  --token-sha256 SHA256 --preset-id lego-approved-sweep
+```
 
-The ledger population and every affected identity/status/reservation are checked
-inside one transaction. Original jobs remain intact; a separate accounting
-table retains the receipt SHA, timestamp and before/after adjustments. A stale
-receipt or identity mismatch fails explicitly rather than modifying the ledger.
+`/etc/lego-robot-control/session-presets.json` supplies the fixed repository,
+actions and exact approved `spec_sha256` list. Caller-supplied commands,
+actions, recipes and tokens are not accepted. Root-private registration state
+binds UUID/container/hash/preset, refuses rebinding, and permits an idempotent
+same-binding retry after an uncertain broker reload. The host integration
+installs the public CA, allows only the actual bridge IP, and invokes
+`revoke --session-id UUID --container-id FULL_CONTAINER_ID` on cleanup.
+Both actions return nonsecret JSON receipts only after broker reload succeeds.
+
+This is a trusted server integration, not a registration API for containers.
+Installing the command alone does not prove automatic session provisioning or
+fresh-cell execution; verify those live before claiming self-service delivery.
 
 ## AWS prerequisites and shutdown
 
@@ -159,7 +165,7 @@ roles. Before enabling `gpu_enabled`, configure and qualify:
    log groups, pinned launch template/AMI/image, and SSM documents.
 2. Explicit policy values: `broker_id`, `aws_cli`, `region` (Oregon only),
    `artifact_prefix` (S3 prefix ending `/`), `instance_types`, `amis`,
-   `max_hours`, `max_usd_per_hour`, `total_compute_usd`, `max_disk_gib`,
+   `max_hours`, `max_usd_per_hour`, `max_disk_gib`,
    `checkpoint_grace_seconds` (1..600), `start_documents`, `stop_documents`,
    `log_prefix`, `schedule_group`, `shutdown_role_arn`, and initially empty
    `training_authorized_specs`. Do not invent spending limits.
@@ -550,12 +556,9 @@ Real Spot notice/throughput/termination qualification,
 root host bootstrap, and live verification remain unfinished.
 Independent lease termination remains necessary on stop failure.
 
-Broker submission now scans EC2 instances in the approved Oregon region
-before reservation, without ownership-tag filters. Pending, running, stopping,
-and shutting-down instances are classified through `DescribeInstanceTypes`
-GPU metadata, not just approved L4/A10G names. Any GPU or inaccessible/malformed
-inventory denies admission. Launches remain Oregon-only. Required reads:
-`ec2:DescribeInstances` and `ec2:DescribeInstanceTypes` in Oregon.
+Broker submission no longer scans global GPU inventory as an admission gate.
+AWS quota and capacity responses determine allocation; ownership-scoped
+inventory remains necessary for status and cleanup. Launches remain Oregon-only.
 
 This supplements, rather than replaces, the broker's serialized one-attempt
 ledger. Inventory is a snapshot, not an AWS atomic cross-principal lock. Other
@@ -869,6 +872,6 @@ On-demand additionally requires a root policy `on_demand_rates` mapping the
 approved instance type to its exact `max_usd_per_hour` reservation rate, and a
 pinned launch template with no `InstanceMarketOptions`. Spot retains its bounded
 price, one-time, terminate-only template checks. Neither mode authorizes training
-or relaxes inventory, lease, budget, checkpoint, or qualification requirements.
+or relaxes lease, checkpoint, or runtime qualification requirements.
 This host-only adapter change does not require replacing a previously pinned
 worker source archive or image.

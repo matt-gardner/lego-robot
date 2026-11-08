@@ -24,7 +24,6 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import uuid
 
-from so101.aws_inventory import require_no_gpu
 from so101.aws_recovery import recover as recover_checkpoint
 from so101.aws_qualification_recovery import evidence as qualification_evidence
 
@@ -76,11 +75,18 @@ def validate_policy(policy: dict) -> None:
     identifiers = set()
     hashes = set()
     for client in clients:
-        if (set(client) != {"id", "token_sha256", "actions"}
+        if (set(client) not in ({"id", "token_sha256", "actions"},
+                               {"id", "token_sha256", "actions", "spec_sha256"})
                 or not IDENTIFIER.fullmatch(client["id"])
                 or not DIGEST.fullmatch(client["token_sha256"])
                 or not set(client["actions"]) <= allowed):
             raise ValueError("Invalid client capability")
+        if "spec_sha256" in client and (
+            not isinstance(client["spec_sha256"], list)
+            or not all(isinstance(digest, str) and DIGEST.fullmatch(digest)
+                       for digest in client["spec_sha256"])
+        ):
+            raise ValueError("Client specifications must be exact approved SHA256 digests")
         if client["id"] in identifiers or client["token_sha256"] in hashes:
             raise ValueError("Client IDs and capability hashes must be unique")
         identifiers.add(client["id"])
@@ -89,7 +95,7 @@ def validate_policy(policy: dict) -> None:
         raise ValueError("gpu_enabled must explicitly be true or false")
     if policy["gpu_enabled"]:
         validate_controller_settings(policy)
-        for key in ("max_hours", "max_usd_per_hour", "total_compute_usd", "max_disk_gib"):
+        for key in ("max_hours", "max_usd_per_hour", "max_disk_gib"):
             finite_positive(policy[key], key)
         if not 1 <= finite_positive(policy["checkpoint_grace_seconds"], "checkpoint grace") <= 600:
             raise ValueError("Checkpoint grace must be 1..600 seconds")
@@ -323,6 +329,9 @@ class Broker:
         actual = hashlib.sha256(canonical(spec)).hexdigest()
         if not hmac.compare_digest(actual, digest):
             raise ValueError("Approved job specification digest changed")
+        client = next((entry for entry in self.policy["clients"] if entry["id"] == owner), None)
+        if client is None or ("spec_sha256" in client and actual not in client["spec_sha256"]):
+            raise PermissionError("Capability does not permit this specification")
         if parent:
             previous = self.job(parent, owner)
             if previous["status"] not in TERMINAL:
@@ -342,14 +351,6 @@ class Broker:
         now = time.time()
         with self.lock, self.db:
             self.db.execute("BEGIN IMMEDIATE")
-            active = self.db.execute(
-                "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('stopped','failed')"
-            ).fetchone()[0]
-            if active:
-                raise ValueError("Only one nonterminal GPU attempt is allowed")
-            reserved = self.db.execute("SELECT COALESCE(SUM(reserved),0) FROM jobs").fetchone()[0]
-            if reserved + cost > finite_positive(self.policy["total_compute_usd"], "total_compute_usd"):
-                raise ValueError("Lifetime compute reservation budget exhausted")
             job_id = uuid.uuid4().hex
             self.db.execute(
                 "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -376,7 +377,6 @@ class Broker:
 
     def submit(self, owner: str, spec_id: str, digest: str, parent: str | None = None) -> dict:
         with self.lock:
-            require_no_gpu(lambda region, *args: self.aws(*args))
             job = self.reserve(owner, spec_id, digest, parent)
             spec = json.loads(job["spec"])
             try:
