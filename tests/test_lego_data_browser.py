@@ -123,6 +123,50 @@ def test_unpublished_hidden_releases_are_not_discovered(tmp_path):
     assert hidden_sqlite.read_bytes() == b"incomplete SQLite"
 
 
+def test_exact_invalidation_preserves_history_and_identity(tmp_path):
+    path = catalog(tmp_path)
+    original = path.read_bytes()
+    browser = LegoDataBrowser(tmp_path)
+    release = browser.list({})["releases"][0]
+    notices = tmp_path / "data" / "notices"
+    notices.mkdir()
+    notice = {
+        "schema_version": 1, "notice_id": "frame-defect", "catalog_id": "v1",
+        "catalog_sha256": release["catalog_sha256"], "status": "invalidated",
+        "reason": "Wrong coordinate frame", "source_work_item": "catalog-work",
+        "evidence": {"height_axis": "Y"},
+    }
+    notice_path = notices / "frame-defect.json"
+    notice_path.write_text(json.dumps(notice))
+    result = browser.list({"release": release["id"], "status": "verified"})
+    assert result["total"] == 1
+    assert result["items"][0]["status"] == "verified"
+    assert result["items"][0]["stored_status"] == "verified"
+    assert result["items"][0]["effective_status"] == "invalidated"
+    assert result["items"][0]["qualification_status"] == "invalidated"
+    assert result["release"]["qualification_notices"][0]["notice_sha256"] == (
+        hashlib.sha256(notice_path.read_bytes()).hexdigest())
+    assert browser.list({"release": release["id"], "qualification_status": "not_invalidated"})["total"] == 0
+    assert path.read_bytes() == original
+    assert browser.list({})["releases"][0]["id"] == release["id"]
+    notice["catalog_sha256"] = "0" * 64
+    notice_path.write_text(json.dumps(notice))
+    assert browser.list({"release": release["id"]})["items"][0]["effective_status"] == "verified"
+    notice["catalog_sha256"] = release["catalog_sha256"]
+    notice["catalog_id"] = "other-release"
+    notice_path.write_text(json.dumps(notice))
+    assert browser.list({"release": release["id"]})["release"]["qualification_notices"] == []
+
+
+def test_malformed_notice_fails_instead_of_hiding_invalidation(tmp_path):
+    catalog(tmp_path)
+    root = tmp_path / "data" / "notices"
+    root.mkdir()
+    (root / "broken.json").write_text('{"schema_version":1}')
+    with pytest.raises(ValueError, match="qualification notice"):
+        LegoDataBrowser(tmp_path).list({})
+
+
 def test_dashboard_prefix_and_lego_api(tmp_path):
     from so101.rl_dashboard import make_server
 

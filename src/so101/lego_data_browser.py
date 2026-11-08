@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from so101.episode_storage import EpisodeStorage
@@ -45,6 +46,7 @@ class LegoDataBrowser:
 
     def releases(self) -> dict[str, dict]:
         releases = {}
+        notices = self.notices()
         for pattern, kind in (("**/catalog.json", "parts"), ("**/*.sqlite", "examples")):
             root = self.catalog_root if kind == "parts" else self.root
             for path in sorted(root.glob(pattern)):
@@ -75,8 +77,44 @@ class LegoDataBrowser:
                     "path": relative, "catalog_sha256": digest,
                     "artifact_sha256": artifact_digest,
                     "metadata": metadata,
+                    "qualification_notices": [
+                        notice for notice in notices if kind == "parts"
+                        and notice["catalog_id"] == version
+                        and notice["catalog_sha256"] == digest
+                    ],
                 }
         return releases
+
+    def notices(self) -> list[dict]:
+        notices = []
+        identities = set()
+        for path in sorted((self.catalog_root / "notices").glob("*.json")):
+            if path.name.startswith("."):
+                continue
+            self.contained(path, self.catalog_root)
+            content = path.read_bytes()
+            notice = json.loads(content)
+            if not isinstance(notice, dict) or notice.get("schema_version") != 1:
+                raise ValueError(f"Unsupported qualification notice schema: {path.name}")
+            for field in ("notice_id", "catalog_id", "reason", "source_work_item"):
+                if not isinstance(notice.get(field), str) or not notice[field].strip():
+                    raise ValueError(f"Invalid qualification notice {field}: {path.name}")
+            if (not isinstance(notice.get("catalog_sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", notice["catalog_sha256"])
+                    or notice.get("status") not in ("invalidated", "superseded")
+                    or not isinstance(notice.get("evidence"), dict)):
+                raise ValueError(f"Invalid qualification notice: {path.name}")
+            if notice["notice_id"] in identities:
+                raise ValueError(f"Duplicate qualification notice: {notice['notice_id']}")
+            identities.add(notice["notice_id"])
+            notices.append({**notice, "notice_sha256": hashlib.sha256(content).hexdigest()})
+        return notices
+
+    def qualification_status(self, release: dict) -> str:
+        statuses = {notice["status"] for notice in release["qualification_notices"]}
+        if "invalidated" in statuses:
+            return "invalidated"
+        return "superseded" if "superseded" in statuses else "not_invalidated"
 
     def release(self, release_id: str) -> dict:
         release = self.releases().get(release_id)
@@ -93,7 +131,11 @@ class LegoDataBrowser:
             if any(row["status"] not in ("imported", "prepared", "verified", "unavailable")
                    for row in rows):
                 raise ValueError("Invalid catalog part status")
-            return [{**row, "id": row["part_id"]} for row in rows]
+            qualification = self.qualification_status(release)
+            return [{**row, "id": row["part_id"], "stored_status": row["status"],
+                     "qualification_status": qualification,
+                     "effective_status": qualification if qualification != "not_invalidated"
+                     else row["status"]} for row in rows]
         rows = []
         with EpisodeStorage(self.contained(self.root / release["path"])) as storage:
             for source, content, digest in storage.connection.execute(
@@ -192,11 +234,12 @@ class LegoDataBrowser:
         rows = [row for row in rows if not search or search in
                 json.dumps(row, sort_keys=True).casefold()]
         for field in ("status", "family", "task", "category", "split",
-                      "expert_acceptance", "visual_audit"):
+                      "expert_acceptance", "visual_audit", "qualification_status"):
             if query.get(field):
                 rows = [row for row in rows if str(row.get(field, "")) == query[field]]
         offset, limit = int(query.get("offset", 0)), int(query.get("limit", 24))
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("Expected offset >= 0 and limit 1..100")
         return {"items": rows[offset:offset + limit], "total": len(rows),
+                "release": {key: value for key, value in release.items() if key != "metadata"},
                 "offset": offset, "limit": limit}

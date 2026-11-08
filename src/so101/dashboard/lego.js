@@ -16,14 +16,20 @@ async function legoLoad() {
     const release = legoElement("release").value;
     if (!release) return;
     const result = await legoFetch({release, search: legoElement("search").value,
-      status: legoElement("status").value, offset: legoOffset});
+      status: legoElement("status").value,
+      qualification_status: legoElement("qualification").value, offset: legoOffset});
     if (request !== legoRequest) return;
     legoElement("error").textContent = "";
-    legoElement("identity").textContent = `Pinned catalog/generation identity: ${release}`;
+    const notices = result.release.qualification_notices;
+    legoElement("identity").textContent = `Pinned catalog/generation identity: ${release}. ` +
+      notices.map(notice => `${notice.status}: ${notice.reason}`).join(" ");
     legoElement("count").textContent = `${result.total} matching entries`;
     legoElement("grid").replaceChildren(...result.items.map(row => {
       const button = document.createElement("button");
-      button.textContent = `${row.part_id || row.id} - ${row.description || row.task || ""} - ${row.status || row.expert_acceptance || "not recorded"}`;
+      const status = row.stored_status
+        ? `Stored: ${row.stored_status}; effective: ${row.effective_status}`
+        : row.expert_acceptance || "not recorded";
+      button.textContent = `${row.part_id || row.id} - ${row.description || row.task || ""} - ${status}`;
       button.addEventListener("click", async () => {
         try {
           const detail = await legoFetch({release, item: row.id});
@@ -69,7 +75,8 @@ async function legoRefresh() {
     legoElement("release").replaceChildren(...result.releases.map(release => {
       const option = document.createElement("option");
       option.value = release.id;
-      option.textContent = `${release.kind} / ${release.version} / ${release.path}`;
+      const notices = release.qualification_notices.map(notice => notice.status).join(", ");
+      option.textContent = `${release.kind} / ${release.version} / ${release.path}${notices ? ` / ${notices}` : ""}`;
       return option;
     }));
     if (result.releases.some(release => release.id === previous)) legoElement("release").value = previous;
@@ -79,7 +86,7 @@ async function legoRefresh() {
     await legoLoad();
   } catch (error) { legoElement("error").textContent = error.message; }
 }
-for (const id of ["release", "search", "status"]) {
+for (const id of ["release", "search", "status", "qualification"]) {
   legoElement(id).addEventListener("change", () => { legoOffset = 0; legoLoad(); });
 }
 legoElement("refresh").addEventListener("click", legoRefresh);

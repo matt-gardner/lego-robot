@@ -223,6 +223,13 @@ part preparation failures, historical acceptance labels and original recorded
 frames remain visible; missing external recordings are not reconstructed.
 Authenticated request-monitor feedback delivery is not yet integrated and is
 explicitly shown as unavailable. This page does not accept or acknowledge comments.
+Producer-authored immutable `notices/*.json` (schema version 1) annotate an exact
+`catalog_id` and `catalog_sha256` with `invalidated` or `superseded`, a unique
+`notice_id`, `reason`, `source_work_item`, and an `evidence` object. The browser
+keeps `status`/`stored_status` historical and exposes `effective_status` and
+`qualification_status` separately; an invalidation takes precedence over
+supersession. No matching notice means `not_invalidated`, not a new qualification
+or robot-competence claim. Notice byte hashes and reasons appear in release details.
 For example:
 
 ```sh
