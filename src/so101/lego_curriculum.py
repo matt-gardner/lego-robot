@@ -28,6 +28,7 @@ class Part:
     family: str
     dimensions_m: tuple[float, float, float]
     mjcf: str
+    assets: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class Catalog:
     catalog_id: str
     manifest_sha256: str
     parts: tuple[Part, ...]
+    root: Path
 
 
 def _text(value: object, name: str) -> str:
@@ -95,6 +97,7 @@ def load_catalog(manifest: Path) -> Catalog:
         if not isinstance(assets, list) or not assets:
             raise ValueError(f"Missing asset checksums: {part_id}")
         names = set()
+        hashes = []
         for asset in assets:
             if not isinstance(asset, dict):
                 raise ValueError(f"Invalid asset record: {part_id}")
@@ -108,13 +111,15 @@ def load_catalog(manifest: Path) -> Catalog:
                 raise ValueError(f"Invalid asset SHA256: {part_id}/{name}")
             if sha256(path) != digest:
                 raise ValueError(f"Asset checksum mismatch: {part_id}/{name}")
+            hashes.append((name, digest))
         if mjcf not in names:
             raise ValueError(f"MJCF missing from checksummed assets: {part_id}")
-        parts.append(Part(part_id, family, tuple(float(v) for v in dimensions), mjcf))
+        parts.append(Part(part_id, family, tuple(float(v) for v in dimensions),
+                          mjcf, tuple(hashes)))
     if not parts:
         raise CatalogUnavailable(f"No verified LEGO parts in catalog {catalog_id}")
     return Catalog(catalog_id, hashlib.sha256(raw).hexdigest(),
-                   tuple(sorted(parts, key=lambda part: part.part_id)))
+                   tuple(sorted(parts, key=lambda part: part.part_id)), root)
 
 
 def visual_audit_due(*, category: str, accepted_count: int, seed: int) -> bool:
@@ -147,7 +152,7 @@ def prepare_scene(
     if not catalog.parts:
         raise CatalogUnavailable("No verified LEGO parts")
     identity = {
-        "generator": "lego-scene-plan-v1", "catalog_sha256": catalog.manifest_sha256,
+        "generator": "lego-scene-plan-v2", "catalog_sha256": catalog.manifest_sha256,
         "seed": seed, "sequence": sequence, "category": category,
         "task": task, "object_count": object_count,
     }
@@ -169,8 +174,10 @@ def prepare_scene(
         else:
             spread = {"cluster": .06, "overlap": .035, "pile": .02}[category]
             x, y = rng.uniform(-spread, spread), rng.uniform(-spread, spread)
-        # Vertical separation is a spawn proposal; the adapter must settle it.
-        height = .04 + index * max(part.dimensions_m[2], .01)
+        # Only stacked proposals need staggered drop heights.
+        height = .01 + part.dimensions_m[2]
+        if category in ("overlap", "pile"):
+            height += index * max(part.dimensions_m[2], .01)
         objects.append({
             "instance_id": f"object_{index:05d}", "part_id": part.part_id,
             "family": part.family, "color": rng.choice(COLORS),

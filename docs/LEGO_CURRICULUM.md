@@ -43,6 +43,25 @@ state, labels, camera/renderer identity and physics fingerprints. Namespace
 part instances/assets and keep source part identity separate from instance ID.
 The current four-object BeamSimulation is not an arbitrary-pile adapter.
 
+`so101.lego_scene.assemble_scene` now imports catalog MJCF templates into an
+explicit-radian caller-provided base XML. It namespaces each instance's
+body/joint/geometry/material/mesh identifiers, resolves only declared asset
+paths, rechecks hashes, and rejects template global settings. It does not yet
+provide a robot expert or rendered training episodes.
+
+`settle_scene` compiles and simulates the proposal, rejects non-finite physics,
+MuJoCo warnings and excessive interval penetration, and requires stationary
+objects. It returns all-object metadata plus a full MuJoCo integration-state
+snapshot bound to the XML hash and physics version. `restore_scene` validates
+the snapshot before modifying the destination state, including warm-start and
+control state. Settling timeouts/velocity/contact tolerances are physical
+acceptance parameters, not daily generation quotas.
+
+The adapter has CPU tests using synthetic fixtures only: dynamic object/asset
+namespacing, actual settling, identical next-step recovery, corrupted catalogs
+and invalid physics rejection. Real catalog/robot contact qualification remains
+separate; these tests do not create or qualify real training data.
+
 Preparation CLI (prints a proposal only, does not run physics or write data):
 
 ```sh
