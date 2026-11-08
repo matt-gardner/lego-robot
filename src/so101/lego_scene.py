@@ -185,6 +185,7 @@ def settle_scene(
     stationary_seconds: float = .5, velocity_tolerance: float = .005,
     contact_limit_m: float = .001,
     stationarity_metric: str = "legacy-component-v1",
+    contact_solver: str = "model-default",
 ) -> tuple[mujoco.MjModel, mujoco.MjData, dict]:
     """Require finite, stationary physics with acceptable interval penetration."""
     limits = (maximum_seconds, stationary_seconds, velocity_tolerance, contact_limit_m)
@@ -199,6 +200,7 @@ def settle_scene(
         stationary_seconds=stationary_seconds, velocity_tolerance=velocity_tolerance,
         contact_limit_m=contact_limit_m,
         stationarity_metric=stationarity_metric,
+        contact_solver=contact_solver,
     )
 
 
@@ -208,11 +210,9 @@ def body_surface_speed_bound(model: mujoco.MjModel, data: mujoco.MjData, body: i
     mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_BODY, body, velocity, 0)
     start = int(model.body_geomadr[body])
     stop = start + int(model.body_geomnum[body])
-    radius = max(
-        (float(np.linalg.norm(data.geom_xpos[index] - data.xipos[body]))
-         + float(model.geom_rbound[index]) for index in range(start, stop)),
-        default=0.,
-    )
+    radii = (np.linalg.norm(data.geom_xpos[start:stop] - data.xipos[body], axis=1)
+             + model.geom_rbound[start:stop])
+    radius = float(np.max(radii)) if radii.size else 0.
     return float(np.linalg.norm(velocity[3:]) + radius * np.linalg.norm(velocity[:3]))
 
 
@@ -221,6 +221,7 @@ def settle_data(
     maximum_seconds: float = 10., stationary_seconds: float = .5,
     velocity_tolerance: float = .005, contact_limit_m: float = .001,
     stationarity_metric: str = "legacy-component-v1",
+    contact_solver: str = "model-default",
 ) -> tuple[mujoco.MjModel, mujoco.MjData, dict]:
     """Settle initialized robot controls and catalog objects without resetting."""
     limits = (maximum_seconds, stationary_seconds, velocity_tolerance, contact_limit_m)
@@ -228,6 +229,10 @@ def settle_data(
         raise ValueError("Settling parameters must be positive and finite")
     if stationarity_metric not in {"legacy-component-v1", "surface-speed-v2"}:
         raise ValueError(f"Unknown stationarity metric: {stationarity_metric}")
+    if contact_solver not in {"model-default", "pyramidal-v1"}:
+        raise ValueError(f"Unknown contact solver: {contact_solver}")
+    if contact_solver == "pyramidal-v1":
+        model.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
     deadline = data.time + maximum_seconds
     mujoco.mj_forward(model, data)
     addresses = []
@@ -281,6 +286,7 @@ def settle_data(
         "units": "m/s" if stationarity_metric == "surface-speed-v2" else "mixed m/s and rad/s",
         "continuous_seconds": stationary_seconds, "maximum_final_speed": max(speeds),
     }
+    snapshot["contact_solver"] = {"profile": contact_solver, "cone": int(model.opt.cone)}
     return model, data, snapshot
 
 

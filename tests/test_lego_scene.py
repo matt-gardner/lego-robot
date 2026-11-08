@@ -1,9 +1,12 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
+from functools import partial
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import mujoco
@@ -15,6 +18,7 @@ from so101.lego_scene import (
     settle_data, settle_scene,
 )
 from so101.catalog_sim import CatalogSimulation
+from so101.renderer_appearance_v3 import WristAppearanceV3
 
 
 BASE = """<mujoco><compiler angle="radian"/>
@@ -161,6 +165,59 @@ class LegoSceneTests(unittest.TestCase):
         self.assertAlmostEqual(body_surface_speed_bound(model, data, 1), .011)
         with self.assertRaisesRegex(ValueError, "Unknown stationarity metric"):
             settle_data(model, data, xml, {"objects": []}, stationarity_metric="invalid")
+        with self.assertRaisesRegex(ValueError, "Unknown contact solver"):
+            settle_data(model, data, xml, {"objects": []}, contact_solver="invalid")
+
+    @unittest.skipUnless(os.environ.get("LEGO_CATALOG_V25_MANIFEST"),
+                         "Native contact regression requires pinned catalog v25 assets")
+    def test_native_pile_solver_reproduces_and_fixes_early_penetration(self):
+        catalog = load_catalog(Path(os.environ["LEGO_CATALOG_V25_MANIFEST"]))
+        self.assertEqual(catalog.manifest_sha256,
+                         "98900449776fd08b7ca2c3d2887a116b3a9783d10d8e9dfea515b99ce6676f5d")
+        specs = (
+            ("3024", .005292847099932767, .00901043884249272, .0132, 1.2069138239483435),
+            ("3021", -.01773988643222848, -.003381169465739974, .020000000000000004,
+             -2.548135559856446),
+            ("3022", .008259481097660355, -.007777058769021808, .026800000000000004,
+             -1.8018725803699764),
+            ("3002", -.003110793990773679, .009868942547189844, .04000000000000001,
+             -.3001024215699606),
+            ("3003", -.010632815710856357, -.012253347124074332, .05320000000000001,
+             2.797053837324734),
+            ("3020", .019902500724480954, .002747946582325085, .06000000000000001,
+             -1.1788884270237718),
+            ("3004", .01250729143150563, -.014355618641748698, .07320000000000002,
+             .49339411484653306),
+            ("3005", .007792086791144716, -.015406359689165962, .08640000000000002,
+             2.0227227412839675),
+        )
+        plan = {
+            "catalog_id": catalog.catalog_id, "catalog_sha256": catalog.manifest_sha256,
+            "scene_id": "native-pile-sequence-71-regression", "seed": 20261108,
+            "status": "proposed", "destinations": [], "commands": [],
+            "objects": [
+                {"instance_id": f"object_{index:05d}", "part_id": part_id,
+                 "position_relative_to_scene_m": [x, y, z], "yaw_rad": yaw, "color": "gray"}
+                for index, (part_id, x, y, z, yaw) in enumerate(specs)
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "penetration.*object_00003.*object_00005"):
+            CatalogSimulation(catalog, plan, render=False, appearance=WristAppearanceV3())
+        with patch("so101.catalog_sim.settle_data", partial(
+            settle_data, contact_solver="pyramidal-v1", stationarity_metric="surface-speed-v2",
+            velocity_tolerance=.0005,
+        )):
+            sim = CatalogSimulation(catalog, plan, render=False, appearance=WristAppearanceV3())
+        self.addCleanup(sim.close)
+        snapshot = sim.settled_snapshot
+        self.assertLessEqual(snapshot["maximum_penetration_m"], .001)
+        self.assertLessEqual(snapshot["stationarity"]["maximum_final_speed"], .0005)
+        self.assertEqual(snapshot["stationarity"]["continuous_seconds"], .5)
+        restored = mujoco.MjData(sim.model)
+        restore_scene(sim.model, restored, snapshot, sim.xml)
+        sim.model.opt.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+        with self.assertRaisesRegex(ValueError, "runtime physics"):
+            restore_scene(sim.model, restored, snapshot, sim.xml)
 
     def test_template_cannot_change_global_physics(self):
         template = ET.fromstring(PART)
