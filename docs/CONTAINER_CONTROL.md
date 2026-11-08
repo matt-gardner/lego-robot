@@ -68,6 +68,15 @@ Each spec records:
 - immutable SSM start/stop document names and numeric versions, and log group.
 
 The **qualified launch template is the executable implementation of that job**.
+Input staging downloads at most four immutable S3 objects concurrently onto the
+worker's local disk. Each object retains its exact version, size and SHA-256
+checks; the population receipt is committed only after every download verifies.
+Per-object byte counts and elapsed times are logged. A consolidated episode
+SQLite artifact is mounted directly via `--episode-storage`, with its small
+original catalog mounted at the existing collection path; it must not appear
+in the archive-extraction plan. The small-file dataset archives are not needed
+for that loader path. Model-cache archives remain separately verified.
+
 Its bootstrap must fetch and verify the registered spec/assets, verify the
 runtime image and code commit, stage the dataset/cache/checkpoint, publish logs
 and recovery artifacts, and then remain **idle**. It must not clear STOP or

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -183,6 +184,32 @@ class ArtifactTests(unittest.TestCase):
         self.assertFalse((destination / ".staged.json").exists())
         with self.assertRaises(FileExistsError):
             self.stage(max_bytes=1000)
+
+    def test_downloads_overlap_and_all_verify_before_receipt(self):
+        barrier = threading.Barrier(2)
+        original = self.store.run
+        def run(args, **kwargs):
+            if args[2] == "get-object":
+                barrier.wait(timeout=5)
+            return original(args, **kwargs)
+        self.store.run = run
+        destination = self.store.stage(self.root, self.job, {
+            "dataset.sqlite": self.artifact, "training_state.pt": self.artifact,
+        }, max_bytes=2 * len(self.body))
+        self.assertEqual((destination / "dataset.sqlite").read_bytes(), self.body)
+        self.assertEqual((destination / "training_state.pt").read_bytes(), self.body)
+        receipt = json.loads((destination / ".staged.json").read_text())
+        self.assertEqual(set(receipt["artifacts"]), {"dataset.sqlite", "training_state.pt"})
+
+    def test_parallel_corruption_does_not_commit_population(self):
+        destination = self.root / self.job
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            self.store.stage(self.root, self.job, {
+                "valid.pt": self.artifact,
+                "corrupt.pt": replace(self.artifact, sha256="0" * 64),
+            }, max_bytes=2 * len(self.body))
+        self.assertFalse((destination / ".staged.json").exists())
+        self.assertFalse((destination / "corrupt.pt").exists())
 
     def test_empty_manifest_is_not_success(self):
         with self.assertRaises(ValueError):

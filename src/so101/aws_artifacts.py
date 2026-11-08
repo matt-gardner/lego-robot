@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from concurrent.futures import ThreadPoolExecutor
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import subprocess
+import time
 from urllib.parse import urlsplit
 
 from so101.cloud_checkpoint import atomic_json, fsync_directory, sha256
@@ -129,7 +132,10 @@ class ArtifactStore:
         # Never reuse, overwrite, or clear STOP in an existing attempt.
         destination.mkdir(mode=0o700)
         fsync_directory(destination.parent)
-        for name, artifact in artifacts.items():
+        def download(item: tuple[str, Artifact]) -> None:
+            name, artifact = item
+            started = time.monotonic()
+            logging.warning("Downloading artifact=%s bytes=%s", name, artifact.size)
             self.request("head-object", artifact)
             temporary = destination / ("." + name + ".part")
             self.request("get-object", artifact, temporary)
@@ -139,6 +145,12 @@ class ArtifactStore:
                 os.fsync(stream.fileno())
             temporary.replace(destination / name)
             fsync_directory(destination)
+            logging.warning("Verified artifact=%s bytes=%s seconds=%.3f",
+                            name, artifact.size, time.monotonic() - started)
+
+        with ThreadPoolExecutor(max_workers=min(4, len(artifacts))) as downloads:
+            for _ in downloads.map(download, artifacts.items()):
+                pass
         atomic_json(destination / ".staged.json", {
             "schema": 1, "job_id": job_id,
             "artifacts": {name: asdict(artifact) for name, artifact in artifacts.items()},
