@@ -587,8 +587,12 @@ or registry credential belongs in the source engineering container. System apt
 packages are not snapshot-pinned: record the resulting image digest and package
 inventory; this recipe is not a claim of bit-for-bit reproducible apt layers.
 BuildKit read-only bind mounts keep installer wheels out of final image layers;
-the host still needs room for the wheelhouse and build cache. The idle image defaults to UID1001
-and offline model access; narrowly owned `/work` and separately staged model
+the host still needs room for the wheelhouse and build cache. The idle image defaults to UID1001,
+registered as `so101` in `/etc/passwd`, with `HOME=/tmp` and offline model access.
+The launcher supplies writable temporary storage; deterministic Torch/Adam
+initialization must be checked as UID1001, not just as root, because Torch's
+cache initialization resolves the operating-system username.
+Narrowly owned `/work` and separately staged model
 assets are required before a future qualified launcher can use it.
 
 No final wheelhouse, image digest, AMI, or build qualification exists yet.

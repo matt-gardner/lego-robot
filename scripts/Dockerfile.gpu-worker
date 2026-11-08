@@ -19,11 +19,14 @@ RUN --network=none test -n "$SOURCE_SHA256" && test -n "$SOURCE_COMMIT" \
     && rm /opt/source.tar
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
     io.so101.source-sha256="${SOURCE_SHA256}"
+RUN --network=none groupadd --gid 1001 so101 \
+    && useradd --uid 1001 --gid 1001 --home-dir /tmp --no-create-home \
+        --shell /usr/sbin/nologin so101
 ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/opt/so101/src" \
     NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
     NVIDIA_REQUIRE_CUDA="cuda>=13.0" \
     MUJOCO_GL=egl PYOPENGL_PLATFORM=egl HF_HOME=/work/cache/huggingface \
-    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
 WORKDIR /opt/so101
 USER 1001:1001
 CMD ["python", "-c", "raise SystemExit('Idle image: only the qualified worker launcher may start training')"]
