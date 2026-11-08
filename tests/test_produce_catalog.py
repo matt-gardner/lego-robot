@@ -1,6 +1,21 @@
 import json
+from collections import Counter
 
-from so101.produce_catalog import run
+from so101.produce_catalog import run, scheduled_scene
+
+
+def test_schedule_prioritizes_manipulation_and_reserves_views_for_dense_piles():
+    plans = [scheduled_scene(sequence) for sequence in range(48)]
+    assert Counter(task for _, task, _ in plans) == {
+        "grasp": 15, "place": 15, "push": 15, "view": 3,
+    }
+    assert all(category == "pile" and count == 8
+               for category, task, count in plans if task == "view")
+    assert {(category, task) for category, task, _ in plans if task != "view"} == {
+        (category, task)
+        for category in ("separated", "cluster", "overlap", "pile")
+        for task in ("grasp", "place", "push")
+    }
 
 
 def test_worker_resumes_completed_pair_without_generating_again(tmp_path, monkeypatch):

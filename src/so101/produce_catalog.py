@@ -29,6 +29,15 @@ from so101.lego_curriculum import load_catalog, prepare_scene
 LOGGER = logging.getLogger(__name__)
 
 
+def scheduled_scene(sequence: int) -> tuple[str, str, int]:
+    if type(sequence) is not int or sequence < 0:
+        raise ValueError("Sequence must be a nonnegative integer")
+    category = ("separated", "cluster", "overlap", "pile")[sequence % 4]
+    task = "view" if sequence % 16 == 15 else ("grasp", "place", "push")[sequence % 3]
+    count = {"separated": 2, "cluster": 4, "overlap": 6, "pile": 8}[category]
+    return category, task, count
+
+
 def qualify_pair(root: Path) -> dict:
     """Validate every actual paired SFT sample before immutable publication."""
     report = json.loads((root / "collection.json").read_bytes())
@@ -146,9 +155,7 @@ def run(root: Path, catalog_path: Path, appearance_path: Path,
                     state["active_sequence"] = sequence
                     atomic_json(state_path, state)
                 # Feedback-visible generation is development-only, never sealed evaluation.
-                category = ("separated", "cluster", "overlap", "pile")[sequence % 4]
-                task = ("grasp", "view", "push", "place")[(sequence // 4) % 4]
-                object_count = {"separated": 2, "cluster": 4, "overlap": 6, "pile": 8}[category]
+                category, task, object_count = scheduled_scene(sequence)
                 plan = prepare_scene(catalog, seed=seed, sequence=sequence,
                                      category=category, task=task, object_count=object_count)
                 family = hashlib.sha256(json.dumps(

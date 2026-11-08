@@ -57,6 +57,11 @@ time zero. Source bounds are used when present; older bounds-free catalogs keep
 the explicitly approximate symmetric-dimension fallback. Actual contact-valid
 settling remains required.
 
+Manipulation now takes 15 of every 16 scheduled proposals: grasp, place and push
+each receive five. The remaining view proposal uses an eight-piece pile, not a
+simple separated scene. This is scheduling priority, not a measured successful
+data distribution; rejected manipulation attempts remain visible.
+
 SFT is one command at a time: grasp, push, place and view. Generate meaningful
 alternate target/destination commands from the same saved scene for paired
 examples. Many physical objects do not require many command entities. Use
