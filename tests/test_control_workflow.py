@@ -59,3 +59,26 @@ def test_other_owners_are_rejected_before_preparation(broker):
     with pytest.raises(PermissionError):
         control_workflow.prepare(broker, "other-owner", "a" * 32, "provision")
     broker.aws.assert_not_called()
+
+
+def test_bootstrap_retry_requires_proof_handler_never_executed(broker):
+    broker.aws.side_effect = [
+        {"Command": {"CommandId": "too-early"}},
+        {"Status": "Failed", "StandardOutputContent": "",
+         "StandardErrorContent": "python3: can't open file '/opt/lego-robot-worker/early.py': [Errno 2] No such file or directory"},
+    ]
+    result = control_workflow.prepare(broker, "owner", "a" * 32, "provision")
+    assert result["status"] == "WaitingForBootstrap"
+    assert broker.db.execute("SELECT count(*) FROM workflow_rejections").fetchone()[0] == 1
+    assert broker.db.execute("SELECT count(*) FROM workflow_commands").fetchone()[0] == 0
+
+
+def test_failed_executed_provision_is_not_replayed(broker):
+    broker.aws.side_effect = [
+        {"Command": {"CommandId": "executed"}},
+        {"Status": "Failed", "StandardOutputContent": "handler started",
+         "StandardErrorContent": "installation failed"},
+    ]
+    result = control_workflow.prepare(broker, "owner", "a" * 32, "provision")
+    assert result["status"] == "Failed"
+    assert broker.db.execute("SELECT count(*) FROM workflow_commands").fetchone()[0] == 1
