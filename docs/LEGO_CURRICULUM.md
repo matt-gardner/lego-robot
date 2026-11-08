@@ -66,16 +66,16 @@ Settling exposes an opt-in `stationarity_metric="surface-speed-v2"` in
 linear speed with rotation and a geometry radius measured from the body COM,
 in metres per second. Snapshots record the metric, units, tolerance, continuous
 stationary interval and final maximum speed. The default remains
-`legacy-component-v1`; the active producer has not adopted the new metric.
+`legacy-component-v1`; CPU curriculum workers select their metric explicitly.
 This changes stationarity measurement, not penetration checks or collision
 geometry. Quiet convex-visual-hull demos do not qualify native catalog cavities
 or resolve the producer's early-impact failures.
 The new CPU-worker recipe explicitly selects `contact_solver="pyramidal-v1"`,
 `stationarity_metric="surface-speed-v2"` and a 0.005 m/s surface-speed tolerance.
 The recipe and settled snapshot bind these choices; archived XML declares the
-pyramidal cone too. General simulation defaults remain unchanged. This candidate
-requires controlled source activation and actual paired recording/SFT verification;
-the running `66d1b76` source still uses its historical settings.
+pyramidal cone too. General simulation defaults remain unchanged. Activation uses
+a fresh immutable source/root after actual paired recording/SFT verification;
+earlier frozen roots retain their historical settings.
 
 Catalog grasps now preflight the open fixed jaw against the stationary target
 geometry. When needed, the TCP shifts laterally along measured contact normals
