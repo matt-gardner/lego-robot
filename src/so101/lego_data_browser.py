@@ -128,6 +128,13 @@ class LegoDataBrowser:
             return "invalidated"
         return "superseded" if "superseded" in statuses else "not_invalidated"
 
+    def footprint(self, row: dict) -> str:
+        match = re.search(r"\b(\d+(?:\.\d+)?)\s+x\s+(\d+(?:\.\d+)?)\b", row.get("description", ""))
+        if not match or row.get("family") not in ("brick", "plate", "tile", "round", "slope"):
+            return "not specified"
+        sides = sorted((float(match[1]), float(match[2])))
+        return f"{sides[0]:g} x {sides[1]:g}"
+
     def release(self, release_id: str) -> dict:
         release = self.releases(release_id).get(release_id)
         if release is None:
@@ -154,6 +161,8 @@ class LegoDataBrowser:
             while len(self.preview_catalogs) > 2:
                 del self.preview_catalogs[next(iter(self.preview_catalogs))]
             return [{**row, "id": row["part_id"], "stored_status": row["status"],
+                     "footprint": self.footprint(row),
+                     "readiness": "ready" if qualification == "not_invalidated" and row["status"] == "verified" else "not_ready",
                      "qualification_status": qualification,
                      "effective_status": qualification if qualification != "not_invalidated"
                      else row["status"]} for row in rows]
@@ -303,9 +312,13 @@ class LegoDataBrowser:
                     "release": {key: value for key, value in release.items()
                                            if key != "metadata"}}
         search = query.get("search", "").casefold()
+        facets = {
+            field: sorted({str(row.get(field, "not specified")) for row in rows})
+            for field in ("family", "footprint", "decoration")
+        } if release["kind"] == "parts" else {}
         rows = [row for row in rows if not search or search in
                 json.dumps(row, sort_keys=True).casefold()]
-        for field in ("status", "effective_status", "family", "task", "category", "split",
+        for field in ("status", "effective_status", "readiness", "family", "footprint", "decoration", "task", "category", "split",
                       "expert_acceptance", "visual_audit", "qualification_status"):
             if query.get(field):
                 rows = [row for row in rows if str(row.get(field, "")) == query[field]]
@@ -314,4 +327,5 @@ class LegoDataBrowser:
             raise ValueError("Expected offset >= 0 and limit 1..100")
         return {"items": rows[offset:offset + limit], "total": len(rows),
                 "release": {key: value for key, value in release.items() if key != "metadata"},
+                "facets": facets,
                 "offset": offset, "limit": limit}

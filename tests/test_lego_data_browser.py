@@ -255,6 +255,20 @@ def test_declared_variants_group_with_plain_base_without_qualification_claim(tmp
     assert browser.list({"release": release, "item": "54200p01"})["variants"][0]["part_id"] == "54200"
 
 
+def test_readiness_type_footprint_decoration_filters(tmp_path):
+    path = catalog(tmp_path)
+    metadata = json.loads(path.read_text())
+    metadata["parts"][0].update(description="Slope Brick 31  2 x  1", decoration="undecorated")
+    path.write_text(json.dumps(metadata))
+    browser = LegoDataBrowser(tmp_path)
+    release = browser.list({})["releases"][0]["id"]
+    result = browser.list({"release": release, "readiness": "ready", "family": "slope",
+                           "footprint": "1 x 2", "decoration": "undecorated"})
+    assert result["total"] == 1
+    assert result["facets"]["family"] == ["slope", "tile"]
+    assert browser.list({"release": release, "readiness": "not_ready"})["total"] == 1
+
+
 def test_dashboard_prefix_and_lego_api(tmp_path):
     from so101.rl_dashboard import make_server
 

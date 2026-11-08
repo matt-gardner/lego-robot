@@ -6,6 +6,7 @@ const legoViewer = new PartViewer(legoElement("geometry"));
 let legoOffset = 0;
 let legoRequest = 0;
 let legoDetailRequest = 0;
+let legoRelease = "";
 const legoMedia = query => `${legoBase}/api/lego?${new URLSearchParams(query)}`;
 async function legoFetch(query) {
   const response = await fetch(legoMedia(query));
@@ -37,7 +38,7 @@ async function legoOpen(release, item) {
     legoElement("part-summary").textContent = `Part ${row.part_id || row.id}` +
       (dimensions ? ` / ${dimensions} mm` : "") +
       (row.decoration ? ` / ${row.decoration}` : "") +
-      (row.effective_status ? ` / ${row.effective_status === "verified" ? "Validated" : row.effective_status}` : "");
+      (row.readiness ? ` / ${row.readiness === "ready" ? "Training ready" : "Not training ready"}` : "");
     legoElement("variant-note").textContent = detail.variants.length
       ? "LDraw-declared variants of this base part. Geometric equivalence and decorated simulation preparation are not qualified."
       : "No declared print or sticker variants are linked in this catalog yet.";
@@ -87,21 +88,31 @@ async function legoOpen(release, item) {
 async function legoLoad() {
   const request = ++legoRequest;
   try {
-    const release = legoElement("release").value;
+    const release = legoRelease;
     if (!release) return;
-    const validated = legoElement("status").value === "verified";
-    const result = await legoFetch({release, search: legoElement("search").value,
-      effective_status: validated ? "verified" : "",
-      status: validated ? "" : legoElement("status").value,
-      qualification_status: legoElement("qualification").value, offset: legoOffset});
+    const result = await legoFetch({release, readiness: legoElement("readiness").value,
+      family: legoElement("family").value, footprint: legoElement("footprint").value,
+      decoration: legoElement("decoration").value, offset: legoOffset});
     if (request !== legoRequest) return;
     legoElement("error").textContent = "";
     const notices = result.release.qualification_notices;
-    legoElement("identity").textContent = `Pinned identity: ${release}`;
     legoElement("catalog-note").textContent = notices.length
       ? notices.map(notice => `${notice.status}: ${notice.reason}`).join(" ")
-      : "Showing the selected catalog snapshot. Validated parts exclude invalidated historical entries.";
-    legoElement("count").textContent = `${result.total} ${validated ? "validated parts" : "matching entries"}`;
+      : "Training ready means prepared for simulation-data generation, not proven robot graspability. Footprints follow the part description; they are not measured bounding boxes.";
+    for (const [field, all] of [["family", "All types"], ["footprint", "All footprints"], ["decoration", "All decorations"]]) {
+      const selected = legoElement(field).value;
+      const options = [["", all], ...(result.facets?.[field] || []).map(value => [value,
+        ({brick: "Bricks", plate: "Plates", tile: "Tiles", round: "Round parts", slope: "Slopes",
+          technic: "Technic", minifigure: "Minifigure parts", other: "Other parts",
+          undecorated: "Plain", print: "Printed", sticker: "Stickered"})[value] || value])];
+      legoElement(field).replaceChildren(...options.map(([value, label]) => {
+        const option = legoText("option", label);
+        option.value = value;
+        return option;
+      }));
+      legoElement(field).value = selected;
+    }
+    legoElement("count").textContent = `${result.total} parts`;
     legoElement("grid").replaceChildren(...result.items.map(row => {
       const button = document.createElement("button");
       button.className = "part-card";
@@ -119,8 +130,7 @@ async function legoLoad() {
       const info = legoText("span", "", "part-info");
       info.append(legoText("strong", row.description || row.task || row.id),
         legoText("span", `Part ${row.part_id || row.id}`, "part-id"),
-        legoText("span", row.effective_status === "verified" ? "Validated" :
-          row.effective_status || row.expert_acceptance || "Not recorded", "part-badge"));
+        legoText("span", row.readiness === "ready" ? "Training ready" : "Not training ready", "part-badge"));
       button.append(info);
       button.addEventListener("click", () => legoOpen(release, row.id));
       return button;
@@ -134,19 +144,15 @@ async function legoLoad() {
 async function legoRefresh() {
   try {
     const result = await legoFetch({});
-    const previous = legoElement("release").value;
     const usable = result.releases.filter(release => release.kind === "parts" &&
       release.validated_parts > 0 && !release.qualification_notices.length);
     const latest = usable.sort((a, b) => b.publication_mtime_ns - a.publication_mtime_ns)[0];
-    legoElement("release").replaceChildren(...result.releases.map(release => {
-      const option = legoText("option", `${release.version} (${release.validated_parts} stored validated parts)` +
-        (release.qualification_notices.length ? " - historical warning" : ""));
-      option.value = release.id;
-      return option;
-    }));
-    if (result.releases.some(release => release.id === previous)) legoElement("release").value = previous;
-    else if (latest) legoElement("release").value = latest.id;
-    legoElement("feedback").textContent = `Feedback unavailable: ${result.feedback.reason}`;
+    legoRelease = latest?.id || "";
+    if (!legoRelease) {
+      legoElement("count").textContent = "No usable parts catalog is available yet.";
+      legoElement("grid").replaceChildren();
+      return;
+    }
     if (!result.releases.length) {
       legoElement("count").textContent = "No published catalogs yet.";
       legoElement("grid").replaceChildren();
@@ -155,7 +161,7 @@ async function legoRefresh() {
     await legoLoad();
   } catch (error) { legoElement("error").textContent = error.message; }
 }
-for (const id of ["release", "search", "status", "qualification"]) {
+for (const id of ["readiness", "family", "footprint", "decoration"]) {
   legoElement(id).addEventListener("change", () => { legoOffset = 0; legoLoad(); });
 }
 legoElement("refresh").addEventListener("click", legoRefresh);

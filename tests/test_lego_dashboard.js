@@ -41,7 +41,7 @@ async function catalog() {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
-  get("lego-status").value = "verified";
+  get("lego-readiness").value = "ready";
   const context = vm.createContext({
     document: {documentElement: {dataset: {basePath: "/lego-robot"}},
       getElementById: get, createElement: tag => new Element(tag)},
@@ -65,7 +65,8 @@ async function catalog() {
         variants: [], frames: [],
       };
       else value = {
-        release: {qualification_notices: []}, items: [{id: "3005", part_id: "3005", description: "Brick", mjcf: "part.xml", effective_status: "verified"}],
+        release: {qualification_notices: []}, facets: {family: ["brick", "plate"], footprint: ["1 x 1"], decoration: ["undecorated"]},
+        items: [{id: "3005", part_id: "3005", description: "Brick", mjcf: "part.xml", effective_status: "verified", readiness: "ready"}],
         total: 1, limit: 24,
       };
       return {ok: true, json: async () => value};
@@ -80,14 +81,30 @@ async function catalog() {
 
 test("defaults to latest usable catalog and effective validated parts with image cards", async () => {
   const ui = await catalog();
-  assert.equal(ui.get("lego-release").value, "latest");
+  assert.equal(ui.evaluate("legoRelease"), "latest");
   const query = ui.requests.find(request => request.query.get("release") === "latest").query;
-  assert.equal(query.get("effective_status"), "verified");
-  assert.equal(query.get("status"), "");
+  assert.equal(query.get("readiness"), "ready");
+  assert.equal(ui.get("lego-family").children[1].textContent, "Bricks");
   const card = ui.get("lego-grid").children[0];
   assert.equal(card.children[0].tagName, "img");
   assert.match(card.children[0].src, /^\/lego-robot\/api\/lego\?/);
   assert.match(card.children[0].src, /preview=image/);
+});
+
+test("type, footprint and decoration filters combine and reset pagination", async () => {
+  const ui = await catalog();
+  ui.get("lego-readiness").value = "not_ready";
+  ui.get("lego-family").value = "plate";
+  ui.get("lego-footprint").value = "1 x 1";
+  ui.get("lego-decoration").value = "undecorated";
+  await ui.get("lego-family").events.change();
+  await new Promise(resolve => setImmediate(resolve));
+  const query = ui.requests.at(-1).query;
+  assert.equal(query.get("readiness"), "not_ready");
+  assert.equal(query.get("family"), "plate");
+  assert.equal(query.get("footprint"), "1 x 1");
+  assert.equal(query.get("decoration"), "undecorated");
+  assert.equal(query.get("offset"), "0");
 });
 
 test("part click opens real geometry, dragging changes projection, and missing variants are explicit", async () => {

@@ -13,23 +13,15 @@
 <body>
   <header><h1>LEGO parts</h1><a href="/data">Training data browser</a></header>
   <main class="data-main">
-    <p class="context">Browse validated simulation parts. Select a part to inspect its geometry. Validation is not robot-grasp qualification.</p>
+    <p class="context">Browse parts for simulation training. Select a part to inspect its geometry and print or sticker variants.</p>
     <p id="lego-error" role="alert"></p>
     <div class="catalog-toolbar">
-      <label>Search parts<input id="lego-search" type="search" placeholder="Part number, brick, plate, slope..."></label>
+      <label>Readiness<select id="lego-readiness"><option value="ready">Training ready</option><option value="not_ready">In catalog, not training ready</option></select></label>
+      <label>Part type<select id="lego-family"><option value="">All types</option></select></label>
+      <label>Footprint<select id="lego-footprint"><option value="">All footprints</option></select></label>
+      <label>Decoration<select id="lego-decoration"><option value="">All decorations</option></select></label>
       <button id="lego-refresh">Refresh parts</button>
     </div>
-    <details class="catalog-advanced">
-      <summary>Catalog history and advanced filters</summary>
-      <p class="hint">Each catalog is an immutable snapshot of prepared parts. The latest usable snapshot is selected automatically. Older catalogs retain their original labels and any invalidation warnings.</p>
-      <div class="data-filters">
-      <label>Catalog snapshot<select id="lego-release"></select></label>
-      <label>Show<select id="lego-status"><option value="verified" selected>Validated parts</option><option value="">All parts</option><option>imported</option><option>prepared</option><option>unavailable</option></select></label>
-      <label>Qualification notice<select id="lego-qualification"><option value="">All</option><option>invalidated</option><option>superseded</option><option>not_invalidated</option></select></label>
-      </div>
-      <p id="lego-identity" class="hint"></p>
-      <p id="lego-feedback" role="status"></p>
-    </details>
     <p id="lego-catalog-note" class="hint"></p>
     <h2 id="lego-count"></h2>
     <div id="lego-grid" class="data-grid catalog-grid"></div>

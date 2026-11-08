@@ -221,9 +221,14 @@ to read externally published catalog releases. Hidden staging paths are excluded
 from discovery until publication. Exact artifact and catalog hashes,
 part preparation failures, historical acceptance labels and original recorded
 frames remain visible; missing external recordings are not reconstructed.
-The parts page defaults to effectively verified parts from the most recently
-published usable catalog; snapshot history and non-validated filters are under
-advanced controls. Cards show hash-verified visual-mesh thumbnails. Clicking a
+The parts page automatically uses the latest usable catalog, with dropdowns for
+training readiness, part type, footprint and decoration. Training readiness means
+prepared for simulation-data generation, not robot graspability. Footprints are
+parsed from explicit dimension pairs in part descriptions, not inferred from
+measured bounding boxes; unlabelled parts remain "not specified". Historical
+snapshots and qualification labels remain accessible through the read-only API
+and technical part details, not browsing controls.
+Cards show hash-verified visual-mesh thumbnails. Clicking a
 part opens a drag-to-rotate, scroll-to-zoom viewer (arrow keys also rotate).
 Previews use embedded visual MJCF meshes, not collision hulls, and need no GPU,
 external scripts or new runtime dependency. Unsupported or unprepared geometry

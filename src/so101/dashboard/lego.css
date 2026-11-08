@@ -1,5 +1,5 @@
 .catalog-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin: 24px 0; }
-.catalog-toolbar label { display: grid; gap: 7px; flex: 1; min-width: 200px; }
+.catalog-toolbar label { display: grid; gap: 7px; flex: 1; min-width: 160px; }
 .catalog-toolbar input { width: 100%; }
 .catalog-advanced { margin-bottom: 24px; }
 .catalog-advanced summary { color: var(--muted); cursor: pointer; }
