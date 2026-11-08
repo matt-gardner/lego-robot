@@ -401,6 +401,7 @@ def train(
     retain_validation_checkpoints: bool = False,
     allow_device_rng_migration: bool = False,
     device_rng_seed: int | None = None,
+    episode_storage: Path | None = None,
 ) -> None:
     scheduled_learning_rate(0, steps, learning_rate, learning_rate_schedule, warmup_fraction)
     if (
@@ -485,6 +486,7 @@ def train(
         normalization,
         phase_prompts,
         excluded,
+        storage_path=episode_storage,
     )
     output.mkdir(parents=True, exist_ok=True)
     if training_state is None:
@@ -538,6 +540,13 @@ def train(
         "method": "microbatch-activation-checkpointing" if batch_size > 16 else "none",
         "micro_batch_size": min(batch_size, 16), "optimizer_batch_size": batch_size,
     }
+    if episode_storage is not None:
+        log["episode_storage"] = {
+            "path": str(episode_storage), "format": "sqlite-episode-bytes",
+            "version": 1,
+        }
+    else:
+        log.pop("episode_storage", None)
     training_sources = {
         task: [str(dataset.episodes[index][0]) for index in indices]
         for task, indices in dataset.task_episode_indices.items()
@@ -558,6 +567,7 @@ def train(
             entity_config.max_entities, normalization=dataset.normalization(),
             phase_prompts=phase_prompts,
             excluded_sources=tuple(source for source in catalog if source not in held_out),
+            storage_path=episode_storage,
         )
         episode_indices = {str(source): i for i, (source, _, _) in enumerate(probe_dataset.episodes)}
         probe_rng = np.random.default_rng(probe_seed)
@@ -609,7 +619,7 @@ def train(
         controller = EntityPolicy(output, device, entity_config.depth_input, phase_prompts=phase_prompts,
                                   loaded_policy=(policy, entity_config, dataset.normalization()))
         sim = BeamSimulation(MODEL_ROOT, render=True)
-        validation = [CorpusEpisode(Path(source), json.loads((Path(source) / "episode.json").read_text()))
+        validation = [CorpusEpisode(Path(source), json.loads(dataset.read_bytes(Path(source), "episode.json")))
                       for source in excluded]
         if (start_step == 1 and not log["validation"]) or validation_interval_changed:
             evaluate_at(start_step - 1)
@@ -739,6 +749,8 @@ def train(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--collection", type=Path, required=True)
+    parser.add_argument("--episode-storage", type=Path,
+                        help="Immutable indexed episode container; retain the original collection catalog")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--pretrained",
@@ -854,6 +866,7 @@ def main() -> None:
         args.retain_validation_checkpoints,
         args.allow_device_rng_migration,
         args.device_rng_seed,
+        args.episode_storage,
     )
 
 

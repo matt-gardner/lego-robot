@@ -61,3 +61,11 @@ def test_cuda_device_selection_preserves_every_recipe_argument():
 def test_sweep_migration_requires_valid_explicit_seed(seed):
     with pytest.raises(ValueError, match="seed"):
         command(trials(24576, Path("outputs/sweep"))[0], "cuda", True, seed)
+
+
+def test_storage_flag_preserves_original_recipe_and_device_migration():
+    trial = trials(24576, Path("outputs/sweep"))[1]
+    original = command(trial, "cuda", True, 61000)
+    indexed = command(trial, "cuda", True, 61000, Path("/data/episodes-v1.sqlite"))
+    assert indexed[:-2] == original
+    assert indexed[-2:] == ["--episode-storage", "/data/episodes-v1.sqlite"]

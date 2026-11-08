@@ -36,7 +36,7 @@ def trials(samples: int, output: Path) -> list[dict]:
 
 
 def command(trial: dict, device: str = "mps", allow_device_rng_migration: bool = False,
-            device_rng_seed: int | None = None) -> list[str]:
+            device_rng_seed: int | None = None, episode_storage: Path | None = None) -> list[str]:
     if device not in ("cpu", "mps", "cuda"):
         raise ValueError("Unsupported sweep device")
     if allow_device_rng_migration and (
@@ -61,6 +61,8 @@ def command(trial: dict, device: str = "mps", allow_device_rng_migration: bool =
     ]
     if allow_device_rng_migration:
         args.extend(["--allow-device-rng-migration", "--device-rng-seed", str(device_rng_seed)])
+    if episode_storage is not None:
+        args.extend(["--episode-storage", str(episode_storage)])
     return args
 
 
@@ -218,7 +220,8 @@ def plots(output: Path, results: list[dict]) -> None:
 
 
 def run(output: Path, samples: int, device: str = "mps",
-        allow_device_rng_migration: bool = False, device_rng_seed: int | None = None) -> None:
+        allow_device_rng_migration: bool = False, device_rng_seed: int | None = None,
+        episode_storage: Path | None = None) -> None:
     plan = trials(samples, output)
     previous = json.loads(PREVIOUS.read_text())
     if previous["status"] != "completed" or active_run_outputs():
@@ -263,6 +266,7 @@ def run(output: Path, samples: int, device: str = "mps",
                     with (output / f"{target.name}.stdout.log").open("a") as stream:
                         child = subprocess.Popen(command(
                             trial, device, allow_device_rng_migration, device_rng_seed,
+                            episode_storage,
                         ), env=env, stdout=stream,
                                                  stderr=subprocess.STDOUT)
                         write("training", trainer_pid=child.pid)
@@ -296,16 +300,19 @@ def main():
     parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="mps")
     parser.add_argument("--allow-device-rng-migration", action="store_true")
     parser.add_argument("--device-rng-seed", type=int)
+    parser.add_argument("--episode-storage", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if args.dry_run:
         plan = trials(args.samples, args.output)
         print(json.dumps({"trials": plan, "commands": [
-            command(trial, args.device, args.allow_device_rng_migration, args.device_rng_seed)
+            command(trial, args.device, args.allow_device_rng_migration, args.device_rng_seed,
+                    args.episode_storage)
             for trial in plan
         ]}, indent=2))
     else:
-        run(args.output, args.samples, args.device, args.allow_device_rng_migration, args.device_rng_seed)
+        run(args.output, args.samples, args.device, args.allow_device_rng_migration,
+            args.device_rng_seed, args.episode_storage)
 
 
 if __name__ == "__main__":

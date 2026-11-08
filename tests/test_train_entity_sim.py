@@ -1,6 +1,7 @@
 import copy
 import json
 import random
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,6 +14,19 @@ from so101.evaluate_entity_sim import EntityPolicy
 import so101.evaluate_entity_sim as evaluator
 import so101.train_entity_sim as trainer
 from so101.resume_rng import plan_device_rng
+
+
+def test_storage_cli_changes_only_storage_selection(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(trainer, "train", lambda *args: calls.append(args))
+    argv = ["train", "--collection", str(tmp_path), "--output", str(tmp_path / "output")]
+    monkeypatch.setattr(sys, "argv", argv)
+    trainer.main()
+    monkeypatch.setattr(sys, "argv", argv + ["--episode-storage", str(tmp_path / "v1.sqlite")])
+    trainer.main()
+    assert calls[0][:-1] == calls[1][:-1]
+    assert calls[0][-1] is None
+    assert str(calls[1][-1]) == str(tmp_path / "v1.sqlite")
 
 
 def test_triangular_schedule_peaks_at_early_warmup_then_decays():

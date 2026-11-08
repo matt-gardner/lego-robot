@@ -15,6 +15,7 @@ from so101.control_model.command import (
     task_phase_prompt,
 )
 from so101.simulation_corpus import load_catalog, validate_clean_expert
+from so101.episode_storage import EpisodeStorage
 
 
 class EntityTrajectoryDataset(Dataset):
@@ -28,10 +29,15 @@ class EntityTrajectoryDataset(Dataset):
         normalization: dict[str, list[float]] | None = None,
         phase_prompts: bool = False,
         excluded_sources: tuple[str, ...] = (),
+        storage_path: Path | None = None,
     ):
         if horizon <= 0 or history_steps <= 0:
             raise ValueError("horizon and history_steps must be positive")
         report = load_catalog(collection)
+        self.storage = EpisodeStorage(storage_path) if storage_path is not None else None
+        if self.storage is not None and self.storage.catalog != report:
+            self.storage.close()
+            raise ValueError("Episode storage catalog differs from requested collection")
         self.horizon = horizon
         self.history_steps = history_steps
         self.max_entities = max_entities
@@ -50,14 +56,14 @@ class EntityTrajectoryDataset(Dataset):
             source = Path(source_name)
             if source.resolve() in excluded:
                 continue
-            episode = json.loads((source / "episode.json").read_text())
+            episode = json.loads(self.read_bytes(source, "episode.json"))
             if "scene_version" in report and episode["initial"].get("scene_version") != report["scene_version"]:
                 raise ValueError(f"{source}: mixed physics versions in entity collection")
             if tasks is not None and episode["task"] not in tasks:
                 continue
             rows = [
                 json.loads(line)
-                for line in (source / "frames.jsonl").read_text().splitlines()
+                for line in self.read_bytes(source, "frames.jsonl").splitlines()
             ]
             validate_clean_expert(episode, rows)
             if not rows or any(
@@ -207,8 +213,19 @@ class EntityTrajectoryDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    def read_bytes(self, source: Path, relative: str) -> bytes:
+        if self.storage is not None:
+            return self.storage.read(source, relative)
+        return (source / relative).read_bytes()
+
     def _image(self, source: Path, row: dict) -> torch.Tensor:
-        bgr = cv2.imread(str(source / row["image"]))
+        if self.storage is None:
+            bgr = cv2.imread(str(source / row["image"]))
+        else:
+            bgr = cv2.imdecode(
+                np.frombuffer(self.read_bytes(source, row["image"]), dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
         if bgr is None:
             raise RuntimeError(f"Missing image {source / row['image']}")
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
