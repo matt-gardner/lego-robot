@@ -188,3 +188,21 @@ with exact-byte/hash verification and full SFT pair qualification. Never append
 to mounted immutable databases or assume the reader federates shards.
 Keep original datasets, checkpoints, STOP markers, canonical paths and active
 sweep inputs untouched. No model training, GPU or physical robot motion.
+
+`python -m so101.produce_catalog --root /new/producer --catalog /pinned/catalog.json
+--appearance /pinned/profile.json --part-id 3005 --seed 20261108` runs the first
+resumable development worker. Run from an immutable source snapshot with CPU
+renderer/BLAS threads set to one. It uses SCHED_IDLE/nice19, retains explicit
+failure receipts, finishes the current attempt on SIGTERM, and resumes an
+interrupted complete pair without simulating it again. Recipe changes require
+a new root. The loop cycles configuration categories and command tasks; failures
+are diagnostics, not accepted examples. All actual paired SFT samples and archive
+bytes are checked before separately publishing an immutable release.
+
+This initial worker uses two objects and one process. Pressure-aware multiworker
+fan-out, broader validated part mixtures and audit wake/render transport remain
+unfinished; it is not yet an all-idle-CPU resource manager. New families are
+explicitly development-only, keeping feedback-visible attempts out of sealed
+evaluation and training. It never imports historical episodes or assigns their
+descendants to training. A future train/sealed producer must implement protected
+historical-family exclusions and independent split policy before publication.
