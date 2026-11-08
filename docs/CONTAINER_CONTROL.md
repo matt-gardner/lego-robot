@@ -130,6 +130,26 @@ the same empty slot. Failed reservations roll back before releasing the lock.
 Compute reservations do **not** cover S3, storage, network,
 taxes, or all account spend. Those need independent AWS budget controls.
 
+### Historical reservation accounting
+
+The installed trusted host can run `so101.aws_budget_reconcile` with a
+root-owned evidence receipt and its explicitly reviewed SHA256. The default
+is a dry run; `--apply` is a separate activation. This is not a container
+capability or a permission to change the spending limit.
+
+The reconciler checks live empty GPU inventory, exact EC2 terminated instance
+and client-token/spec identity for paid attempts, and exact CloudTrail negative
+acknowledgments plus empty client-token inventory for unallocated attempts.
+Paid bounds start at reservation time (before allocation), end at the retained
+termination observation, include the 60-second minimum, and round upward.
+An overrun can increase a reservation; do not discard it to maximize refunds.
+Already released zero reservations are not refunded again.
+
+The ledger population and every affected identity/status/reservation are checked
+inside one transaction. Original jobs remain intact; a separate accounting
+table retains the receipt SHA, timestamp and before/after adjustments. A stale
+receipt or identity mismatch fails explicitly rather than modifying the ledger.
+
 ## AWS prerequisites and shutdown
 
 Keep AWS credentials exclusively in the trusted host service through temporary
