@@ -214,6 +214,14 @@ Behind an authenticated reverse proxy, use `--base-path /lego-robot` and preserv
 prefix when proxying to the loopback server. Open `/lego-robot/` for the dashboard
 or `/lego-robot/data` for the integrated data browser; assets and API requests stay
 under the prefix. The default empty base path preserves direct-root serving.
+`/lego` (or `/lego-robot/lego`) separately browses schema-1 LEGO catalogs and
+existing immutable `.sqlite` episode containers under the workspace's `data`
+directory without extraction. Set `--lego-catalog-root /mnt/data/lego-catalog`
+to read externally published catalog releases. Exact artifact and catalog hashes,
+part preparation failures, historical acceptance labels and original recorded
+frames remain visible; missing external recordings are not reconstructed.
+Authenticated request-monitor feedback delivery is not yet integrated and is
+explicitly shown as unavailable. This page does not accept or acknowledge comments.
 For example:
 
 ```sh
