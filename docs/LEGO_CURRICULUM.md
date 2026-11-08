@@ -50,6 +50,12 @@ family-balanced selection. The producer proposes 2 separated, 4 clustered,
 New-source auxiliary admission requires a qualified eight-object pair; a
 two-object success does not establish the memory cost of larger piles.
 Imported/tabletop-verified parts still need actual robot-expert qualification.
+Plan v8 cumulatively separates initial source-geometry vertical bounds for mixed
+part heights. LDraw bodies are not necessarily centered within their dimensions:
+assuming symmetric half-heights caused an eight-piece proposal to intersect at
+time zero. Source bounds are used when present; older bounds-free catalogs keep
+the explicitly approximate symmetric-dimension fallback. Actual contact-valid
+settling remains required.
 
 SFT is one command at a time: grasp, push, place and view. Generate meaningful
 alternate target/destination commands from the same saved scene for paired

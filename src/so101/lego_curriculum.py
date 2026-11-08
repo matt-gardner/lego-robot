@@ -30,6 +30,7 @@ class Part:
     dimensions_m: tuple[float, float, float]
     mjcf: str
     assets: tuple[tuple[str, str], ...]
+    vertical_bounds_m: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,16 @@ def load_catalog(manifest: Path) -> Catalog:
                 or any(type(value) not in (int, float)
                        or not math.isfinite(value) or value <= 0 for value in dimensions)):
             raise ValueError(f"Invalid dimensions_m: {part_id}")
+        bounds = geometry.get("bounds_m")
+        vertical_bounds = None
+        if bounds is not None:
+            if (not isinstance(bounds, list) or len(bounds) != 2
+                    or any(not isinstance(row, list) or len(row) != 3 for row in bounds)
+                    or any(type(value) not in (int, float) or not math.isfinite(value)
+                           for row in bounds for value in row)
+                    or any(bounds[0][axis] >= bounds[1][axis] for axis in range(3))):
+                raise ValueError(f"Invalid geometry bounds_m: {part_id}")
+            vertical_bounds = (float(bounds[0][2]), float(bounds[1][2]))
         mjcf, _ = _asset(root, entry.get("mjcf"))
         assets = entry.get("assets")
         if not isinstance(assets, list) or not assets:
@@ -122,7 +133,7 @@ def load_catalog(manifest: Path) -> Catalog:
         if mjcf not in names:
             raise ValueError(f"MJCF missing from checksummed assets: {part_id}")
         parts.append(Part(part_id, family, tuple(float(v) for v in dimensions),
-                          mjcf, tuple(hashes)))
+                          mjcf, tuple(hashes), vertical_bounds))
     if not parts:
         raise CatalogUnavailable(f"No verified LEGO parts in catalog {catalog_id}")
     return Catalog(catalog_id, hashlib.sha256(raw).hexdigest(),
@@ -159,7 +170,7 @@ def prepare_scene(
     if not catalog.parts:
         raise CatalogUnavailable("No verified LEGO parts")
     identity = {
-        "generator": "lego-scene-plan-v7", "catalog_sha256": catalog.manifest_sha256,
+        "generator": "lego-scene-plan-v8", "catalog_sha256": catalog.manifest_sha256,
         "seed": seed, "sequence": sequence, "category": category,
         "task": task, "object_count": object_count,
         "sampleable_part_ids": sorted(part.part_id for part in catalog.parts),
@@ -176,6 +187,7 @@ def prepare_scene(
     rows = math.ceil(object_count / columns)
     spacing = max(.04, max(max(part.dimensions_m[:2]) for part in catalog.parts) * 1.5)
     used_parts = set()
+    previous_top = 0.
     for index in range(object_count):
         if len(used_parts) == len(catalog.parts):
             used_parts.clear()
@@ -193,9 +205,13 @@ def prepare_scene(
             spread = {"cluster": .06, "overlap": .035, "pile": .02}[category]
             x, y = rng.uniform(-spread, spread), rng.uniform(-spread, spread)
         # Only stacked proposals need staggered drop heights.
-        height = .01 + part.dimensions_m[2]
+        lower_z, upper_z = part.vertical_bounds_m or (
+            -part.dimensions_m[2] / 2, part.dimensions_m[2] / 2,
+        )
+        height = .01 - lower_z
         if category in ("overlap", "pile"):
-            height += index * max(part.dimensions_m[2], .01)
+            height = max(height, previous_top - lower_z + .002)
+            previous_top = height + upper_z
         objects.append({
             "instance_id": f"object_{index:05d}", "part_id": part.part_id,
             "family": part.family, "color": rng.choice(COLORS),

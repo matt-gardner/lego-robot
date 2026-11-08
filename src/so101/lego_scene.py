@@ -224,7 +224,13 @@ def settle_data(
         penetration = max((max(0., -float(contact.dist)) for contact in data.contact), default=0.)
         maximum_penetration = max(maximum_penetration, penetration)
         if penetration > contact_limit_m:
-            raise ValueError(f"Scene contact penetration exceeded limit: {penetration:.6f}m")
+            contact = min(data.contact, key=lambda item: float(item.dist))
+            geometries = [model.geom(int(index)).name
+                          for index in (contact.geom1, contact.geom2)]
+            raise ValueError(
+                f"Scene contact penetration exceeded limit: {penetration:.6f}m "
+                f"between {geometries} at {data.time:.6f}s"
+            )
         if not all(np.isfinite(value).all() for value in (data.qpos, data.qvel, data.qacc)):
             raise ValueError("Non-finite catalog scene physics")
         if any(warning.number for warning in data.warning):

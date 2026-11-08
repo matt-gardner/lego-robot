@@ -64,6 +64,44 @@ class CurriculumTests(unittest.TestCase):
                     {"test-slope", "test-brick"},
                 )
 
+    def test_mixed_height_pile_has_disjoint_initial_vertical_envelopes(self):
+        self.report["parts"].append(dict(
+            self.report["parts"][0], part_id="test-tall",
+            dimensions_m=[.008, .008, .02],
+        ))
+        catalog = self.write_catalog()
+        dimensions = {part.part_id: part.dimensions_m for part in catalog.parts}
+        for sequence in range(8):
+            plan = self.plan(catalog, sequence=sequence, object_count=8)
+            previous_top = 0.
+            for obj in plan["objects"]:
+                half_height = dimensions[obj["part_id"]][2] / 2
+                center = obj["position_relative_to_scene_m"][2]
+                self.assertGreaterEqual(center - half_height + 1e-12, previous_top + .002)
+                previous_top = center + half_height
+
+    def test_off_center_source_bounds_keep_mixed_pile_initially_disjoint(self):
+        original = self.report["parts"][0]
+        original["geometry"] = dict(
+            original["geometry"],
+            bounds_m=[[-.004, -.004, -.0048], [.004, .004, .0012]],
+        )
+        self.report["parts"].append(dict(
+            original, part_id="test-tall", dimensions_m=[.008, .008, .02],
+            geometry=dict(original["geometry"],
+                          bounds_m=[[-.004, -.004, -.0188], [.004, .004, .0012]]),
+        ))
+        catalog = self.write_catalog()
+        bounds = {part.part_id: part.vertical_bounds_m for part in catalog.parts}
+        for sequence in range(8):
+            plan = self.plan(catalog, sequence=sequence, object_count=8)
+            previous_top = 0.
+            for obj in plan["objects"]:
+                lower, upper = bounds[obj["part_id"]]
+                center = obj["position_relative_to_scene_m"][2]
+                self.assertGreaterEqual(center + lower + 1e-12, previous_top + .002)
+                previous_top = center + upper
+
     def test_deterministic_pairing_and_catalog_version_binding(self):
         catalog = self.write_catalog()
         original = self.plan(catalog)
