@@ -133,17 +133,27 @@ def test_unavailable_is_not_verified_and_archive_escape_rejected(tmp_path):
     ("Tile with Sticker", "3068bd01", "sticker"),
     ("Alias", "973p123", "print"),
     ("Technic Pin", "3673", "undecorated"),
+    ("Slope Brick Curved with Door Outline", "15068dy9", "sticker"),
+    ("Slope Brick Curved with Door Outline", "15068dya", "sticker"),
+    ("Tile with Logo", "3068bd0012", "sticker"),
+    ("Brick alternate mould", "3001d", "undecorated"),
+    ("Printed decoration code containing d", "11938pde4", "print"),
+    ("Sticker decoration code containing p", "3001dpa", "sticker"),
 ])
 def test_decoration_priority_classification(description, part_id, expected):
     assert decoration(description, part_id) == expected
 
 
-def test_decorated_conversion_is_deferred(tmp_path):
+@pytest.mark.parametrize(("part_id", "description"), [
+    ("1p01", "Tile with Pattern"),
+    ("15068dy9", "Slope Brick Curved with Door Outline"),
+])
+def test_decorated_conversion_is_deferred(tmp_path, part_id, description):
     archive = tmp_path / "source.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
-        bundle.writestr("ldraw/parts/1p01.dat", "0 Tile with Pattern\n")
+        bundle.writestr(f"ldraw/parts/{part_id}.dat", f"0 {description}\n")
     with pytest.raises(ValueError, match="Decorated conversion deferred"):
-        publish(archive, tmp_path / "catalog", "decorated", ("1p01",))
+        publish(archive, tmp_path / "catalog", "decorated", (part_id,))
     assert not (tmp_path / "catalog/decorated").exists()
 
 

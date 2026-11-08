@@ -102,7 +102,13 @@ def decoration(description: str, part_id: str = "") -> str:
     if re.search(r"\b(sticker|stickers|stickered)\b", description, re.IGNORECASE):
         return "sticker"
     if (re.search(r"\b(pattern|patterned|printed|printing)\b", description, re.IGNORECASE)
-            or re.fullmatch(r"\d+[a-z]*p[0-9a-z]+", part_id, re.IGNORECASE)):
+            or re.fullmatch(r"\d+[a-z]?p(?:[a-z0-9]{2,3}|\d{4})",
+                            part_id, re.IGNORECASE)):
+        return "print"
+    if re.fullmatch(r"\d{3,5}[a-z]?d(?:[a-z0-9]{2}|\d{4})",
+                    part_id, re.IGNORECASE):
+        return "sticker"
+    if re.fullmatch(r"\d+[a-z]*p[0-9a-z]+", part_id, re.IGNORECASE):
         return "print"
     return "undecorated"
 
@@ -468,7 +474,8 @@ def publish(archive: Path, output: Path, catalog_id: str,
                     continue
                 old = retained[entry["part_id"]]
                 entry.update({key: value for key, value in old.items()
-                              if key not in ("base_part_id", "base_part_relationship")})
+                              if key not in ("decoration", "base_part_id",
+                                             "base_part_relationship")})
                 for asset in old.get("assets", []):
                     destination_asset = staging.joinpath(*safe_path(asset["path"]).parts)
                     destination_asset.parent.mkdir(parents=True, exist_ok=True)
