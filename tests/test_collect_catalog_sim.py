@@ -125,6 +125,18 @@ def test_generation_dates_capture_successful_completion_and_survive_storage(tmp_
             assert storage.read(Path(source), "episode.json") == (Path(source) / "episode.json").read_bytes()
 
 
+def test_reserved_family_membership_is_preserved_in_both_commands(tmp_path):
+    sim = fixture_sim(tmp_path)
+    sim.plan.update(scene_family_id="reserved-parent-family", split="development")
+    report = record_pair(sim, tmp_path / "pair")
+    assert report["scene_family_id"] == "reserved-parent-family"
+    assert report["split"] == "development"
+    for source in report["successful_episodes"]:
+        metadata = json.loads((Path(source) / "episode.json").read_bytes())
+        assert metadata["scene_family_id"] == report["scene_family_id"]
+        assert metadata["split"] == report["split"]
+
+
 @pytest.mark.parametrize("field,value", [
     ("command_boxes", [[0.] * 4]),
     ("command_visibility", [[1]]),

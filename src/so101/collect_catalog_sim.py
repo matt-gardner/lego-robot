@@ -154,6 +154,12 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         [report["scene_id"], report["generator_sha256"], report["renderer"], archive_hashes],
         sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode()).hexdigest()
+    if "scene_family_id" in sim.plan or "split" in sim.plan:
+        if not sim.plan.get("scene_family_id") or sim.plan.get("split") not in (
+            "train", "development", "sealed-test"
+        ):
+            raise ValueError("Invalid reserved curriculum family membership")
+        report.update(scene_family_id=sim.plan["scene_family_id"], split=sim.plan["split"])
     atomic_json(output / "collection.json", report)
     candidates = []
     for index, command in enumerate(sim.plan["commands"]):
@@ -179,6 +185,8 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
             "scene_state": "settled_state.json", "scene_archive_sha256": archive_hashes,
             "simulation_backend": "catalog-v1",
         }
+        if "scene_family_id" in report:
+            metadata.update(scene_family_id=report["scene_family_id"], split=report["split"])
         try:
             sim.observe_recovery_start(
                 command["object_instance_id"], command["task"], command["destination_id"],

@@ -162,6 +162,18 @@ rendering and judgment remain curriculum responsibilities.
 block of ten from the audit seed and block number; persisted accepted counters
 allow resumption without selecting different examples.
 
+`so101.curriculum_ledger.CurriculumLedger` persists explicit family membership
+and accepted-example counters transactionally in a mutable coordination SQLite
+database, separate from immutable episode storage. Membership is reserved before
+simulation and cannot change on retries or restart; the caller must retain the
+same family for descendants. Only a complete two-command pair can increment
+category counters. Replaying the same pair is idempotent, while changed example
+identities fail explicitly. Selected audits remain pending until this worker
+records an explicit judgment and findings. The seed is fixed when the ledger is
+created. This ledger does not invent split proportions, qualify a pair, render
+audits, or automatically promote data. Producer integration and protected
+historical-family exclusion remain required.
+
 ## Execution and publication
 
 Continuously runnable low-priority CPU generation, using all idle CPUs without
