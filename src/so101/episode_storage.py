@@ -1,4 +1,4 @@
-"""Byte-preserving, read-only indexed episode container (format version 1)."""
+"""Byte-preserving, read-only indexed episode containers with shared blobs."""
 
 from __future__ import annotations
 
@@ -11,14 +11,15 @@ import tempfile
 import threading
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 class EpisodeStorage:
     def __init__(self, path: Path):
         self.path = path.resolve()
         self._local = threading.local()
-        if self.connection.execute("PRAGMA user_version").fetchone()[0] != FORMAT_VERSION:
+        self.format_version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        if self.format_version not in (1, FORMAT_VERSION):
             self.close()
             raise ValueError(f"Unsupported episode storage version: {path}")
         self.catalog = json.loads(self.connection.execute(
@@ -53,6 +54,16 @@ class EpisodeStorage:
     def verify(self) -> dict[str, int]:
         if self.connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise ValueError(f"Corrupt episode container: {self.path}")
+        if self.format_version == 2:
+            if self.connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ValueError(f"Missing episode content blob: {self.path}")
+            for content, digest in self.connection.execute("SELECT content,sha256 FROM blobs"):
+                if hashlib.sha256(content).hexdigest() != digest:
+                    raise ValueError(f"Content checksum mismatch: blob {digest}")
+            count, size = self.connection.execute(
+                "SELECT COUNT(*),COALESCE(SUM(length(content)),0) FROM files"
+            ).fetchone()
+            return {"files": count, "bytes": size}
         count = size = 0
         for source, name, content, digest in self.connection.execute(
             "SELECT source,name,content,sha256 FROM files ORDER BY source,name"
@@ -119,12 +130,19 @@ def consolidate(collection: Path, destination: Path) -> dict[str, int]:
         with sqlite3.connect(temporary) as connection:
             connection.executescript("""
                 PRAGMA journal_mode=DELETE;
+                PRAGMA foreign_keys=ON;
                 CREATE TABLE catalog(content BLOB NOT NULL);
-                CREATE TABLE files(
+                CREATE TABLE blobs(
+                    sha256 TEXT PRIMARY KEY NOT NULL, content BLOB NOT NULL
+                );
+                CREATE TABLE file_entries(
                     source TEXT NOT NULL, name TEXT NOT NULL,
-                    content BLOB NOT NULL, sha256 TEXT NOT NULL,
+                    sha256 TEXT NOT NULL REFERENCES blobs(sha256),
                     PRIMARY KEY(source,name)
                 );
+                CREATE VIEW files AS
+                    SELECT source,name,content,file_entries.sha256 AS sha256
+                    FROM file_entries JOIN blobs USING(sha256);
             """)
             connection.execute(f"PRAGMA user_version={FORMAT_VERSION}")
             connection.execute("INSERT INTO catalog VALUES (?)", (catalog_bytes,))
@@ -151,9 +169,16 @@ def consolidate(collection: Path, destination: Path) -> dict[str, int]:
                         raise ValueError(f"Episode changed during migration: {source}")
                     if file.name == "frames.jsonl" and file.parent == source and content != rows:
                         raise ValueError(f"Frames changed during migration: {source}")
-                    connection.execute("INSERT INTO files VALUES (?,?,?,?)", (
-                        str(source), file.relative_to(source).as_posix(),
-                        content, hashlib.sha256(content).hexdigest(),
+                    digest = hashlib.sha256(content).hexdigest()
+                    existing = connection.execute(
+                        "SELECT content FROM blobs WHERE sha256=?", (digest,)
+                    ).fetchone()
+                    if existing is None:
+                        connection.execute("INSERT INTO blobs VALUES (?,?)", (digest, content))
+                    elif existing[0] != content:
+                        raise ValueError(f"Content hash collision: {file}")
+                    connection.execute("INSERT INTO file_entries VALUES (?,?,?)", (
+                        str(source), file.relative_to(source).as_posix(), digest,
                     ))
         with EpisodeStorage(temporary) as storage:
             result = storage.verify()

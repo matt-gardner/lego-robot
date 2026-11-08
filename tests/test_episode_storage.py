@@ -66,7 +66,10 @@ def test_corruption_detected(tmp_path):
     destination = tmp_path / "v1.sqlite"
     consolidate(root, destination)
     with sqlite3.connect(destination) as connection:
-        connection.execute("UPDATE files SET content=x'00' WHERE name='episode.json'")
+        connection.execute(
+            "UPDATE blobs SET content=x'00' WHERE sha256="
+            "(SELECT sha256 FROM files WHERE name='episode.json')"
+        )
     with EpisodeStorage(destination) as storage:
         with pytest.raises(ValueError, match="checksum"):
             storage.verify()
@@ -80,6 +83,77 @@ def test_original_changes_detected(tmp_path):
     with EpisodeStorage(destination) as storage:
         with pytest.raises(ValueError, match="Original differs"):
             storage.verify_sources(root)
+
+
+def test_shared_blobs_preserve_distinct_logical_files(tmp_path):
+    root, source = collection(tmp_path)
+    shared = b"compiled model bytes" * 65536
+    (source / "model.mjb").write_bytes(shared)
+    (source / "other-model.mjb").write_bytes(shared)
+    destination = tmp_path / "v2.sqlite"
+    result = consolidate(root, destination)
+    with EpisodeStorage(destination) as storage:
+        assert storage.format_version == 2
+        assert result["files"] == 5
+        assert result["bytes"] == sum(p.stat().st_size for p in source.rglob("*") if p.is_file())
+        assert storage.connection.execute("SELECT COUNT(*) FROM blobs").fetchone()[0] == 4
+        assert storage.read(source, "model.mjb") == shared
+        assert storage.read(source, "other-model.mjb") == shared
+        assert storage.connection.execute(
+            "SELECT content FROM files WHERE name='model.mjb'"
+        ).fetchone()[0] == shared
+        metadata = storage.connection.execute(
+            "SELECT source,content,sha256 FROM files WHERE name='episode.json' ORDER BY source"
+        ).fetchall()
+        assert metadata == [(str(source), (source / "episode.json").read_bytes(),
+                             hashlib.sha256((source / "episode.json").read_bytes()).hexdigest())]
+        frames = storage.connection.execute(
+            "SELECT content,sha256 FROM files WHERE source=? AND name='frames.jsonl'",
+            (str(source),),
+        ).fetchone()
+        assert frames[0] == (source / "frames.jsonl").read_bytes()
+        assert hashlib.sha256(frames[0]).hexdigest() == frames[1]
+    assert destination.stat().st_size < len(shared) * 1.1
+
+
+def test_format1_remains_readable(tmp_path):
+    root, source = collection(tmp_path)
+    destination = tmp_path / "historical.sqlite"
+    with sqlite3.connect(destination) as connection:
+        connection.executescript("""
+            PRAGMA user_version=1;
+            CREATE TABLE catalog(content BLOB NOT NULL);
+            CREATE TABLE files(
+                source TEXT, name TEXT, content BLOB, sha256 TEXT,
+                PRIMARY KEY(source,name)
+            );
+        """)
+        connection.execute("INSERT INTO catalog VALUES (?)", ((root / "collection.json").read_bytes(),))
+        for file in source.rglob("*"):
+            if file.is_file():
+                content = file.read_bytes()
+                connection.execute("INSERT INTO files VALUES (?,?,?,?)", (
+                    str(source), file.relative_to(source).as_posix(),
+                    content, hashlib.sha256(content).hexdigest(),
+                ))
+    with EpisodeStorage(destination) as storage:
+        assert storage.format_version == 1
+        assert storage.read(source, "wrist/0.jpg") == (source / "wrist/0.jpg").read_bytes()
+        assert storage.verify()["files"] == 3
+        storage.verify_sources(root)
+
+
+def test_missing_blob_never_silently_reduces_verified_population(tmp_path):
+    root, _ = collection(tmp_path)
+    destination = tmp_path / "v2.sqlite"
+    consolidate(root, destination)
+    with sqlite3.connect(destination) as connection:
+        connection.execute(
+            "DELETE FROM blobs WHERE sha256=(SELECT sha256 FROM files WHERE name='episode.json')"
+        )
+    with EpisodeStorage(destination) as storage:
+        with pytest.raises(ValueError, match="Missing episode content"):
+            storage.verify()
 
 
 def test_destination_cannot_enter_original_episode(tmp_path):

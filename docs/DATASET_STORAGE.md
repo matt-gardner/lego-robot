@@ -1,6 +1,6 @@
 # Indexed episode storage
 
-`so101.consolidate_dataset` creates a **new** SQLite format-version-1 container
+`so101.consolidate_dataset` creates a **new** SQLite format-version-2 container
 from a complete simulation collection. Run from the same working directory as
 the original catalog's source paths:
 
@@ -17,6 +17,15 @@ SQLite is used instead of compressed tar because training reads random
 history windows, not just sequential episodes: indexed BLOB reads need no
 archive scan, decompression seek or extracted image tree. It uses Python's
 standard library rather than adding another storage dependency.
+
+Format 2 stores identical bytes once per container in a SHA-256-addressed blob
+table, retaining every original filename and source key separately. Shared
+compiled scene models and source archives therefore do not multiply with paired
+episodes. The read-only `files` SQL view preserves existing browser queries.
+Verification checks every unique blob and missing references, and reports
+logical file counts/bytes (including repeated content), not unique stored bytes.
+The reader also supports historical format-1 containers; none are rewritten.
+This deduplicates storage only, not examples or scene families.
 
 Publication uses an exclusive link only after SQLite integrity and all content
 checksums pass; existing destinations are never overwritten. Originals are
