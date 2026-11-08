@@ -401,6 +401,10 @@ denominators are prepared once, so unequal padding/entity masks retain their
 global weighting; clipping and Adam still run once per optimizer batch.
 `--micro-batch-size` defaults to 16. Execution-mode changes on resume are
 recorded without rewriting earlier updates or changing the sample schedule.
+Adaptive LR/batch trials may reuse an evaluated CUDA step-zero checkpoint only
+when it has no optimizer updates or Adam moments. They retain identical model,
+RNG, and frozen evaluation inputs, record the cached baseline's provenance, and
+save their own step-zero checkpoint. Later evaluations still run normally.
 
 ### Sample-matched local SFT sweeps
 
