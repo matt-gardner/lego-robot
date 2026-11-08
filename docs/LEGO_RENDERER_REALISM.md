@@ -27,6 +27,25 @@ hashes and documented parameters. Share the exact MJCF/camera integration
 interface with curriculum and catalog workers. Preserve legacy playback and
 pin old generations to their original renderer; do not relabel old images.
 
+## Integration interface
+
+The opt-in source interface is `RendererAppearance` in
+`src/so101/renderer_appearance.py`. Apply `apply_xml(assembled_xml)` before
+MuJoCo compilation, `apply_model(model)` before creating a renderer, and
+`apply_lighting(model)` after reset appearance changes. Use `render_rgb` and
+`process_rgb(image, seed=scene_seed, frame=frame_index)` for RGB only; render
+segmentation and metric depth with the same geometric camera without photometric
+processing. The profile currently requires the SO101 base's `table`,
+`wrist_cam` and named white-jaw materials, not a standalone part scene.
+
+Persist `identity()` with each generation: it includes both profile and
+implementation hashes. Do not bind to a mutable filename or replay with a
+mismatched identity. Before recording a qualified renderer release here,
+verify its final hashes and CPU render evidence from an artifact path readable
+by the curriculum worker. A producer's container-local `/mnt/data` path is not
+necessarily visible to other workers; use the actual shared project data mount
+for cross-worker deliverables.
+
 ## Evidence and boundaries
 
 Render representative matched compositions, including near-field jaw occlusion
