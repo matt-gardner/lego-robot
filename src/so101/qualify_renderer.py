@@ -14,6 +14,7 @@ from OpenGL import GL
 
 from so101.renderer_appearance import RendererAppearance
 from so101.renderer_appearance_v2 import WristAppearanceV2
+from so101.renderer_appearance_v3 import WristAppearanceV3
 from so101.robot_sim import BEAM_HALF_HEIGHT, MODEL_COMMIT, OBJECT_NAMES, TABLE_Z, BeamSimulation
 
 
@@ -110,10 +111,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--references", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--appearance", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--appearance", choices=("v1", "v2", "v3"), default="v1")
     args = parser.parse_args()
-    qualify(args.references, args.output,
-            appearance=WristAppearanceV2() if args.appearance == "v2" else None)
+    appearance = (WristAppearanceV3() if args.appearance == "v3" else
+                  WristAppearanceV2() if args.appearance == "v2" else None)
+    qualify(args.references, args.output, appearance=appearance)
 
 
 if __name__ == "__main__":
