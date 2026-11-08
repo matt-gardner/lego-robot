@@ -78,6 +78,15 @@ class CurriculumTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
             load_catalog(self.manifest)
 
+    def test_paired_target_colors_remain_distinct_across_seeded_scenes(self):
+        catalog = self.write_catalog()
+        for task in ("grasp", "view"):
+            for sequence in range(20):
+                plan = self.plan(catalog, task=task, sequence=sequence)
+                colors = {obj["instance_id"]: obj["color"] for obj in plan["objects"]}
+                targets = [colors[command["object_instance_id"]] for command in plan["commands"]]
+                self.assertNotEqual(*targets)
+
     def test_separated_small_parts_leave_hand_clearance_and_center_partial_grid(self):
         plan = self.plan(self.write_catalog(), category="separated", object_count=2)
         first, second = [obj["position_relative_to_scene_m"] for obj in plan["objects"]]

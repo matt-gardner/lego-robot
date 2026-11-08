@@ -27,6 +27,15 @@ scene. This distinguishes easy hand-clearance anchors from touching clusters.
 Plan version v4 binds the changed proposal recipe; historical v3 plans stay
 unchanged. The robot home is centered on the scene rather than 10 cm to its side.
 
+Plan v5 additionally makes paired grasp/view target colors distinct and labels
+category tags explicitly as proposal distributions, not measured settled
+difficulty. Future episode `initial.settled_configuration` reports actual body
+positions and rotated nominal-dimension envelopes, pairwise center distances,
+horizontal envelope overlaps and vertical separations. These descriptive
+envelopes are not exact concave geometry, collision clearance or occlusion
+qualification. They allow audits to distinguish an overlap proposal that
+settled apart from genuinely overlapping data without relabeling old episodes.
+
 SFT is one command at a time: grasp, push, place and view. Generate meaningful
 alternate target/destination commands from the same saved scene for paired
 examples. Many physical objects do not require many command entities. Use

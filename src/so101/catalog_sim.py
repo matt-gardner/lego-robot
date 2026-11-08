@@ -15,6 +15,7 @@ import numpy as np
 from so101.lego_curriculum import Catalog
 from so101.lego_scene import assemble_scene, capture_scene_state, restore_scene, settle_data
 from so101.renderer_appearance import RendererAppearance
+from so101.scene_metrics import configuration_metrics
 from so101.robot_sim import (
     BeamSimulation, DISTRACTOR_SIZES, IMAGE_SHAPE, MODEL_ROOT, OBJECT_NAMES,
     SCENE_VERSION, TABLE_Z, scene_xml,
@@ -85,6 +86,7 @@ class CatalogSimulation(BeamSimulation):
             "catalog_id": catalog.catalog_id, "catalog_sha256": catalog.manifest_sha256,
             "scene_id": plan["scene_id"],
         }
+        self.initial["settled_configuration"] = self.configuration_metrics()
         if appearance is not None:
             self.initial["renderer"] = appearance.identity()
         self.contact_penetration_limit_m = .001
@@ -96,6 +98,14 @@ class CatalogSimulation(BeamSimulation):
 
     def reset(self, *args, **kwargs) -> None:
         raise ValueError("Catalog scenes reset through their exact settled snapshot")
+
+    def configuration_metrics(self) -> dict:
+        return configuration_metrics([
+            {"instance_id": name, "position_m": self.position(name).tolist(),
+             "rotation": self.data.body(name).xmat.reshape(3, 3).tolist(),
+             "dimensions_m": self.part_metadata[obj["part_id"]].dimensions_m}
+            for name, obj in self.object_metadata.items()
+        ])
 
     def restore_initial(self) -> None:
         restore_scene(self.model, self.data, self.settled_snapshot, self.xml)
@@ -131,6 +141,7 @@ class CatalogSimulation(BeamSimulation):
             self.model, self.data, self.xml, self.plan, status="recovery-start",
         )
         self.initial = copy.deepcopy(self.initial)
+        self.initial["settled_configuration"] = self.configuration_metrics()
         self.yaws = {}
         for name, obj in self.object_metadata.items():
             dimensions = self.part_metadata[obj["part_id"]].dimensions_m

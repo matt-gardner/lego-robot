@@ -109,7 +109,8 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
     (source / "parts_catalog.json").write_bytes(catalog_bytes)
     source_hashes["parts_catalog.json"] = sim.catalog.manifest_sha256
     for name in ("catalog_sim.py", "lego_scene.py", "lego_curriculum.py",
-                 "robot_sim.py", "collect_catalog_sim.py", "simulation_corpus.py"):
+                 "robot_sim.py", "collect_catalog_sim.py", "simulation_corpus.py",
+                 "scene_metrics.py"):
         content = Path(__file__).with_name(name).read_bytes()
         fingerprint.update(content)
         (source / name).write_bytes(content)

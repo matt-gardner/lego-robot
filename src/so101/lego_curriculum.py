@@ -159,7 +159,7 @@ def prepare_scene(
     if not catalog.parts:
         raise CatalogUnavailable("No verified LEGO parts")
     identity = {
-        "generator": "lego-scene-plan-v4", "catalog_sha256": catalog.manifest_sha256,
+        "generator": "lego-scene-plan-v5", "catalog_sha256": catalog.manifest_sha256,
         "seed": seed, "sequence": sequence, "category": category,
         "task": task, "object_count": object_count,
         "sampleable_part_ids": sorted(part.part_id for part in catalog.parts),
@@ -194,6 +194,10 @@ def prepare_scene(
             "yaw_rad": rng.uniform(-math.pi, math.pi),
         })
     selected = rng.sample(objects, 2)
+    if task in ("grasp", "view") and selected[0]["color"] == selected[1]["color"]:
+        selected[1]["color"] = rng.choice([
+            color for color in COLORS if color != selected[0]["color"]
+        ])
     commands = []
     for index in range(2):
         commands.append({
@@ -214,6 +218,7 @@ def prepare_scene(
         "pair_id": f"{scene_id}:{task}", "commands": commands,
         "tags": {
             "category": category, "task": task, "object_count": object_count,
+            "category_semantics": "proposal distribution, not measured settled difficulty",
             "part_ids": sorted({obj["part_id"] for obj in objects}),
             "families": sorted({obj["family"] for obj in objects}),
         },
