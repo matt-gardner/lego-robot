@@ -28,5 +28,6 @@ ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH="/opt/so101/src" \
     MUJOCO_GL=egl PYOPENGL_PLATFORM=egl HF_HOME=/work/cache/huggingface \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
 WORKDIR /opt/so101
+VOLUME ["/tmp"]
 USER 1001:1001
 CMD ["python", "-c", "raise SystemExit('Idle image: only the qualified worker launcher may start training')"]

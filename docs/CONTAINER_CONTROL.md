@@ -592,6 +592,10 @@ registered as `so101` in `/etc/passwd`, with `HOME=/tmp` and offline model acces
 The launcher supplies writable temporary storage; deterministic Torch/Adam
 initialization must be checked as UID1001, not just as root, because Torch's
 cache initialization resolves the operating-system username.
+The image also declares `/tmp` as a temporary volume so read-only CPU
+checkpoint validators have writable scratch storage without extra flags.
+Their `--rm` launch removes that anonymous volume on exit; explicit launcher
+tmpfs mounts take precedence.
 Narrowly owned `/work` and separately staged model
 assets are required before a future qualified launcher can use it.
 
