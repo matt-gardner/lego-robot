@@ -18,7 +18,8 @@ class DeploymentTests(unittest.TestCase):
     def status_responses(self) -> list[dict]:
         release = {"id": "a" * 64, "kind": "parts", "version": deploy.EVIDENCE_VERSION,
                    "catalog_sha256": "b" * 64, "artifact_sha256": "b" * 64,
-                   "validated_parts": 685, "qualification_notices": []}
+                   "validated_parts": 685, "qualification_notices": [],
+                   "publication_mtime_ns": 1}
         return [{"releases": [release]}] + [
             {"release": release, "total": count, "limit": 1}
             for count in (685, 70, 24230, 0)
@@ -53,6 +54,25 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
             self.invoke_status([{"releases": [{**self.status_responses()[0]["releases"][0],
                                              "version": "other"}]}])
+
+    def test_status_bounds_history_to_native_receipt_and_keeps_required_v17(self):
+        responses = self.status_responses()
+        original = responses[0]["releases"][0]
+        responses[0]["releases"] += [
+            {**original, "id": f"{index:064x}", "version": f"other-{index}",
+             "publication_mtime_ns": index}
+            for index in range(2, 40)
+        ]
+        result, _ = self.invoke_status(responses)
+        self.assertEqual(result["parts_release_count"], 39)
+        self.assertEqual(len(result["releases"]), 9)
+        self.assertEqual(result["omitted_parts_releases"], 30)
+        self.assertIn(original, result["releases"])
+        self.assertLessEqual(len(json.dumps(result).encode()) + 1, 16384)
+        responses = self.status_responses()
+        responses[0]["releases"][0]["qualification_notices"] = ["x" * 16384]
+        with self.assertRaisesRegex(ValueError, "native 16 KiB"):
+            self.invoke_status(responses)
 
     def test_catalog_api_rejects_oversized_error_and_redirect_responses(self):
         for body in (b"x" * (deploy.API_LIMIT + 1), b'{"error":"broken"}', b"[]"):

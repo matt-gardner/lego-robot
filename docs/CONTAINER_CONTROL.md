@@ -124,8 +124,10 @@ session/runtime restrictions remain unchanged. No broker or dashboard restart
 is needed to install this inspection-only helper update. Status verifies the
 running PID's managed source manifest and hashes, then reads only the fixed
 loopback `/lego-robot/api/lego` API, with proxies disabled, redirects refused,
-four-second request timeouts, 2 MiB response limits, at most 256 releases and
-128 KiB output. No caller URL, shell, credentials or source path is accepted.
+four-second request timeouts, 2 MiB response limits and at most 256 releases.
+Output fits the existing native tool's 16 KiB receipt limit (including newline),
+or fails explicitly rather than allowing truncated JSON. No caller URL, shell,
+credentials or source path is accepted.
 
 The receipt includes live release IDs/versions, catalog and artifact hashes,
 validated counts and qualification notices. `catalog_evidence` specifically
@@ -136,7 +138,10 @@ verified plus unavailable; it is distinct from the complete catalog population.
 Each response must retain the same release metadata. Missing v17, publication
 changes, invalid counts, source mismatches, HTTP/JSON errors and limit violations
 fail the command with stderr and nonzero exit, never a healthy fallback. Other
-new publications appear automatically in the release list without restarting.
+new publications appear automatically without restarting. The bounded release
+list retains the eight newest parts publications plus required v17; complete
+release/parts counts, the selection rule and omitted-parts count are explicit.
+This inspection does not modify or remove any catalog history.
 
 ## Immutable GPU jobs
 
