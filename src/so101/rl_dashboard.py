@@ -448,6 +448,7 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
     store = RunStore(root)
     browser = TrainingDataBrowser(root.resolve().parent)
     lego_browser = LegoDataBrowser(root.resolve().parent, lego_catalog_root, lego_episode_root)
+    browser.curriculum = lego_browser
     assets = {
         "/": ("index.html", "text/html; charset=utf-8"),
         "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -512,8 +513,11 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                             self.send_movie(movie)
                     elif "image" in query:
                         image = browser.media(log_path, view, query.get("item", ""), query["image"])
-                        content_type = "image/png" if image.suffix.lower() == ".png" else "image/jpeg"
-                        self.send_body(200, image.read_bytes(), content_type)
+                        if isinstance(image, tuple):
+                            self.send_body(200, image[0], image[1])
+                        else:
+                            content_type = "image/png" if image.suffix.lower() == ".png" else "image/jpeg"
+                            self.send_body(200, image.read_bytes(), content_type)
                     elif "item" in query:
                         self.respond(200, browser.detail(log_path, view, query["item"]))
                     else:

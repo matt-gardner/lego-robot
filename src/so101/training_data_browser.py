@@ -11,6 +11,7 @@ from concurrent.futures import Future
 from pathlib import Path
 
 from so101.generation_order import generation_order
+from so101.lego_data_browser import LegoDataBrowser
 
 
 def identifier(value: str) -> str:
@@ -18,7 +19,7 @@ def identifier(value: str) -> str:
 
 
 class TrainingDataBrowser:
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, curriculum: LegoDataBrowser | None = None):
         self.workspace = workspace.resolve()
         self.data_root = self.workspace / "data" / "simulation"
         self.lock = threading.RLock()
@@ -26,6 +27,7 @@ class TrainingDataBrowser:
         self.preparation_lock = threading.Lock()
         self.preparation: tuple[Path, Future[Path]] | None = None
         self.cache = {}
+        self.curriculum = curriculum
 
     def source_path(self, source: str) -> Path:
         path = (self.workspace / source).resolve()
@@ -47,6 +49,8 @@ class TrainingDataBrowser:
                      *([collection_path] if collection_path else []),
                      *([split_path] if split_path and split_path.exists() else [])]
             revision = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
+            curriculum_releases = (self.curriculum.releases() if log_path is None and self.curriculum else {})
+            revision += tuple((row["id"],) for row in curriculum_releases.values() if row["kind"] == "examples")
             cached = self.cache.get(log_path)
             if cached and cached[0] == revision and time.monotonic() - cached[1] < 30:
                 return cached[2]
@@ -142,6 +146,28 @@ class TrainingDataBrowser:
                              "passed": sum(row["passed"] for row in history),
                              "failed": sum(row["total"] - row["passed"] for row in history),
                              "last_step": history[-1]["step"] if history else None}
+            if log_path is None and self.curriculum:
+                seen = set()
+                for release in sorted((row for row in curriculum_releases.values() if row["kind"] == "examples"),
+                                      key=generation_order):
+                    release = self.curriculum.release(release["id"])
+                    for archived in self.curriculum.rows(release):
+                        if archived["id"] in seen:
+                            continue
+                        seen.add(archived["id"])
+                        key = identifier(f"curriculum:{archived['id']}")
+                        examples[key] = {
+                            **archived, "id": key, "example_id": key, "origin": "curriculum",
+                            "archive_release": release["id"], "archive_item": archived["id"],
+                            "target": archived.get("target_label", archived.get("target", "not recorded")),
+                            "difficulty": archived.get("difficulty"),
+                            "difficulty_level": (archived.get("difficulty") or {}).get("level", "unrated"),
+                            "object_count": len(archived.get("initial", {}).get("objects", {})) or "not recorded",
+                            "expert_outcome": archived.get("outcome", "not recorded"),
+                            "used": False, "rollouts": 0, "passed": 0, "failed": 0, "last_step": None,
+                            "solved_entries": [], "history": [],
+                        }
+                        source_rollouts[key] = []
             result = {"examples": examples, "rollouts": rollouts, "solved": easy,
                       "source_rollouts": source_rollouts,
                       "unavailable_source_count": len(unavailable_sources),
@@ -224,6 +250,8 @@ class TrainingDataBrowser:
             "items": page, "total": len(rows), "offset": offset, "limit": limit,
             "last_step": index["last_step"],
             "unavailable_source_count": index["unavailable_source_count"],
+            "curriculum_example_count": sum(row.get("origin") == "curriculum"
+                                            for row in index["examples"].values()),
             "counts": {name: len(index[name]) for name in ("examples", "rollouts", "solved")},
             "facets": {field: sorted({str(row.get(field, "not recorded"))
                                      for row in index["examples"].values()})
@@ -236,6 +264,16 @@ class TrainingDataBrowser:
             raise FileNotFoundError("Example or rollout not found")
         row = index[view][item_id]
         example = index["examples"][row.get("example_id", row["id"])]
+        if row.get("origin") == "curriculum":
+            if self.curriculum is None:
+                raise ValueError("Curriculum archive adapter is unavailable")
+            archived = self.curriculum.list({"release": row["archive_release"], "item": row["archive_item"]})
+            return {**row, "metadata": archived["item"], "example_id": row["id"],
+                    "frames": [{"step": frame["frame_index"], **frame} for frame in archived["frames"]],
+                    "actions": [], "movie_available": False, "original_recording": True,
+                    "source_history": [], "recorded_trajectories": [], "source_rollout_total": 0,
+                    "playback_description": "Original synchronized wrist and external recordings. "
+                    "Development examples are not promoted training data."}
         metadata = json.loads((self.source_path(row["source"]) / "episode.json").read_text())
         result = {**row, "metadata": metadata, "source_history": example["history"][-100:],
                   "source_history_total": len(example["history"]), "example_id": example["id"]}
@@ -350,11 +388,19 @@ class TrainingDataBrowser:
                 expired.unlink()
             return target
 
-    def media(self, log_path: Path | None, view: str, item_id: str, image: str) -> Path:
+    def media(self, log_path: Path | None, view: str, item_id: str, image: str) -> Path | tuple[bytes, str]:
         index = self.index(log_path)
         if view not in ("examples", "rollouts", "solved") or item_id not in index[view]:
             raise FileNotFoundError("Example or rollout not found")
         row = index[view][item_id]
+        if row.get("origin") == "curriculum":
+            if self.curriculum is None:
+                raise ValueError("Curriculum archive adapter is unavailable")
+            camera = "external" if image == "overview" or image.startswith("external:") else "wrist"
+            frame = image.split(":", 1)[1] if image.startswith("external:") else (
+                "0" if image in ("overview", "initial") else image)
+            return self.curriculum.media({"release": row["archive_release"], "item": row["archive_item"],
+                                          "frame": frame, "camera": camera})
         if view == "rollouts":
             evidence = self.evidence_path(log_path, row)
             if evidence is None:

@@ -11,6 +11,7 @@
 .data-example { text-align: left; padding: 14px; min-width: 0; border-radius: 12px; }
 .data-example h3 { margin: 0 0 8px; }
 .data-example p { font-size: 12px; line-height: 1.65; margin: 8px 0; overflow-wrap: anywhere; }
+.data-example .data-created { color: var(--accent); font-weight: 600; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .previews { display: flex; gap: 6px; }
 .previews figure { flex: 1; margin: 0; min-width: 0; }
 .previews img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #10151c; border-radius: 6px; }

@@ -1,4 +1,6 @@
 import json
+import hashlib
+import sqlite3
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ import pytest
 from so101.rl_dashboard import make_server, RunStore
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
 from so101.training_data_browser import TrainingDataBrowser, identifier
+from so101.lego_data_browser import LegoDataBrowser
 
 
 @pytest.fixture
@@ -98,6 +101,42 @@ def test_data_first_browser_without_any_training_log(dataset):
         server.shutdown()
         server.server_close()
         worker.join()
+
+
+def test_curriculum_archive_appears_with_creation_date_and_original_views(dataset):
+    root, _, _, _, _, _ = dataset
+    archive_root = root / "data" / "curriculum"
+    archive_root.mkdir()
+    archive = archive_root / "episodes.sqlite"
+    metadata = {"example_id": "new-example", "task": "grasp", "target_label": "LEGO 3005",
+                "split": "development", "generated_at": "2026-11-08T20:00:00Z",
+                "initial": {"objects": {"target": [0, 0, 0]}}, "fps": 10, "outcome": "success"}
+    with sqlite3.connect(archive) as db:
+        db.executescript("PRAGMA user_version=1; CREATE TABLE catalog(content BLOB); "
+                         "CREATE TABLE files(source TEXT,name TEXT,content BLOB,sha256 TEXT);")
+        db.execute("INSERT INTO catalog VALUES (?)", (json.dumps({"successful_episodes": ["logical/source"]}).encode(),))
+        for name, content in [
+            ("episode.json", json.dumps(metadata).encode()),
+            ("frames.jsonl", b'{"image":"w.jpg","external_image":"e.jpg","elapsed":0}\n'),
+            ("w.jpg", b"wrist"), ("e.jpg", b"external"), ("model.mjb", b"not a model"),
+        ]:
+            db.execute("INSERT INTO files VALUES (?,?,?,?)",
+                       ("logical/source", name, content, hashlib.sha256(content).hexdigest()))
+    browser = TrainingDataBrowser(root, LegoDataBrowser(root, episode_root=archive_root))
+    result = browser.list(None, {})
+    assert result["total"] == 4
+    assert result["curriculum_example_count"] == 1
+    row = result["items"][0]
+    assert row["origin"] == "curriculum" and row["generated_at"] == metadata["generated_at"]
+    assert row["split"] == "development"
+    detail = browser.detail(None, "examples", row["id"])
+    assert detail["original_recording"] and not detail["movie_available"]
+    assert detail["frames"][0]["timestamp"] == 0
+    assert browser.media(None, "examples", row["id"], "initial") == (b"wrist", "image/jpeg")
+    assert browser.media(None, "examples", row["id"], "external:0") == (b"external", "image/jpeg")
+    (archive_root / "copy.sqlite").write_bytes(archive.read_bytes())
+    assert browser.list(None, {})["curriculum_example_count"] == 1
+    assert browser.list(None, {})["items"][0]["id"] == row["id"]
 
 
 def test_source_generation_order_is_not_policy_usage_and_preserves_filters(dataset):

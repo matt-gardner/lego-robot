@@ -158,8 +158,10 @@ def data_evidence(publication: dict) -> dict:
             raise ValueError("Live data task filter did not match")
         pages[name] = {
             "total": value["total"], "unavailable_source_count": value.get("unavailable_source_count"),
+            "curriculum_example_count": value.get("curriculum_example_count"),
             "sample": [{key: row.get(key) for key in
-                        ("id", "task", "source", "difficulty_level", "object_count", "expert_outcome")}
+                        ("id", "task", "source", "difficulty_level", "object_count", "expert_outcome",
+                         "origin", "generated_at", "split")}
                        for row in value["items"]],
         }
     if pages["grasp"]["total"] > pages["all"]["total"]:
@@ -191,6 +193,8 @@ def data_evidence(publication: dict) -> dict:
             "id": row.get("id"), "path": row.get("path"), "kind": row.get("kind"),
             "active": row.get("active"), "error": row.get("error"),
             "latest_step": (row.get("latest_train") or {}).get("step"),
+            "samples_seen": (row.get("latest_train") or {}).get("samples_seen"),
+            "frozen_loss_samples_seen": (row.get("latest_eval") or {}).get("samples_seen"),
             "remote_state": (row.get("remote") or {}).get("state"),
         })
     return {"listings": pages, "page": {"data_features_verified": True,

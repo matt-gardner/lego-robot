@@ -566,6 +566,11 @@ split, usage, policy outcomes and retained trajectory recordings. Training
 filters are not exposed at the top level. Discarded groups count as training
 attempts; expert success is not a policy pass, and historical solved-bucket
 membership is not unassisted mastery.
+Current curriculum SQLite examples are included in the same browse results,
+deduplicated by archived example identity and ordered by their recorded generation
+time. Cards prominently show Date created (or Not recorded for legacy data).
+Curriculum details play original wrist/external frames without model reconstruction;
+development examples remain labeled development, not training-promoted.
 
 `collect_difficulty_sim.py` generates four authored levels (0 easy, 1 standard,
 2 hard, 3 challenge) for each task using the procedural physics expert, without

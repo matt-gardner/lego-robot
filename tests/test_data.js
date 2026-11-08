@@ -96,6 +96,24 @@ test("top-level browsing uses dataset features without a training run", async ()
   assert.equal(p.element("data-count").textContent, "0 matching examples");
 });
 
+test("cards prominently label actual creation time and curriculum scope without inventing legacy dates", () => {
+  const p = page();
+  p.context.document.createElement = () => ({
+    children: [], textContent: "", append(...nodes) { this.children.push(...nodes); },
+    addEventListener() {},
+  });
+  p.run(`globalThis.card = renderCard({id:"new", task:"grasp", target:"3005",
+    object_count:2, split:"development", origin:"curriculum",
+    generated_at:"2026-11-08T20:00:00Z", expert_outcome:"success"}, "examples")`);
+  const created = p.run('card.children.find(node => node.className === "data-created")');
+  assert.match(created.textContent, /^Date created:/);
+  assert.equal(created.title, "2026-11-08T20:00:00Z");
+  assert.equal(p.run('card.children.some(node => node.textContent === "Curriculum example / development")'), true);
+  p.run('globalThis.legacy = renderCard({id:"old", task:"push", target:"beam", object_count:4}, "examples")');
+  assert.equal(p.run('legacy.children.find(node => node.className === "data-created").textContent'),
+    "Date created: not recorded");
+});
+
 test("preparation polls pending JSON before loading the exact selected recording", async () => {
   const p = page();
   const routes = [];

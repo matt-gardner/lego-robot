@@ -43,8 +43,15 @@ function renderCard(item, view) {
   if (view === "rollouts" && item.evidence_status === "available") {
     images.append(preview(item, view, "0", "Actual policy wrist frame"));
   } else {
-    if (view === "examples") card.append(text("p", item.generated_at
-      ? `Generated: ${item.generated_at}` : "Generation date not recorded"));
+    if (view === "examples") {
+      const created = text("p", item.generated_at
+        ? `Date created: ${new Date(item.generated_at).toLocaleString()}`
+        : "Date created: not recorded");
+      created.className = "data-created";
+      created.title = item.generated_at || "Historical creation time is not inferred from file modification.";
+      card.append(created);
+      if (item.origin === "curriculum") card.append(text("p", `Curriculum example / ${item.split}`));
+    }
     const source = {...item, id: item.example_id || item.id};
     images.append(preview(source, "examples", "overview", view === "rollouts"
       ? "Expert scene reference (NOT this rollout)"
@@ -102,6 +109,10 @@ function showFrame(seek = true) {
     if (wrist.getAttribute("src") !== source) wrist.src = source;
   }
   $("frame-value").textContent = `${frame + 1}/${detail.frames.length} | policy/source step ${detail.frames[frame].step}`;
+  if (detail.original_recording) {
+    $("detail-overview").src = image(detail, detail.view, `external:${frame}`);
+    $("overview-caption").textContent = "Original external camera / same recorded frame";
+  }
   if (seek && wristPlayback) {
     wristPlayback.originTime = Date.now();
     wristPlayback.originStep = detail.frames[frame].step;
@@ -286,6 +297,7 @@ async function showDetail(item, view) {
   const result = await get(endpoint({view, item: item.id}));
   if (version !== detailRequest) return;
   detail = {...result, id: item.id, view};
+  $("data-run").disabled = result.origin === "curriculum";
   renderTrajectoryNavigation();
   updatePlayButton();
   $("movie-status").textContent = result.movie_available ? result.playback_description : "No retained trajectory recording is available for playback.";
@@ -294,7 +306,8 @@ async function showDetail(item, view) {
     ? result.evidence_status === "available" ? `ACTUAL POLICY ROLLOUT | Step ${item.step} | assistance ${percent(item.assistance)} | ${result.scope}`
       : result.evidence_status === "expired" ? "POLICY SUMMARY ONLY: recording expired under retention limit."
         : "POLICY SUMMARY ONLY: this historical rollout did not record images or actions."
-    : trainingContext ? "SOURCE DEMONSTRATION - training history below is for the selected run."
+    : result.original_recording ? "CURRICULUM EXAMPLE - original recordings; development is not training promotion."
+      : trainingContext ? "SOURCE DEMONSTRATION - training history below is for the selected run."
       : "SOURCE DEMONSTRATION - select a training context below to inspect run usage and policy recordings.";
   $("frame-label").hidden = !result.frames.length;
   $("detail-preview").hidden = !result.frames.length;
