@@ -3,6 +3,19 @@
 Approved by Matt November 8, 2026. A dedicated worker owns renderer/camera
 appearance and versioned configuration, not parts conversion or curriculum.
 
+The explicit recorder factory also supports opt-in `WristAppearanceV4` from
+`so101.renderer_appearance_v4`. Independently checked source/profile hashes are
+`46c1b5bad9dcf3809dcc8f6d139ba95640e148d4312c9067af5cddfe81fbf114` and
+`ef9d9726fc6158803ad7798e490bbf94d6514f5642b35d5865f76ecf00507c15`.
+The immutable receipt is
+`/mnt/dockyard/lego-robot-data/data/lego-renderer/b887f204-wrist-soft-v4/`.
+Recordings archive both v2/v3 parent JSON profiles and all four inherited
+implementation sources. Wider camera composition, sharper cosmetic jaws and
+lower blur are renderer changes, not grasp or transfer qualification. The
+5 mm wrist-height/0.5-opening reference fixture is an uncalibrated hypothesis,
+not expert-physics defaults. Existing recordings and the running pinned-v3
+producer are unchanged.
+
 ## Reference and target
 
 Inspect the original three images in

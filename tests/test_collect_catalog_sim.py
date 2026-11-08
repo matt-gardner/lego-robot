@@ -14,6 +14,7 @@ from so101.collect_catalog_sim import load_appearance, record_pair, validate_rec
 from so101.control_model.simulation_dataset import EntityTrajectoryDataset
 from so101.episode_storage import EpisodeStorage, consolidate
 from so101.renderer_appearance_v3 import DEFAULT_PROFILE_V3
+from so101.renderer_appearance_v4 import DEFAULT_PROFILE_V4
 
 
 def fixture_sim(tmp_path, *, recovered=False):
@@ -208,3 +209,19 @@ def test_recording_rejects_catalog_manifest_changed_after_loading(tmp_path):
     sim.catalog.manifest_path.write_text("changed")
     with pytest.raises(ValueError, match="manifest changed"):
         record_pair(sim, tmp_path / "pair")
+
+
+def test_v4_recording_preserves_both_parent_profiles_and_all_implementations(tmp_path):
+    sim = fixture_sim(tmp_path)
+    sim.appearance = load_appearance(DEFAULT_PROFILE_V4)
+    sim.initial["renderer"] = sim.appearance.identity()
+    output = tmp_path / "pair"
+    record_pair(sim, output)
+    source = output / "command_0" / "source"
+    hashes = json.loads((source / "hashes.json").read_bytes())
+    for version in (2, 3, 4):
+        name = f"renderer_profiles/wrist_soft_v{version}.json"
+        assert hashlib.sha256((source / name).read_bytes()).hexdigest() == hashes[name]
+    for suffix in ("", "_v2", "_v3", "_v4"):
+        name = f"renderer_appearance{suffix}.py"
+        assert hashlib.sha256((source / name).read_bytes()).hexdigest() == hashes[name]

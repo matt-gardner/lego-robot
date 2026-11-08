@@ -22,7 +22,8 @@ from so101.lego_curriculum import load_catalog, prepare_scene
 from so101.lego_scene import capture_scene_state
 from so101.renderer_appearance import DEFAULT_PROFILE, RendererAppearance
 from so101.renderer_appearance_v2 import DEFAULT_PROFILE_V2, WristAppearanceV2
-from so101.renderer_appearance_v3 import WristAppearanceV3
+from so101.renderer_appearance_v3 import DEFAULT_PROFILE_V3, WristAppearanceV3
+from so101.renderer_appearance_v4 import WristAppearanceV4
 from so101.simulation_corpus import validate_clean_expert
 
 
@@ -35,6 +36,7 @@ def load_appearance(path: Path) -> RendererAppearance:
         "wrist-soft-v1": RendererAppearance,
         "wrist-soft-v2": WristAppearanceV2,
         "wrist-soft-v3": WristAppearanceV3,
+        "wrist-soft-v4": WristAppearanceV4,
     }
     if profile_id not in implementations:
         raise ValueError(f"Unsupported catalog recording renderer profile: {profile_id!r}")
@@ -123,13 +125,15 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         source_hashes[f"renderer_profiles/{sim.appearance.path.name}"] = source_hashes[
             "renderer_profile.json"
         ]
-        parent_hash = sim.appearance.identity().get("parent_profile_sha256")
-        if parent_hash is not None:
-            parent_bytes = DEFAULT_PROFILE_V2.read_bytes()
-            if hashlib.sha256(parent_bytes).hexdigest() != parent_hash:
-                raise ValueError("Renderer parent profile differs from recorded identity")
-            (profiles / DEFAULT_PROFILE_V2.name).write_bytes(parent_bytes)
-            source_hashes[f"renderer_profiles/{DEFAULT_PROFILE_V2.name}"] = parent_hash
+        for key, parent in (("parent_profile_sha256", DEFAULT_PROFILE_V2),
+                            ("parent_v3_profile_sha256", DEFAULT_PROFILE_V3)):
+            parent_hash = sim.appearance.identity().get(key)
+            if parent_hash is not None:
+                parent_bytes = parent.read_bytes()
+                if hashlib.sha256(parent_bytes).hexdigest() != parent_hash:
+                    raise ValueError("Renderer parent profile differs from recorded identity")
+                (profiles / parent.name).write_bytes(parent_bytes)
+                source_hashes[f"renderer_profiles/{parent.name}"] = parent_hash
         for kind in type(sim.appearance).__mro__:
             if kind is object:
                 continue
