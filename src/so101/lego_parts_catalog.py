@@ -8,6 +8,8 @@ Use --next-undecorated N with --previous to select the next N unverified plain
 definitions in stable ID order. Decorated definitions are imported but never
 converted by this initial, undecorated-only converter.
 Each release includes the complete source library, not just converted parts.
+MuJoCo fatal allocation failures are recorded as unavailable parts; they do
+not discard the other qualification results in a batch.
 Contact geometry is a compound of thin convex triangle prisms, not a whole-part
 convex hull. This preserves recesses at the cost of many contact geoms. It is
 not a claim of robot graspability or calibrated LEGO material properties.
@@ -517,7 +519,7 @@ def publish(archive: Path, output: Path, catalog_id: str,
                 entry["status"] = "prepared"
                 entry["qualification"] = qualify(staging, entry)
                 entry["status"] = "verified"
-            except (ValueError, RuntimeError) as error:
+            except (ValueError, RuntimeError, mujoco.FatalError) as error:
                 entry["status"] = "unavailable"
                 entry["failure"] = {"stage": "qualification" if "mjcf" in entry else "preparation",
                                     "reason": str(error), "exception": type(error).__name__}

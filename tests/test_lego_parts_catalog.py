@@ -213,7 +213,9 @@ def test_releases_share_immutable_sources_and_require_explicit_requalification(t
     assert json.loads(third.read_text())["conversion_sha256"] == "f" * 64
 
 
-def test_retry_unlinks_shared_assets_and_clears_failure_metadata(tmp_path, monkeypatch):
+@pytest.mark.parametrize("error_type", [ValueError, mujoco.FatalError])
+def test_retry_unlinks_shared_assets_and_clears_failure_metadata(
+        tmp_path, monkeypatch, error_type):
     archive = tmp_path / "source.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr("ldraw/parts/1.dat",
@@ -227,12 +229,15 @@ def test_retry_unlinks_shared_assets_and_clears_failure_metadata(tmp_path, monke
     monkeypatch.setattr(catalog_module, "qualify", lambda *args: {"test_fixture": True})
     first = publish(archive, output, "first", ("1",))
     def fail_qualification(*args):
-        raise ValueError("Fixture contact failure")
+        raise error_type("Fixture contact failure")
     monkeypatch.setattr(catalog_module, "qualify", fail_qualification)
     second = publish(archive, output, "failed", (), first, requalify_previous=True)
     old_asset = second.parent / "parts/1/part.xml"
     old_hash = catalog_module.sha256(old_asset)
-    assert json.loads(second.read_text())["parts"][0]["status"] == "unavailable"
+    failed = json.loads(second.read_text())["parts"][0]
+    assert failed["status"] == "unavailable"
+    assert failed["failure"]["exception"] == error_type.__name__
+    assert failed["failure"]["reason"] == "Fixture contact failure"
     monkeypatch.setattr(catalog_module, "qualify", lambda *args: {"test_fixture": True})
     third = publish(archive, output, "retry", ("1",), second)
     retried = json.loads(third.read_text())["parts"][0]
