@@ -1,6 +1,7 @@
 import hashlib
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,8 @@ from so101.control_model.simulation_dataset import EntityTrajectoryDataset
 from so101.episode_storage import EpisodeStorage, consolidate
 from so101.renderer_appearance_v3 import DEFAULT_PROFILE_V3
 from so101.renderer_appearance_v4 import DEFAULT_PROFILE_V4
+from so101.catalog_sim import CatalogSimulation
+from so101.robot_sim import BeamSimulation
 
 
 def fixture_sim(tmp_path, *, recovered=False):
@@ -238,3 +241,24 @@ def test_producer_publishes_cross_uid_readable_archive(tmp_path):
     assert archive.stat().st_mode & 0o777 == 0o444
     assert not (output / ".qualified-episodes.sqlite").exists()
     assert qualify_pair(output) == result
+
+
+def test_catalog_view_preflights_equivalent_heading_before_recorded_motion(monkeypatch):
+    sim = CatalogSimulation.__new__(CatalogSimulation)
+    sim.position = lambda target: np.array([.2, 0., .003])
+    sim.object_yaw = lambda target: 0.
+    sim.yaws = {}
+    calls = []
+    def ik(position, heading):
+        calls.append((position.copy(), heading))
+        if heading < math.pi:
+            raise RuntimeError("Unreachable heading")
+        return np.zeros(6)
+    sim.ik = ik
+    def demonstrate(instance, target):
+        assert len(calls) == 3
+        assert instance.yaws[target] == pytest.approx(math.pi)
+        return {"success": True}
+    monkeypatch.setattr(BeamSimulation, "demonstrate_view", demonstrate)
+    assert sim.demonstrate_view("target") == {"success": True}
+    assert calls[-1][0] == pytest.approx([.21, -.01, .065])

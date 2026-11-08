@@ -88,6 +88,14 @@ at least 5 cm target lift and ten consecutive two-jaw retention observations.
 Tabletop catalog qualification with a different table/contact profile is not
 silently claimed to be identical to robot-scene qualification.
 
+Catalog view commands likewise preflight both original observation poses using
+equivalent half-turn wrist headings before recording motion. Actual settled
+orientation replaces proposed yaw in new initial metadata and recovery starts.
+The formerly failed separated-view scene has passed both independent view
+commands and all 119 paired SFT samples with this change; historical failures
+remain unchanged. No observation-height, physics or acceptance threshold was
+relaxed.
+
 `so101.collect_catalog_sim` records a single scene pair with synchronized wrist
 and external pre-action images, actions and entity labels. `complete` requires
 both commands to pass independently from the same saved state; one successful

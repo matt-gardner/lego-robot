@@ -75,6 +75,7 @@ class CatalogSimulation(BeamSimulation):
         self.data.qpos[self.qadr] = home
         self.data.ctrl[self.actuators] = home
         _, _, self.settled_snapshot = settle_data(self.model, self.data, self.xml, plan)
+        self.yaws = {name: self.object_yaw(name) for name in names}
         self.initial = {
             "seed": plan["seed"], "scene_version": 4,
             "simulation_backend": "catalog-v1", "expert_acceptance_version": 1,
@@ -106,6 +107,12 @@ class CatalogSimulation(BeamSimulation):
              "dimensions_m": self.part_metadata[obj["part_id"]].dimensions_m}
             for name, obj in self.object_metadata.items()
         ])
+
+    def object_yaw(self, target: str) -> float:
+        dimensions = self.part_metadata[self.object_metadata[target]["part_id"]].dimensions_m
+        axis = int(np.argmax(dimensions[:2]))
+        direction = self.data.body(target).xmat.reshape(3, 3)[:, axis]
+        return math.atan2(direction[1], direction[0])
 
     def restore_initial(self) -> None:
         restore_scene(self.model, self.data, self.settled_snapshot, self.xml)
@@ -142,12 +149,7 @@ class CatalogSimulation(BeamSimulation):
         )
         self.initial = copy.deepcopy(self.initial)
         self.initial["settled_configuration"] = self.configuration_metrics()
-        self.yaws = {}
-        for name, obj in self.object_metadata.items():
-            dimensions = self.part_metadata[obj["part_id"]].dimensions_m
-            axis = int(np.argmax(dimensions[:2]))
-            direction = self.data.body(name).xmat.reshape(3, 3)[:, axis]
-            self.yaws[name] = math.atan2(direction[1], direction[0])
+        self.yaws = {name: self.object_yaw(name) for name in self.object_metadata}
         self.initial.update(
             scene_id=identity, scene_family_id=self.plan["scene_family_id"],
             recovery_parent_example_id=parent_example_id,
@@ -199,9 +201,7 @@ class CatalogSimulation(BeamSimulation):
         body = self.data.body(target)
         rotation = body.xmat.reshape(3, 3)
         dimensions = np.array(self.part_metadata[self.object_metadata[target]["part_id"]].dimensions_m)
-        axis = int(np.argmax(dimensions[:2]))
-        direction = rotation[:, axis]
-        yaw = math.atan2(direction[1], direction[0]) + math.pi / 2
+        yaw = self.object_yaw(target) + math.pi / 2
         center = self.position(target)
         half_height = float(np.sum(np.abs(rotation[2]) * dimensions) / 2)
         contact_height = center[2] + half_height + .0024
@@ -234,6 +234,21 @@ class CatalogSimulation(BeamSimulation):
         lift[-1] = closed[-1]
         self.move(lift, "lift")
         return lift, {"success": True, "pinch": pinch}
+
+    def demonstrate_view(self, target: str) -> dict:
+        position = self.position(target)
+        yaw = self.object_yaw(target) + math.pi / 2
+        failures = []
+        for heading in (yaw, yaw + math.pi):
+            try:
+                self.ik(np.r_[position[:2], .070], heading)
+                self.ik(np.r_[position[:2] + [.010, -.010], .065], heading + .12)
+            except RuntimeError as error:
+                failures.append(str(error))
+                continue
+            self.yaws[target] = heading - math.pi / 2
+            return super().demonstrate_view(target)
+        raise RuntimeError("No reachable two-pose view heading: " + "; ".join(failures))
 
     def demonstrate_scene_command(self, command: dict) -> dict:
         if command["task"] != self.plan["task"]:
