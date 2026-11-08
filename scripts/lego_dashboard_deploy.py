@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -14,9 +15,14 @@ import sys
 import tempfile
 import time
 from urllib.error import URLError
-from urllib.request import ProxyHandler, build_opener
+from urllib.parse import urlencode
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 CONFIG = Path("/etc/lego-robot-control/dashboard-deploy.json")
+CATALOG_URL = "http://127.0.0.1:8765/lego-robot/api/lego"
+EVIDENCE_VERSION = "ldraw-2026-10-023083918da2-zup-v17-mj3"
+API_LIMIT = 2 * 1024 * 1024
+STATUS_LIMIT = 128 * 1024
 SSH = (
     "ssh -i /mnt/dockyard/service-home/.ssh/dockyard-repo/id_ed25519 "
     "-o IdentitiesOnly=yes "
@@ -115,6 +121,94 @@ def health(url: str, timeout: int = 60) -> dict:
     raise RuntimeError(f"Live dashboard health failed: {last}")
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError(f"Live catalog redirect refused: HTTP {code}")
+
+
+def catalog_api(query: dict[str, str] | None = None) -> dict:
+    url = CATALOG_URL + ("?" + urlencode(query) if query else "")
+    opener = build_opener(ProxyHandler({}), NoRedirect())
+    with opener.open(url, timeout=4) as response:
+        if response.status != 200:
+            raise ValueError(f"Live catalog HTTP {response.status}")
+        body = response.read(API_LIMIT + 1)
+    if len(body) > API_LIMIT:
+        raise ValueError("Live catalog response exceeds 2 MiB")
+    result = json.loads(body)
+    if not isinstance(result, dict) or "error" in result:
+        raise ValueError("Live catalog did not return a successful JSON object")
+    return result
+
+
+def status() -> dict:
+    run("/usr/bin/systemctl", "is-active", "so101-web.service", timeout=4)
+    pid = run("/usr/bin/systemctl", "show", "so101-web.service",
+              "--property=MainPID", "--value", timeout=4).decode().strip()
+    if not pid.isdecimal() or int(pid) == 0:
+        raise ValueError("Dashboard has no live process")
+    environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    sources = [item.removeprefix(b"PYTHONPATH=").decode() for item in environment
+               if item.startswith(b"PYTHONPATH=")]
+    if len(sources) != 1:
+        raise ValueError("Dashboard live source is not uniquely identified")
+    source = Path(sources[0])
+    if source.parent.parent != Path("/opt/lego-dashboard/releases") or source.name != "src":
+        raise ValueError("Dashboard is not running a managed published release")
+    manifest = source.parent / "manifest.json"
+    trusted(manifest)
+    publication = json.loads(manifest.read_text())
+    for name, expected in publication["sha256"].items():
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or relative.parts[:2] != ("src", "so101"):
+            raise ValueError("Invalid managed manifest source path")
+        path = source.parent / relative
+        trusted(path)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError(f"Managed source hash mismatch: {name}")
+    releases = catalog_api().get("releases")
+    if not isinstance(releases, list) or not 1 <= len(releases) <= 256:
+        raise ValueError("Live catalog must contain 1..256 releases")
+    fields = ("id", "kind", "version", "path", "catalog_sha256", "artifact_sha256",
+              "generated_at", "validated_parts", "publication_mtime_ns",
+              "qualification_notices", "qualification")
+    summaries = []
+    for release in releases:
+        if not isinstance(release, dict):
+            raise ValueError("Invalid live catalog release")
+        for field in ("id", "catalog_sha256", "artifact_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(release.get(field, ""))):
+                raise ValueError(f"Invalid live catalog {field}")
+        summaries.append({key: release[key] for key in fields if key in release})
+    selected = [release for release in summaries
+                if release.get("kind") == "parts" and release.get("version") == EVIDENCE_VERSION]
+    if len(selected) != 1:
+        raise ValueError("Required live v17 catalog is missing or ambiguous")
+    release = selected[0]
+    counts = {}
+    for stored_status in ("verified", "unavailable", "imported", "prepared"):
+        result = catalog_api({"release": release["id"], "status": stored_status, "limit": "1"})
+        if result.get("release") != next(row for row in releases if row["id"] == release["id"]):
+            raise ValueError("Live catalog publication changed during status inspection")
+        count = result.get("total")
+        if type(count) is not int or count < 0 or result.get("limit") != 1:
+            raise ValueError("Invalid live catalog filtered count")
+        counts[stored_status] = count
+    if counts["verified"] != release.get("validated_parts"):
+        raise ValueError("Live catalog verified count disagrees with release summary")
+    result = {"active": True, "healthy": True, "pid": pid, "source": str(source),
+              "publication": publication, "catalog_api": CATALOG_URL,
+              "releases": summaries, "catalog_evidence": {
+                  "release": release, "stored_status_counts": counts,
+                  "total_parts": sum(counts.values()),
+                  "verification_attempts": counts["verified"] + counts["unavailable"],
+                  "verification_attempts_definition": "verified + unavailable",
+              }}
+    if len(json.dumps(result).encode()) > STATUS_LIMIT:
+        raise ValueError("Managed status response exceeds 128 KiB")
+    return result
+
+
 def activate(override: Path, release: Path, url: str) -> str:
     previous = override.read_bytes() if override.exists() else None
     try:
@@ -196,9 +290,16 @@ def deploy(config: Path = CONFIG) -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) != 1 or os.geteuid() != 0:
-        print("Requires root and no arguments", file=sys.stderr)
+    if sys.argv[1:] not in ([], ["--status"]) or os.geteuid() != 0:
+        print("Requires root and no arguments or fixed --status", file=sys.stderr)
         return 2
+    if sys.argv[1:] == ["--status"]:
+        try:
+            print(json.dumps(status(), sort_keys=True))
+        except Exception as error:
+            print(f"Live dashboard status failed: {error}", file=sys.stderr)
+            return 1
+        return 0
     with open("/run/lock/lego-dashboard-deploy.lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
