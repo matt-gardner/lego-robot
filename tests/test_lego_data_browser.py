@@ -47,6 +47,20 @@ def episode_release(tmp_path):
     return path
 
 
+def test_curriculum_operational_ledger_is_not_an_episode_release(tmp_path):
+    episode_release(tmp_path)
+    ledger = tmp_path / "data" / "ledger.sqlite"
+    with sqlite3.connect(ledger) as db:
+        db.execute("CREATE TABLE attempts(id TEXT)")
+    browser = LegoDataBrowser(tmp_path)
+    assert len(browser.list({})["releases"]) == 1
+    # Unsupported real episode archives must still report their validation error.
+    with sqlite3.connect(tmp_path / "data" / "legacy.sqlite") as db:
+        db.execute("PRAGMA user_version=99")
+    with pytest.raises(ValueError, match="Unsupported episode storage version"):
+        browser.list({})
+
+
 def test_generation_order_uses_dates_not_ids_copy_times_or_qualification(tmp_path):
     releases = []
     for name, generated_at in [

@@ -129,7 +129,8 @@ class LegoDataBrowser:
         for directory, children, files in os.walk(root, onerror=traversal_error):
             children[:] = [name for name in children if not name.startswith(".")]
             matches = ([name for name in files if name == "catalog.json"] if kind == "parts"
-                       else [name for name in files if name.endswith(".sqlite") and not name.startswith(".")])
+                       else [name for name in files if name.endswith(".sqlite")
+                             and not name.startswith(".") and name != "ledger.sqlite"])
             paths.extend(Path(directory) / name for name in matches)
             if kind == "parts" and matches:
                 children.clear()
