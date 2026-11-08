@@ -148,7 +148,7 @@ async function legoFeedbackOpen(detail, request) {
     legoElement("feedback-camera").value = "";
     legoElement("feedback-text").value = "";
     legoElement("feedback-form").hidden = false;
-    legoElement("feedback-status").textContent = "Feedback routes through the request monitor to the responsible worker.";
+    legoElement("feedback-status").textContent = legoData ? "" : "Feedback routes through the request monitor to the responsible worker.";
   } catch (error) {
     if (request === legoDetailRequest) {
       legoElement("feedback-status").textContent = error.message;

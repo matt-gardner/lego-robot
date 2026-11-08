@@ -52,21 +52,21 @@
     <label id="frame-label">Frame <input id="frame" type="range" min="0" max="0" value="0"><output id="frame-value"></output></label>
     <p id="trace-note" class="hint"></p>
     <section class="data-feedback" aria-label="Comment on this example">
-      <h3>Comment on this example</h3>
       <p id="lego-feedback-status" role="status"></p>
       <a id="lego-feedback-signin" href="/family" target="_blank" rel="noopener" hidden>Sign in to comment</a>
       <form id="lego-feedback-form" hidden>
-        <p id="lego-feedback-target" class="hint"></p>
-        <label>Feedback type<select id="lego-feedback-kind"><option value="comment">Comment</option><option value="looks_wrong">Looks wrong</option></select></label>
-        <label>Issue category<select id="lego-feedback-category"></select></label>
-        <label id="lego-feedback-camera-label" hidden>Recorded context<select id="lego-feedback-camera"><option value="">Whole example (no frame)</option><option value="wrist">Current wrist frame</option><option value="external">Current external frame</option></select></label>
-        <label>Comment<textarea id="lego-feedback-text" required maxlength="8000" rows="3"></textarea></label>
-        <button type="submit">Send comment</button>
+        <div hidden>
+          <p id="lego-feedback-target"></p>
+          <select id="lego-feedback-kind"><option value="comment">Comment</option></select>
+          <select id="lego-feedback-category"></select>
+          <label id="lego-feedback-camera-label" hidden><select id="lego-feedback-camera"><option value="">Whole example</option></select></label>
+        </div>
+        <textarea id="lego-feedback-text" aria-label="Comment" placeholder="Comment" required maxlength="8000" rows="2"></textarea>
+        <button type="submit">Submit</button>
       </form>
       <button id="lego-feedback-check" type="button" hidden>Check original receipt</button>
       <button id="lego-feedback-retry" type="button" hidden>Retry exact saved comment</button>
-      <p class="hint">Comment on the whole example or the selected recorded frame. Unconfirmed sends can be retried without duplicates.</p>
-      <details><summary>Delivery details</summary><pre id="lego-feedback-receipt"></pre></details>
+      <pre id="lego-feedback-receipt" hidden></pre>
     </section>
     <svg id="action-plot" viewBox="0 0 800 180" role="img" aria-label="Five arm joint commanded positions over time"></svg>
     <pre id="detail-summary"></pre>

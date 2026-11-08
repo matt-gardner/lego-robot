@@ -436,9 +436,8 @@ reports make the current phase unknown rather than implying optimizer progress.
 The top status strip lists active runs independently of plot selections or tabs,
 using compact data-only labels. Run colors are assigned uniquely across the
 catalog and retained through refreshes; selections do not change their colors.
-Current curriculum recordings in the data viewer support comments and
-looks-wrong feedback on the whole example or selected original wrist/external
-frame. They reuse the authenticated Family transport, immutable archive identity,
+Current curriculum recordings in the data viewer offer a text box and Submit
+button for whole-example comments. They reuse the authenticated Family transport, immutable archive identity,
 durable saved key, receipt checking and exact retries from the catalog viewer.
 Legacy directory demonstrations and policy recordings currently lack a supported
 immutable feedback target and are explicitly labeled unavailable.

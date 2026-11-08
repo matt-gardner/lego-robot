@@ -82,6 +82,7 @@ test("data viewer comments use immutable archive identity and actual sparse fram
     frames: [{frame_index: 0, timestamp: 0, wrist: true},
       {frame_index: 149, timestamp: 14.9, wrist: true, external: true}]
   })`);
+  assert.equal(p.element("lego-feedback-status").textContent, "");
   p.element("frame").value = "1";
   p.element("lego-feedback-camera").value = "external";
   p.element("lego-feedback-kind").value = "comment";
