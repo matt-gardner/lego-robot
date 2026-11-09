@@ -16,6 +16,16 @@ spec.loader.exec_module(deploy)
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_live_timeout_names_endpoint_and_elapsed_without_changing_budget(self):
+        url = "http://127.0.0.1:8765/lego-robot/api/data/all?limit=1"
+        opener = MagicMock()
+        opener.open.side_effect = TimeoutError("timed out")
+        with patch.object(deploy, "build_opener", return_value=opener), \
+                patch.object(deploy.time, "monotonic", side_effect=[10, 14]):
+            with self.assertRaisesRegex(RuntimeError, r"api/data/all\?limit=1 after 4\.000s: timed out"):
+                deploy.live_bytes(url)
+        opener.open.assert_called_once_with(url, timeout=4)
+
     def status_responses(self) -> list[dict]:
         release = {"id": "a" * 64, "kind": "parts", "version": deploy.EVIDENCE_VERSION,
                    "catalog_sha256": "b" * 64, "artifact_sha256": "b" * 64,

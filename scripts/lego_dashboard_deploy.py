@@ -136,10 +136,16 @@ def catalog_api(query: dict[str, str] | None = None) -> dict:
 
 def live_bytes(url: str) -> bytes:
     opener = build_opener(ProxyHandler({}), NoRedirect())
-    with opener.open(url, timeout=4) as response:
-        if response.status != 200:
-            raise ValueError(f"Live catalog HTTP {response.status}")
-        body = response.read(API_LIMIT + 1)
+    started = time.monotonic()
+    try:
+        with opener.open(url, timeout=4) as response:
+            if response.status != 200:
+                raise ValueError(f"Live catalog HTTP {response.status}")
+            body = response.read(API_LIMIT + 1)
+    except (URLError, TimeoutError, ConnectionError) as error:
+        raise RuntimeError(
+            f"Live dashboard request failed: {url} after {time.monotonic() - started:.3f}s: {error}"
+        ) from error
     if len(body) > API_LIMIT:
         raise ValueError("Live catalog response exceeds 2 MiB")
     return body
