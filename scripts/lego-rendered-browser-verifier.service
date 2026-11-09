@@ -1,0 +1,29 @@
+[Unit]
+Description=Fixed-loopback browser projection receipts for rendered LEGO pairs
+After=network.target so101-web.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/bin/python3 -I /opt/lego-rendered-browser-verifier/verify_rendered_browser.py
+Restart=on-failure
+RestartSec=15
+UMask=0022
+Nice=19
+MemoryMax=192M
+TasksMax=8
+CPUQuota=25%
+LimitNOFILE=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/mnt/dockyard/lego-robot-data/data/lego_curriculum/rendered-physics-first-6d8de05/browser_receipts
+ReadWritePaths=/mnt/dockyard/lego-robot-data/data/lego_curriculum/rendered-physics-first-6d8de05/browser_failures
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+
+[Install]
+WantedBy=multi-user.target
