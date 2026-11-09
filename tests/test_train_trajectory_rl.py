@@ -747,6 +747,39 @@ def test_rollout_renders_only_history_consumed_by_next_decision(monkeypatch, tmp
     assert list(frames) == [12, 13, 14, 15]
 
 
+@pytest.mark.parametrize("record_noise", [False, True])
+def test_flow_replay_transfers_after_sampling_without_changing_random_draws(monkeypatch, record_noise):
+    from so101.control_model.flow_rl import sample_flow_path
+
+    calls = []
+    original = torch.Tensor.cpu
+
+    def cpu(value, *args, **kwargs):
+        calls.append(tuple(value.shape))
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "cpu", cpu)
+    torch.manual_seed(7)
+    initial = torch.ones(1, 4, 6)
+    result, path = sample_flow_path(
+        lambda value, time: value * .25, initial, 4, .1, (2, 6), record_noise,
+    )
+    assert len(calls) == 2
+    assert len(path) == 4 and path[-1].active_shape == (2, 6)
+    assert all(item.latent.device.type == "cpu" for item in path)
+    assert torch.equal(path[0].latent, initial)
+    assert torch.equal(path[-1].next_latent, result)
+    assert all(torch.equal(first.next_latent, second.latent)
+               for first, second in zip(path, path[1:]))
+    if record_noise:
+        from so101.control_model.flow_rl import reparameterize_flow_path
+        replayed = reparameterize_flow_path(
+            lambda value, time: value * .25, path, torch.device("cpu"),
+            checkpoint_velocity=False,
+        )
+        assert torch.equal(replayed, result)
+
+
 def test_new_scene_destination_precision_is_enforced():
     from so101.train_trajectory_rl import successful_step
     positions = {"short": np.array([.2, 0., 0.]), "goal_right": np.array([.23, 0., 0.])}

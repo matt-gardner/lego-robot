@@ -39,6 +39,7 @@ def test_fixed_horizon_measurement_cannot_improve_by_terminating_at_success(monk
         reset=lambda *a, **k: None, command_inputs=lambda *a: (),
         policy=SimpleNamespace(eval=lambda: None, model=model),
         action_std=np.ones(6), action_mean=np.zeros(6), observe=lambda *a: None,
+        config=SimpleNamespace(history_steps=4),
     )
     monkeypatch.setattr(trainer, "reset_from_episode", lambda *a: ("short", None, [("short", "object")]))
     monkeypatch.setattr(trainer, "replay_gold_prefix", lambda *a: (0, 0.))

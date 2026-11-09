@@ -515,6 +515,10 @@ checks and evidence overhead are included in total but not the physics-step
 subtotal. Use these alongside sampled GPU
 utilization to identify bottlenecks rather than treating EGL as batched GPU
 simulation.
+Stochastic denoising retains detached transition tensors on the GPU until the
+path is complete, then batches their CPU transfer. Replay still receives the
+same CPU tensors and sampled noise, without forcing a GPU/CPU synchronization
+between every denoising step.
 
 For off-instance recovery, `scripts/publish_rl_checkpoint.py` validates and
 publishes the atomic RL state (trainable projection delta, Adam, sampling RNG,

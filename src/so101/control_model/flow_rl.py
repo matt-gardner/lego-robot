@@ -108,16 +108,35 @@ def sample_flow_path(
         next_latent = mean + std * noise
         active_shape = final_action_shape if step == num_steps - 1 else None
         path.append(FlowTransition(
-            latent.detach().cpu(),
-            next_latent.detach().cpu(),
-            gaussian_log_prob(next_latent, mean, std, active_shape).detach().cpu(),
+            latent.detach(),
+            next_latent.detach(),
+            gaussian_log_prob(next_latent, mean, std, active_shape).detach(),
             time,
             step_size,
             noise_scale,
             active_shape,
-            noise.detach().cpu() if record_noise else None,
+            noise.detach() if record_noise else None,
         ))
         latent = next_latent
+    if path:
+        # Transfer after denoising, not between GPU steps; keep replay paths on CPU.
+        tensors = [item.latent for item in path] + [item.next_latent for item in path]
+        if record_noise:
+            for item in path:
+                if item.noise is None:
+                    raise ValueError("Recorded flow transition is missing its sampled noise")
+                tensors.append(item.noise)
+        states = torch.stack(tensors).cpu()
+        probabilities = torch.stack([item.old_log_prob for item in path]).cpu()
+        count = len(path)
+        path = [
+            FlowTransition(
+                states[index], states[count + index], probabilities[index],
+                item.time, item.step_size, item.noise_scale, item.active_shape,
+                states[2 * count + index] if record_noise else None,
+            )
+            for index, item in enumerate(path)
+        ]
     return latent, path
 
 
