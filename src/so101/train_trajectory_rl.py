@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Generator
+import copy
 import json
 import math
 import random
@@ -11,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import mujoco
 import torch
 
 from so101.control_model.command import ROLE_PROMPTS
@@ -22,6 +25,7 @@ from so101.control_model.jerk_regularizer import (
 )
 from so101.jerk_reference import ReferenceJerkMargins
 from so101.control_model.modeling_entity_smolvla import (
+    FrozenObservation,
     save_entity_checkpoint,
 )
 from so101.evaluate_entity_sim import EntityPolicy
@@ -46,6 +50,17 @@ class DecisionSample:
     executed_steps: int
     denoising_path: list[FlowTransition] | None = None
     attempted_steps: int | None = None
+    frozen_observation: FrozenObservation | None = None
+
+
+@dataclass
+class SamplingRequest:
+    inputs: tuple[Any, ...]
+    active_shape: tuple[int, int]
+    noise_scale: float
+    record_noise: bool
+    generator: torch.Generator | None
+    frozen_observation: FrozenObservation | None = None
 
 
 @dataclass
@@ -253,7 +268,7 @@ def trajectory_metrics(
     return rms_jerk, completion, smoothness
 
 
-def rollout(
+def _rollout(
     sim: BeamSimulation,
     controller: EntityPolicy,
     episode: CorpusEpisode,
@@ -267,7 +282,8 @@ def rollout(
     capture_path: Path | None = None,
     fixed_horizon: bool = False,
     record_path_noise: bool = False,
-) -> Trajectory:
+    independent_rng: bool = False,
+) -> Generator[SamplingRequest, tuple[torch.Tensor, list[FlowTransition]], Trajectory]:
     rollout_start = time.monotonic()
     target, destination, entities = reset_from_episode(sim, episode)
     initial_positions = {
@@ -280,6 +296,13 @@ def rollout(
         start_proximity,
     )
     controller.reset(sim, rollout_seed, zero_noise=False)
+    generator = None
+    if independent_rng:
+        generator = torch.Generator(device=controller.device)
+        generator.set_state(
+            torch.cuda.get_rng_state() if controller.device == "cuda"
+            else torch.random.get_rng_state()
+        )
     reset_seconds = time.monotonic() - rollout_start
     observation_seconds = 0.
     inference_seconds = 0.
@@ -314,23 +337,21 @@ def rollout(
         inference_start = time.monotonic()
         controller.policy.eval()
         denoising_path = None
-        with torch.no_grad():
-            if denoising_noise_scale is None:
+        frozen_observation = None
+        if denoising_noise_scale is None:
+            with torch.no_grad():
                 normalized = controller.policy.model.sample_actions_entity(
                     *inputs
                 )[0][0].detach()
-            else:
-                sampled, denoising_path = (
-                    controller.policy.model.sample_actions_entity_sde(
-                        inputs, denoising_noise_scale,
-                        (min(
-                            action_steps, horizon - executed,
-                            controller.policy.config.chunk_size,
-                        ), 6),
-                        **({"record_noise": True} if record_path_noise else {}),
-                    )
-                )
-                normalized = sampled[0].detach()
+        else:
+            request = SamplingRequest(
+                inputs,
+                (min(action_steps, horizon - executed, controller.policy.config.chunk_size), 6),
+                denoising_noise_scale, record_path_noise, generator,
+            )
+            sampled, denoising_path = yield request
+            frozen_observation = request.frozen_observation
+            normalized = sampled[0].detach()
         actions = (
             normalized[:, :6].float().cpu().numpy()
             * controller.action_std
@@ -401,6 +422,7 @@ def rollout(
                 chunk_steps,
                 denoising_path,
                 chunk_attempts,
+                frozen_observation,
             ))
         if invalid or chunk_steps == 0:
             break
@@ -447,6 +469,143 @@ def rollout(
             if key not in ("reward", "evidence")
         })
     return result
+
+
+def rollout(
+    sim: BeamSimulation,
+    controller: EntityPolicy,
+    episode: CorpusEpisode,
+    rollout_seed: int,
+    horizon: int,
+    action_steps: int,
+    bounds: dict[str, float],
+    store_decisions: bool,
+    start_proximity: float = 0.,
+    denoising_noise_scale: float | None = None,
+    capture_path: Path | None = None,
+    fixed_horizon: bool = False,
+    record_path_noise: bool = False,
+) -> Trajectory:
+    iterator = _rollout(
+        sim, controller, episode, rollout_seed, horizon, action_steps, bounds,
+        store_decisions, start_proximity, denoising_noise_scale, capture_path,
+        fixed_horizon, record_path_noise,
+    )
+    try:
+        request = next(iterator)
+        while True:
+            with torch.no_grad():
+                sampled = controller.policy.model.sample_actions_entity_sde(
+                    request.inputs, request.noise_scale, request.active_shape,
+                    **({"record_noise": True} if request.record_noise else {}),
+                )
+            request = iterator.send(sampled)
+    except StopIteration as finished:
+        return finished.value
+    finally:
+        iterator.close()
+
+
+def batch_inputs(values: list[Any]) -> Any:
+    first = values[0]
+    if isinstance(first, torch.Tensor):
+        return torch.cat(values, dim=0)
+    if isinstance(first, (tuple, list)):
+        if any(len(value) != len(first) for value in values):
+            raise ValueError("Batched policy inputs have inconsistent structures")
+        result = [batch_inputs([value[index] for value in values])
+                  for index in range(len(first))]
+        return tuple(result) if isinstance(first, tuple) else result
+    raise TypeError(f"Unsupported batched policy input: {type(first)}")
+
+
+def activate_render_context(sim: BeamSimulation) -> None:
+    renderer = sim.renderer
+    if renderer is None or renderer._gl_context is None or renderer._mjr_context is None:
+        raise ValueError("Batched visual rollouts require a live GL renderer per simulator")
+    # MuJoCo's Renderer exposes no public context API; restore its offscreen FBO.
+    renderer._gl_context.make_current()
+    mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, renderer._mjr_context)
+
+
+def rollout_group(
+    sims: list[BeamSimulation],
+    controller: EntityPolicy,
+    episode: CorpusEpisode,
+    seeds: list[int],
+    horizon: int,
+    action_steps: int,
+    bounds: dict[str, float],
+    start_proximity: float,
+    noise_scale: float,
+    record_path_noise: bool,
+    capture_path: Path | None = None,
+) -> list[Trajectory]:
+    if len(sims) != len(seeds):
+        raise ValueError("Batched rollouts require one independent simulator per trajectory")
+    iterators = [
+        _rollout(
+            sim, copy.copy(controller), episode, seed, horizon, action_steps,
+            bounds, True, start_proximity, noise_scale,
+            capture_path if index == 0 else None,
+            record_path_noise=record_path_noise, independent_rng=True,
+        )
+        for index, (sim, seed) in enumerate(zip(sims, seeds, strict=True))
+    ]
+    results: dict[int, Trajectory] = {}
+    pending: dict[int, SamplingRequest] = {}
+    try:
+        for index, iterator in enumerate(iterators):
+            try:
+                activate_render_context(sims[index])
+                pending[index] = next(iterator)
+            except StopIteration as finished:
+                results[index] = finished.value
+        while pending:
+            indices = list(pending)
+            requests = list(pending.values())
+            first = requests[0]
+            if any(request.active_shape != first.active_shape for request in requests):
+                raise ValueError("Batched trajectories reached inconsistent action horizons")
+            generators = []
+            for request in requests:
+                if request.generator is None:
+                    raise ValueError("Batched trajectory lost its independent sampling RNG")
+                generators.append(request.generator)
+            with torch.no_grad():
+                def capture(pad, cache):
+                    for row, request in enumerate(requests):
+                        request.frozen_observation = FrozenObservation.from_row(pad, cache, row)
+
+                actions, path = controller.policy.model.sample_actions_entity_sde(
+                    batch_inputs([request.inputs for request in requests]),
+                    noise_scale, first.active_shape, record_noise=record_path_noise,
+                    generators=generators,
+                    capture=capture,
+                )
+            following = {}
+            for row, index in enumerate(indices):
+                individual_path = [
+                    FlowTransition(
+                        item.latent[row:row + 1], item.next_latent[row:row + 1],
+                        item.old_log_prob[row:row + 1], item.time, item.step_size,
+                        item.noise_scale, item.active_shape,
+                        item.noise[row:row + 1] if item.noise is not None else None,
+                    )
+                    for item in path
+                ]
+                try:
+                    activate_render_context(sims[index])
+                    following[index] = iterators[index].send(
+                        (actions[row:row + 1], individual_path)
+                    )
+                except StopIteration as finished:
+                    results[index] = finished.value
+            pending = following
+        return [results[index] for index in range(len(iterators))]
+    finally:
+        for iterator in iterators:
+            iterator.close()
 
 
 def assign_group_rewards(
@@ -633,7 +792,9 @@ def trajectory_backward(
                 * decision.denoising_path[0].latent[0].numel()
             )
             log_probs = controller.policy.model.denoising_log_probs_entity(
-                inputs, decision.denoising_path
+                inputs, decision.denoising_path,
+                **({"frozen_observation": decision.frozen_observation}
+                   if decision.frozen_observation is not None else {}),
             )
             for log_prob, transition in zip(
                 log_probs, decision.denoising_path, strict=True
@@ -1005,6 +1166,9 @@ def train(args: argparse.Namespace) -> None:
     if recovery_enabled and args.curriculum_mode != "mastery":
         raise ValueError("Zero-success recovery requires mastery curriculum mode")
     jerk_weight = getattr(args, "jerk_regularizer_weight", 0.)
+    batch_rollouts = getattr(args, "batch_rollouts", False)
+    if batch_rollouts and (args.rl_estimator != "denoising-grpo" or args.device not in ("cpu", "cuda")):
+        raise ValueError("Batched rollouts require denoising-grpo on CPU or CUDA")
     jerk_scale = getattr(args, "jerk_scale", 6.)
     jerk_enabled = jerk_weight > 0
     boundary_weight = getattr(args, "action_boundary_weight", 0.)
@@ -1188,6 +1352,7 @@ def train(args: argparse.Namespace) -> None:
         for group in optimizer.param_groups:
             group["lr"] = args.learning_rate
     sim = BeamSimulation(args.model_root, render=True)
+    rollout_sims = [sim]
     log: dict[str, Any] = (
         resume_state["log"]
         if resume_state is not None
@@ -1357,6 +1522,9 @@ def train(args: argparse.Namespace) -> None:
         atomic_json(output / "jerk_reference_margins.json", jerk_references.snapshot())
     write_log(output, log)
     try:
+        if batch_rollouts:
+            for _ in range(1, args.group_size):
+                rollout_sims.append(BeamSimulation(args.model_root, render=True))
         if not args.resume:
             baseline_start = time.monotonic()
             baseline = validation_metrics(
@@ -1483,7 +1651,17 @@ def train(args: argparse.Namespace) -> None:
                     jerk_profile = (jerk_references.summary(episode.source, start_proximity)
                                     if jerk_references is not None else None)
                     jerk_margin = jerk_profile["margin"] if jerk_profile is not None else None
-                    trajectories = [
+                    capture_path = (output / "rollouts" / f"step_{step:06}" / f"group_{task_index}_{attempt}.json"
+                                    if getattr(args, "record_rollouts", False) else None)
+                    trajectories = (rollout_group(
+                        rollout_sims, controller, episode,
+                        [args.seed + step * 100_000 + task_index * 10_000
+                         + attempt * args.group_size + index for index in range(args.group_size)],
+                        args.horizon, args.action_steps, bounds[task], start_proximity,
+                        sampling_noise,
+                        boundary_enabled or jerk_enabled and jerk_margin is not None,
+                        capture_path,
+                    ) if batch_rollouts else [
                         rollout(
                             sim,
                             controller,
@@ -1506,7 +1684,7 @@ def train(args: argparse.Namespace) -> None:
                             } if getattr(args, "record_rollouts", False) and rollout_index == 0 else {}),
                         )
                         for rollout_index in range(args.group_size)
-                    ]
+                    ])
                     success_count = sum(
                         item.success for item in trajectories
                     )
@@ -1832,7 +2010,8 @@ def train(args: argparse.Namespace) -> None:
                 }), flush=True)
                 break
     finally:
-        sim.close()
+        for rollout_sim in rollout_sims:
+            rollout_sim.close()
     if args.save_final_checkpoint:
         checkpoint_output = output / "checkpoint"
         if checkpoint_output.exists():
@@ -1879,6 +2058,8 @@ def main() -> None:
     )
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--group-size", type=int, default=8)
+    parser.add_argument("--batch-rollouts", action=argparse.BooleanOptionalAction, default=False,
+                        help="Batch group inference with independent simulator histories and trajectory RNGs.")
     parser.add_argument("--groups-per-task", type=int, default=2)
     parser.add_argument(
         "--max-group-attempts-per-task",

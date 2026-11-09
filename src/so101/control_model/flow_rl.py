@@ -31,6 +31,17 @@ class FlowTransition:
     noise: Tensor | None = None
 
 
+def independent_noise_like(value: Tensor, generators: list[torch.Generator] | None) -> Tensor:
+    if generators is None:
+        return torch.randn_like(value)
+    if len(generators) != value.shape[0]:
+        raise ValueError("Flow sampling requires one independent generator per batch row")
+    return torch.cat([
+        torch.randn((1, *value.shape[1:]), dtype=value.dtype, device=value.device, generator=generator)
+        for generator in generators
+    ])
+
+
 def transition_distribution(
     latent: Tensor,
     velocity: Tensor,
@@ -85,6 +96,7 @@ def sample_flow_path(
     noise_scale: float,
     final_action_shape: tuple[int, int] | None = None,
     record_noise: bool = False,
+    generators: list[torch.Generator] | None = None,
 ) -> tuple[Tensor, list[FlowTransition]]:
     if num_steps <= 0:
         raise ValueError("Denoising steps must be positive")
@@ -104,7 +116,7 @@ def sample_flow_path(
         if noise_scale == 0:
             latent = mean
             continue
-        noise = torch.randn_like(mean)
+        noise = independent_noise_like(mean, generators)
         next_latent = mean + std * noise
         active_shape = final_action_shape if step == num_steps - 1 else None
         path.append(FlowTransition(

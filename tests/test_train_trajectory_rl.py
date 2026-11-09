@@ -780,6 +780,100 @@ def test_flow_replay_transfers_after_sampling_without_changing_random_draws(monk
         assert torch.equal(replayed, result)
 
 
+def test_batched_rollouts_preserve_independent_noise_histories_and_early_termination(monkeypatch, tmp_path):
+    from collections import deque
+    import so101.train_trajectory_rl as trainer
+    from so101.control_model.flow_rl import independent_noise_like, sample_flow_path
+
+    sizes = []
+    monkeypatch.setattr(trainer, "activate_render_context", lambda sim: None)
+
+    def sample(inputs, noise_scale, active_shape, record_noise=False, generators=None, capture=None):
+        sizes.append(inputs[0].shape[0])
+        initial = independent_noise_like(torch.empty(inputs[0].shape[0], 4, 6), generators)
+        return sample_flow_path(lambda value, time: value * .25, initial, 3,
+                                noise_scale, active_shape, record_noise, generators)
+
+    class Controller:
+        device = "cpu"
+        config = Namespace(history_steps=4)
+        policy = Namespace(eval=lambda: None, config=Namespace(chunk_size=4),
+                           model=Namespace(sample_actions_entity_sde=sample))
+        action_std = np.ones(6)
+        action_mean = np.zeros(6)
+
+        def reset(self, sim, seed, **kwargs):
+            torch.manual_seed(seed)
+            sim.seed = seed
+            sim.frame = 0
+            self.history = deque([0] * 4, maxlen=4)
+
+        def command_inputs(self, *args):
+            return (torch.tensor([list(self.history)], dtype=torch.float32),)
+
+        def observe(self, sim, action):
+            self.history.append(sim.frame)
+
+    def simulation():
+        sim = Namespace(
+            fps=1, frame=0, obstacle_contact_events=[],
+            position=lambda name: np.zeros(3),
+            bounded_policy_action=lambda action: (action, None), encode=lambda action: action,
+        )
+        sim.step = lambda *args: setattr(sim, "frame", sim.frame + 1)
+        return sim
+
+    monkeypatch.setattr(trainer, "reset_from_episode", lambda *a: ("short", None, []))
+    monkeypatch.setattr(trainer, "replay_gold_prefix", lambda *a: (0, 0.))
+    monkeypatch.setattr(trainer, "control_phase", lambda *a: "acquire")
+    monkeypatch.setattr(trainer, "wrong_object_lift", lambda *a: False)
+    monkeypatch.setattr(trainer, "successful_step",
+                        lambda sim, *args: sim.seed % 2 == 0 and sim.frame >= 2)
+    episode = CorpusEpisode(tmp_path, {"task": "grasp"})
+    bounds = {"optimal_steps": 1., "jerk_p10": .1}
+    controller = Controller()
+    expected = [
+        trainer.rollout(simulation(), controller, episode, seed, 9, 4,
+                        bounds, True, 0., .1, record_path_noise=True)
+        for seed in (2, 3, 4)
+    ]
+    sizes.clear()
+    actual = trainer.rollout_group(
+        [simulation() for _ in range(3)], controller, episode, [2, 3, 4],
+        9, 4, bounds, 0., .1, True,
+    )
+    assert sizes == [3, 1, 1]
+    assert [item.steps for item in actual] == [2, 9, 2]
+    for serial, batched in zip(expected, actual, strict=True):
+        np.testing.assert_array_equal(serial.actions, batched.actions)
+        assert serial.success == batched.success
+        assert len(serial.decisions) == len(batched.decisions)
+        for first, second in zip(serial.decisions, batched.decisions, strict=True):
+            assert torch.equal(first.inputs[0], second.inputs[0])
+            for old, new in zip(first.denoising_path, second.denoising_path, strict=True):
+                assert torch.equal(old.noise, new.noise)
+                assert torch.equal(old.old_log_prob, new.old_log_prob)
+
+
+def test_frozen_batch_observation_preserves_sampled_row_without_cache_aliasing():
+    from transformers.cache_utils import DynamicCache
+    from so101.control_model.modeling_entity_smolvla import FrozenObservation
+
+    cache = DynamicCache()
+    keys = torch.arange(3 * 2 * 5 * 4, dtype=torch.float32).reshape(3, 2, 5, 4)
+    cache.update(keys, keys + 1, 0)
+    pad = torch.ones(3, 5, dtype=torch.bool)
+    frozen = FrozenObservation.from_row(pad, cache, 1)
+    expected = keys[1:2].clone()
+    cache.layers[0].keys.zero_()
+    pad.zero_()
+    assert torch.equal(frozen.cache.layers[0].keys, expected)
+    assert frozen.pad.all()
+    restored = FrozenObservation.copy_cache(frozen.cache, "cpu")
+    restored.layers[0].keys.zero_()
+    assert torch.equal(frozen.cache.layers[0].keys, expected)
+
+
 def test_new_scene_destination_precision_is_enforced():
     from so101.train_trajectory_rl import successful_step
     positions = {"short": np.array([.2, 0., 0.]), "goal_right": np.array([.23, 0., 0.])}

@@ -30,7 +30,10 @@ def replay_command_gradients(controller, trajectory, low, high, coefficient, gra
         if not count or not weights.any():
             continue
         inputs = to_device(decision.inputs, controller.device)
-        velocity = controller.policy.model._rl_velocity_function(inputs)
+        observation = getattr(decision, "frozen_observation", None)
+        velocity = controller.policy.model._rl_velocity_function(
+            inputs, **({"frozen_observation": observation} if observation is not None else {}),
+        )
         actions = reparameterize_flow_path(velocity, decision.denoising_path,
                                           torch.device(controller.device))
         torch.testing.assert_close(actions[0, :count, :6].detach().cpu(),

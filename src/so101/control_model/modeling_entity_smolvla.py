@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from collections.abc import Callable, Iterator
+import copy
 import json
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from transformers.cache_utils import Cache
 
 from lerobot.policies.common.flow_matching import euler_integrate
 from lerobot.policies.common.vla_utils import make_att_2d_masks, pad_vector, resize_with_pad
@@ -16,9 +18,34 @@ from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, VLAFlowMatc
 from so101.control_model.flow_rl import (
     FlowTransition,
     gaussian_log_prob,
+    independent_noise_like,
     sample_flow_path,
     transition_distribution,
 )
+
+
+@dataclass
+class FrozenObservation:
+    pad: Tensor
+    cache: Cache
+
+    @classmethod
+    def from_row(cls, pad: Tensor, cache: Cache | None, row: int) -> FrozenObservation:
+        if cache is None:
+            raise ValueError("Batched trajectory replay requires cached observation features")
+        return cls(pad[row:row + 1].detach().to("cpu", copy=True), cls.copy_cache(cache, "cpu", row))
+
+    @staticmethod
+    def copy_cache(cache: Cache, device: str | torch.device, row: int | None = None) -> Cache:
+        result = copy.copy(cache)
+        result.layers = []
+        for layer in cache.layers:
+            copied = copy.copy(layer)
+            selection = slice(None) if row is None else slice(row, row + 1)
+            copied.keys = layer.keys[selection].detach().to(device, copy=True)
+            copied.values = layer.values[selection].detach().to(device, copy=True)
+            result.layers.append(copied)
+        return result
 
 
 @dataclass(frozen=True)
@@ -208,17 +235,26 @@ class EntityVLAFlowMatching(VLAFlowMatching):
         suffix_out = outputs[1][:, -self.config.chunk_size :].float()
         return self.action_out_proj(suffix_out)
 
-    def _rl_velocity_function(self, inputs: tuple) -> Callable[[Tensor, Tensor], Tensor]:
+    def _rl_velocity_function(
+        self, inputs: tuple, frozen_observation: FrozenObservation | None = None,
+        capture: Callable[[Tensor, Cache | None], None] | None = None,
+    ) -> Callable[[Tensor, Tensor], Tensor]:
         # RL trains only the action projections; observation features remain frozen.
-        with torch.no_grad():
-            prefix, pad, attention, _ = self._prefix_with_entities(*inputs)
-            _, cache = self.vlm_with_expert.forward(
-                attention_mask=make_att_2d_masks(pad, attention),
-                position_ids=torch.cumsum(pad, dim=1) - 1,
-                past_key_values=None,
-                inputs_embeds=[prefix, None],
-                use_cache=self.config.use_cache,
-            )
+        if frozen_observation is not None:
+            pad = frozen_observation.pad.to(inputs[4].device)
+            cache = FrozenObservation.copy_cache(frozen_observation.cache, inputs[4].device)
+        else:
+            with torch.no_grad():
+                prefix, pad, attention, _ = self._prefix_with_entities(*inputs)
+                _, cache = self.vlm_with_expert.forward(
+                    attention_mask=make_att_2d_masks(pad, attention),
+                    position_ids=torch.cumsum(pad, dim=1) - 1,
+                    past_key_values=None,
+                    inputs_embeds=[prefix, None],
+                    use_cache=self.config.use_cache,
+                )
+        if capture is not None:
+            capture(pad, cache)
         def velocity(latent: Tensor, timestep: Tensor) -> Tensor:
             result = self._denoise_step_entity(pad, cache, latent, timestep)
             if cache is not None:
@@ -235,23 +271,26 @@ class EntityVLAFlowMatching(VLAFlowMatching):
         self, inputs: tuple, noise_scale: float,
         final_action_shape: tuple[int, int] | None = None,
         record_noise: bool = False,
+        generators: list[torch.Generator] | None = None,
+        capture: Callable[[Tensor, Cache | None], None] | None = None,
     ) -> tuple[Tensor, list[FlowTransition]]:
         state = inputs[4]
-        noise = self.sample_noise(
-            (state.shape[0], self.config.chunk_size, self.config.max_action_dim),
-            state.device,
-        )
+        shape = (state.shape[0], self.config.chunk_size, self.config.max_action_dim)
+        noise = (self.sample_noise(shape, state.device) if generators is None else
+                 independent_noise_like(torch.empty(shape, device=state.device), generators))
         return sample_flow_path(
-            self._rl_velocity_function(inputs), noise,
+            self._rl_velocity_function(inputs, capture=capture), noise,
             self.config.num_steps, noise_scale,
             final_action_shape,
             record_noise,
+            generators,
         )
 
     def denoising_log_probs_entity(
-        self, inputs: tuple, path: list[FlowTransition]
+        self, inputs: tuple, path: list[FlowTransition],
+        frozen_observation: FrozenObservation | None = None,
     ) -> Iterator[Tensor]:
-        velocity = self._rl_velocity_function(inputs)
+        velocity = self._rl_velocity_function(inputs, frozen_observation)
         device = inputs[4].device
         for transition in path:
             latent = transition.latent.to(device)

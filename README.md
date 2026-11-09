@@ -520,6 +520,19 @@ path is complete, then batches their CPU transfer. Replay still receives the
 same CPU tensors and sampled noise, without forcing a GPU/CPU synchronization
 between every denoising step.
 
+`--batch-rollouts` optionally batches inference across a training group's
+independent simulator instances on CUDA or CPU. Each trajectory retains its
+own observation history and seeded noise generator, including after other
+trajectories terminate; recorded denoising paths are split back per trajectory
+for unchanged policy and jerk losses. Replay reuses the exact frozen observation
+KV features sampled in the batch: recomputing a BF16 prefix individually can
+change its numerics enough to violate recorded-action replay. Each simulator's
+EGL context and offscreen framebuffer are restored before advancing it.
+Physics is still stepped serially;
+held-out validation and mastery checks retain the serial evaluation protocol.
+Per-trajectory timing in this mode includes time waiting for the other
+trajectories, so summed timings overlap; use group/step wall time for throughput.
+
 For off-instance recovery, `scripts/publish_rl_checkpoint.py` validates and
 publishes the atomic RL state (trainable projection delta, Adam, sampling RNG,
 curriculum and history), bound to a dependency tar containing matching source,
