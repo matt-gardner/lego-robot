@@ -64,6 +64,7 @@ class Trajectory:
     actions: np.ndarray | None = None
     first_success_step: int | None = None
     invalid_action_error: str | None = None
+    timings: dict[str, float] | None = None
 
 
 def cpu_copy(value: Any) -> Any:
@@ -267,6 +268,7 @@ def rollout(
     fixed_horizon: bool = False,
     record_path_noise: bool = False,
 ) -> Trajectory:
+    rollout_start = time.monotonic()
     target, destination, entities = reset_from_episode(sim, episode)
     initial_positions = {
         name: sim.position(name).copy() for name in OBJECT_NAMES
@@ -278,6 +280,10 @@ def rollout(
         start_proximity,
     )
     controller.reset(sim, rollout_seed, zero_noise=False)
+    reset_seconds = time.monotonic() - rollout_start
+    observation_seconds = 0.
+    inference_seconds = 0.
+    simulation_seconds = 0.
     decisions = []
     executed_actions = []
     executed = 0
@@ -300,9 +306,12 @@ def rollout(
             float(initial_positions[target][2]),
             lifted_once,
         )
+        observation_start = time.monotonic()
         inputs = controller.command_inputs(
             sim, episode.task, entities, phase
         )
+        observation_seconds += time.monotonic() - observation_start
+        inference_start = time.monotonic()
         controller.policy.eval()
         denoising_path = None
         with torch.no_grad():
@@ -327,12 +336,14 @@ def rollout(
             * controller.action_std
             + controller.action_mean
         )
+        inference_seconds += time.monotonic() - inference_start
         chunk_steps = 0
         chunk_attempts = 0
         invalid = False
         chunk_length = min(len(actions), action_steps, horizon - executed)
         history_steps = controller.config.history_steps
         for action in actions[:chunk_length]:
+            simulation_start = time.monotonic()
             chunk_attempts += 1
             try:
                 goal, _ = sim.bounded_policy_action(action)
@@ -347,9 +358,12 @@ def rollout(
                 break
             sim.step(goal, "trajectory_rl")
             encoded = sim.encode(goal)
+            simulation_seconds += time.monotonic() - simulation_start
             # Only the trailing history survives until the next policy decision.
             if chunk_steps >= chunk_length - history_steps:
+                observation_start = time.monotonic()
                 controller.observe(sim, encoded)
+                observation_seconds += time.monotonic() - observation_start
             executed_actions.append(encoded)
             if recorder is not None:
                 recorder.step(sim, encoded)
@@ -418,6 +432,13 @@ def rollout(
     result.invalid_action_error = invalid_action_error
     result.constraint_violation = constraint_violation
     result.first_success_step = first_success_step
+    result.timings = {
+        "reset_and_prefix_seconds": reset_seconds,
+        "observation_seconds": observation_seconds,
+        "inference_seconds": inference_seconds,
+        "physics_step_seconds": simulation_seconds,
+        "total_seconds": time.monotonic() - rollout_start,
+    }
     if store_decisions:
         result.actions = np.asarray(executed_actions, dtype=np.float32)
     if recorder is not None:
@@ -503,6 +524,7 @@ def serialized_trajectory(item: Trajectory) -> dict[str, Any]:
         "evidence": item.evidence,
         "constraint_violation": item.constraint_violation,
         "invalid_action_error": item.invalid_action_error,
+        "timings": item.timings,
     }
 
 

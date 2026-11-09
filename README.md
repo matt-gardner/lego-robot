@@ -508,6 +508,13 @@ chunk. Earlier frames would be evicted before the next policy decision;
 physics, per-frame success/constraint checks, and optional rollout evidence
 remain unchanged. With 16-action chunks and four-frame history this avoids
 12 unused RGB renders per complete chunk.
+Serialized rollouts include wall-clock `timings` for reset/gold-prefix,
+observation construction/rendering, inference through action readback, physics
+stepping, and total rollout time before final evidence export. In-loop goal
+checks and evidence overhead are included in total but not the physics-step
+subtotal. Use these alongside sampled GPU
+utilization to identify bottlenecks rather than treating EGL as batched GPU
+simulation.
 
 For off-instance recovery, `scripts/publish_rl_checkpoint.py` validates and
 publishes the atomic RL state (trainable projection delta, Adam, sampling RNG,
