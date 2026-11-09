@@ -6,6 +6,13 @@ the accepted-pair handoff. Rendering, image-dependent qualification and browser
 publication are downstream responsibilities. Catalog and host integration have
 separate owners.
 
+The photo-realism owner maintains the standalone native pile utility:
+`PYTHONPATH=src python -m so101.settled_piles --catalog <pinned catalog> --output <new root> --parts 3020 3021 3022 --counts 3 2`.
+Its saved `model.mjb` is the runtime authority for integration-state restoration;
+XML retains pinned asset references. This is a separate reset artifact, not an
+accepted demonstration pair, successful expert reference, or claim of RL
+compatibility or task solvability.
+
 ## Physics-first generation and downstream handoff
 
 `python -m so101.produce_physical_catalog` runs the manipulation-only schedule
