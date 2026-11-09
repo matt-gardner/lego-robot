@@ -31,6 +31,19 @@ with matching `release_id` and terminal status `published` or `image_rejected`.
 The producer uses those acknowledgments only for backpressure, not promotion.
 Admission reserves 2 GiB within a 4 GiB outstanding-queue budget and pauses on
 memory pressure or insufficient memory/disk capacity. No source data is deleted.
+
+The separate consumer owns `render_physical_pairs.py` and its tests. Its agreed
+interface is `--queue <producer>/render_queue --output <derivative-root> [--once]`.
+Derivatives are staged under `<derivative-root>/.staging/<source_release>/<attempt>`,
+outside the immutable producer sources. The consumer verifies source hashes
+before and after rendering, claims the queue with a queue-wide lock, and records
+retry journals and downstream stage timings. Rendering starts with one idle CPU
+thread and idle I/O, with its own memory and disk guards.
+
+Do not publish staged derivatives into the browser or acknowledge `published`
+until image qualification and an explicit derivative projection preserve source
+identity, original labels, deduplication and protected family/split membership.
+Browser integration is a downstream responsibility, not physical qualification.
 Validated interrupted handoffs are rediscovered on restart; incomplete
 trajectories are retained and never relabeled as successes.
 
