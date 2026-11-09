@@ -87,7 +87,7 @@ def scheduled_scene(sequence: int) -> tuple[str, str, int]:
     if type(sequence) is not int or sequence < 0:
         raise ValueError("Sequence must be a nonnegative integer")
     category = ("separated", "cluster", "overlap", "pile")[sequence % 4]
-    task = "view" if sequence % 16 == 15 else ("grasp", "place", "push")[sequence % 3]
+    task = ("grasp", "place", "push")[sequence % 3]
     count = {"separated": 2, "cluster": 4, "overlap": 6, "pile": 8}[category]
     return category, task, count
 

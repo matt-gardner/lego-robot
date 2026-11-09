@@ -6,14 +6,12 @@ from so101.produce_catalog import DISK_FREE_FLOOR, DiskBackpressure, run, schedu
 from so101.catalog_sim import CatalogSimulation
 
 
-def test_schedule_prioritizes_manipulation_and_reserves_views_for_dense_piles():
+def test_schedule_only_generates_manipulation_across_all_categories():
     plans = [scheduled_scene(sequence) for sequence in range(48)]
     assert Counter(task for _, task, _ in plans) == {
-        "grasp": 15, "place": 15, "push": 15, "view": 3,
+        "grasp": 16, "place": 16, "push": 16,
     }
-    assert all(category == "pile" and count == 8
-               for category, task, count in plans if task == "view")
-    assert {(category, task) for category, task, _ in plans if task != "view"} == {
+    assert {(category, task) for category, task, _ in plans} == {
         (category, task)
         for category in ("separated", "cluster", "overlap", "pile")
         for task in ("grasp", "place", "push")

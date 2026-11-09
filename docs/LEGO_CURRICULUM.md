@@ -106,9 +106,9 @@ during descent. Alignment is bounded to 20 mm and fails explicitly when no
 lateral clearance is possible. Physical descent, two-jaw contact and retained
 lift still require independent runtime acceptance.
 
-Manipulation now takes 15 of every 16 scheduled proposals: grasp, place and push
-each receive five. The remaining view proposal uses an eight-piece pile, not a
-simple separated scene. This is scheduling priority, not a measured successful
+Continuous generation schedules only grasp, place and push, in equal proportions.
+VIEW demonstrations are excluded because their intended behavior is unclear in
+the data browser. This is scheduling priority, not a measured successful
 data distribution; rejected manipulation attempts remain visible.
 
 SFT is one command at a time: grasp, push, place and view. Generate meaningful
