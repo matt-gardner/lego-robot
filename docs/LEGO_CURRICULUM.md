@@ -50,8 +50,9 @@ waits for matching host browser evidence in
 `<derivative-root>/browser_receipts/<source_release_id>.json` before acknowledging
 the source as `published`. A rendered release alone does not clear producer
 backpressure; pending or failed browser verification is not image rejection.
-The same locked consumer services browser acknowledgments at subsequent raster
-checkpoints and resource waits, rather than waiting for the whole pair to finish.
+The same locked consumer publishes image-qualified pairs and services browser
+acknowledgments at subsequent raster checkpoints and resource waits, rather than
+waiting for the whole pair to finish.
 Validated interrupted handoffs are rediscovered on restart; incomplete
 trajectories are retained and never relabeled as successes.
 

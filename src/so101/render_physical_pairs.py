@@ -521,25 +521,44 @@ def acknowledge_browser(queue: Path, request_path: Path, browser_receipt: Path) 
     return acknowledgment
 
 
-def service_browser_receipts(queue: Path, output: Path, verified_stages: set[Path]) -> None:
-    """Consume completed browser evidence without waiting for the active render to finish."""
-    for evidence in sorted((output / "browser_receipts").glob("*.json")):
-        if (queue / "acknowledged" / evidence.name).exists():
-            continue
-        journal_path = output / evidence.name
-        if not journal_path.exists():
+def service_browser_receipts(queue: Path, output: Path, verified_stages: set[Path],
+                             stopping: threading.Event | None = None) -> None:
+    """Publish qualified pairs and consume evidence while subsequent renders are active."""
+    for journal_path in sorted(output.glob("*.json")):
+        if stopping is not None and stopping.is_set():
+            break
+        if (not re.fullmatch("[0-9a-f]{64}", journal_path.stem)
+                or not (queue / "ready" / journal_path.name).exists()
+                or (queue / "acknowledged" / journal_path.name).exists()):
             continue
         journal = json.loads(journal_path.read_bytes())
-        if (journal.get("status") not in ("browser_pending", "browser_verification_failed")
-                or not journal.get("publication_request")):
+        if journal.get("status") not in (
+                "image_qualified", "browser_pending", "browser_verification_failed"):
             continue
-        digest = sha256(evidence)
-        if digest == journal.get("browser_receipt_sha256"):
+        evidence = output / "browser_receipts" / journal_path.name
+        if (journal.get("publication_request") and (not evidence.exists()
+                or sha256(evidence) == journal.get("browser_receipt_sha256"))):
             continue
         stage = Path(journal["derivative_root"])
         if stage not in verified_stages:
             verify_derivative(stage)
             verified_stages.add(stage)
+        if not journal.get("publication_request"):
+            required = sum((stage / name).stat().st_size for name in (
+                "episodes.sqlite", "collection.json", "qualification.json",
+                "physical_pair_render.json", "command_0/source/parts_catalog.json",
+            ))
+            if not DiskBackpressure(output).wait(
+                    required, "publication", stopping.is_set if stopping is not None else lambda: False):
+                break
+            published = publish_derivative(stage, output)
+            request = publication_request(published, queue.parent.parent, output)
+            journal.update(published_root=str(published), publication_request=str(request),
+                           status="browser_pending")
+            atomic_json(journal_path, journal)
+        if not evidence.exists():
+            continue
+        digest = sha256(evidence)
         try:
             acknowledge_browser(queue, Path(journal["publication_request"]), evidence)
         except (ValueError, KeyError) as error:
@@ -568,7 +587,7 @@ def run(queue: Path, output: Path, stopping: threading.Event, *, once: bool = Fa
             nonlocal next_receipt_check
             if not publish or stopping.is_set() or perf_counter() < next_receipt_check:
                 return
-            service_browser_receipts(queue, output, verified_stages)
+            service_browser_receipts(queue, output, verified_stages, stopping)
             next_receipt_check = perf_counter() + 1.
 
         while not stopping.is_set():
@@ -592,22 +611,6 @@ def run(queue: Path, output: Path, stopping: threading.Event, *, once: bool = Fa
                         verify_derivative(stage)
                         verified_stages.add(stage)
                     if publish:
-                        if journal.get("publication_request"):
-                            published = Path(journal["published_root"])
-                            request = Path(journal["publication_request"])
-                        else:
-                            required = sum((stage / name).stat().st_size for name in (
-                                "episodes.sqlite", "collection.json", "qualification.json",
-                                "physical_pair_render.json", "command_0/source/parts_catalog.json",
-                            ))
-                            if not DiskBackpressure(output).wait(required, "publication", stopping.is_set):
-                                break
-                            published = publish_derivative(stage, output)
-                            request = publication_request(published, queue.parent.parent, output)
-                        journal.update(published_root=str(published), publication_request=str(request))
-                        if journal["status"] != "browser_verification_failed":
-                            journal["status"] = "browser_pending"
-                        atomic_json(journal_path, journal)
                         service_publications()
                     continue
                 attempts = journal["attempts"]

@@ -279,3 +279,54 @@ def test_browser_receipt_serviced_during_other_pair_memory_pause(
     monkeypatch.setattr(consumer, "acknowledge_browser",
                         lambda *args: pytest.fail("Unchanged receipt was processed twice"))
     consumer.service_browser_receipts(queue, output, verified)
+
+
+def test_qualified_pair_published_during_other_pair_memory_pause(published_pair, monkeypatch):
+    queue, stage, published, request, receipt = published_pair
+    output = published.parent.parent
+    receipt_bytes = receipt.read_bytes()
+    request.unlink()
+    receipt.unlink()
+    journal_path = output / request.name
+    atomic_json(journal_path, {"status": "image_qualified", "derivative_root": str(stage)})
+    monkeypatch.setattr(consumer, "memory_state",
+                        lambda: {"pressure": True, "available_bytes": consumer.MEMORY_ALLOWANCE})
+    monkeypatch.setattr(consumer.DiskBackpressure, "wait", lambda *args: True)
+    stopping = threading.Event()
+    verified = set()
+
+    def service():
+        consumer.service_browser_receipts(queue, output, verified, stopping)
+        stopping.set()
+
+    active = output / ".staging" / "later-pair"
+    active.mkdir()
+    assert consumer.wait_memory(active, stopping, service) is False
+    assert request.exists()
+    assert json.loads(journal_path.read_bytes())["status"] == "browser_pending"
+    assert not (queue / "acknowledged" / request.name).exists()
+    receipt.write_bytes(receipt_bytes)
+    consumer.service_browser_receipts(queue, output, verified)
+    assert json.loads((queue / "acknowledged" / request.name).read_bytes())["status"] == "published"
+
+
+def test_publication_disk_stop_preserves_qualified_journal(published_pair, monkeypatch):
+    queue, stage, published, request, receipt = published_pair
+    output = published.parent.parent
+    request.unlink()
+    receipt.unlink()
+    journal_path = output / request.name
+    atomic_json(journal_path, {"status": "image_qualified", "derivative_root": str(stage)})
+    stopping = threading.Event()
+
+    def stop_wait(self, required, operation, stop):
+        assert required > 0 and operation == "publication"
+        stopping.set()
+        assert stop()
+        return False
+
+    monkeypatch.setattr(consumer.DiskBackpressure, "wait", stop_wait)
+    consumer.service_browser_receipts(queue, output, set(), stopping)
+    assert json.loads(journal_path.read_bytes())["status"] == "image_qualified"
+    assert not request.exists()
+    assert not (queue / "acknowledged" / request.name).exists()
