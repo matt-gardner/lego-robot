@@ -21,7 +21,10 @@ running = subprocess.run(
     ['docker', 'ps', '--format', '{{.Names}}'], check=True,
     capture_output=True, text=True).stdout.splitlines()
 logs = {}
-paths = [root / 'sft_training.json'] if (root / 'sft_training.json').exists() else sorted(root.glob('*/sft_training.json'))
+paths = []
+for filename in ('sft_training.json', 'trajectory_rl.json'):
+    paths.extend([root / filename] if (root / filename).exists()
+                 else sorted(root.glob('*/' + filename)))
 for path in paths:
     log = json.loads(path.read_text())
     logs[pathlib.Path(log['run_config']['output']).name] = log
@@ -58,6 +61,23 @@ def sync(snapshot, output, job_id, instance_id="i-02ba0e9a61e1c68ef", container_
         raise ValueError("Remote observation is not current")
     result = []
     for name, log in snapshot["logs"].items():
+        trajectory = re.fullmatch(r"curriculum_rl_[0-9]+", name) is not None
+        if trajectory:
+            if container_name is None or "validation" not in log:
+                raise ValueError("Trajectory mirrors require an explicit container and validation log")
+            active = container_name in snapshot["running"]
+            completed = bool(log["steps"] and log["steps"][-1]["step"] >= log["run_config"]["steps"])
+            state = "running" if active else "completed" if completed else "failed"
+            destination = output / name
+            atomic_json(destination / "trajectory_rl.json", log)
+            atomic_json(destination / "remote_status.json", {
+                "state": state, "observed_at": observed, "heartbeat": observed,
+                "job_id": job_id, "instance_id": instance_id,
+                "error": None if active or completed else
+                "RL trainer is not running before its configured horizon; inspect before retrying.",
+            })
+            result.append({"arm": name, "state": state, "updates": len(log["steps"])})
+            continue
         match = re.fullmatch(
             r"entity_smolvla_sft_(?P<long>long_)?b(?P<batch>[1-9][0-9]*)_lr(?P<lr>[0-9]+e-[0-9]+)", name)
         if match is None:

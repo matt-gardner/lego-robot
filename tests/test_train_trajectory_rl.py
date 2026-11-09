@@ -653,6 +653,7 @@ def test_new_scene_constraints_reject_collision_even_when_goal_is_reached(monkey
         reset=lambda *a, **k: None, command_inputs=lambda *a: (),
         policy=Namespace(eval=lambda: None, model=model),
         action_std=np.ones(6), action_mean=np.zeros(6), observe=lambda *a: None,
+        config=Namespace(history_steps=4),
     )
     monkeypatch.setattr(trainer, "reset_from_episode", lambda *a: ("short", None, [("short", "object")]))
     monkeypatch.setattr(trainer, "replay_gold_prefix", lambda *a: (0, 0.))
@@ -680,6 +681,7 @@ def test_rejected_policy_action_reports_reason_without_relaxing_limits(monkeypat
         policy=Namespace(eval=lambda: None, config=Namespace(chunk_size=1), model=Namespace(
             sample_actions_entity_sde=lambda *a, **k: (torch.zeros(1, 1, 6), []))),
         action_std=np.ones(6), action_mean=np.zeros(6),
+        config=Namespace(history_steps=4),
     )
     monkeypatch.setattr(trainer, "reset_from_episode", lambda *a: ("short", None, []))
     monkeypatch.setattr(trainer, "replay_gold_prefix", lambda *a: (0, 0.))
@@ -695,6 +697,54 @@ def test_rejected_policy_action_reports_reason_without_relaxing_limits(monkeypat
         assert len(result.decisions) == 1
         assert result.decisions[0].executed_steps == 0
         assert result.decisions[0].attempted_steps == 1
+
+
+def test_rollout_renders_only_history_consumed_by_next_decision(monkeypatch, tmp_path):
+    from collections import deque
+    import so101.train_trajectory_rl as trainer
+
+    frames = deque([0] * 4, maxlen=4)
+    observed = []
+    decisions = []
+    sim = Namespace(
+        fps=10, frame=0, obstacle_contact_events=[],
+        position=lambda name: np.zeros(3),
+        bounded_policy_action=lambda action: (action, None),
+        encode=lambda action: action,
+    )
+
+    def step(goal, phase):
+        sim.frame += 1
+
+    def observe(sim, action):
+        observed.append(sim.frame)
+        frames.append(sim.frame)
+
+    def inputs(*args):
+        decisions.append(list(frames))
+        return ()
+
+    sim.step = step
+    controller = Namespace(
+        config=Namespace(history_steps=4),
+        reset=lambda *a, **k: None, command_inputs=inputs, observe=observe,
+        action_std=np.ones(6), action_mean=np.zeros(6),
+        policy=Namespace(eval=lambda: None, model=Namespace(
+            sample_actions_entity=lambda *args: (torch.zeros(1, 6, 6),))),
+    )
+    monkeypatch.setattr(trainer, "reset_from_episode", lambda *a: ("short", None, []))
+    monkeypatch.setattr(trainer, "replay_gold_prefix", lambda *a: (0, 0.))
+    monkeypatch.setattr(trainer, "control_phase", lambda *a: "acquire")
+    monkeypatch.setattr(trainer, "wrong_object_lift", lambda *a: False)
+    monkeypatch.setattr(trainer, "successful_step", lambda *a: False)
+    result = trainer.rollout(
+        sim, controller, CorpusEpisode(tmp_path, {"task": "grasp"}),
+        1, 15, 6, {"optimal_steps": 1., "jerk_p10": .1}, False,
+    )
+    assert result.steps == 15
+    assert decisions == [[0] * 4, [3, 4, 5, 6], [9, 10, 11, 12]]
+    assert observed == [3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15]
+    assert list(frames) == [12, 13, 14, 15]
 
 
 def test_new_scene_destination_precision_is_enforced():

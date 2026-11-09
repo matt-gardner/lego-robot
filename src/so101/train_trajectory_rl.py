@@ -330,7 +330,9 @@ def rollout(
         chunk_steps = 0
         chunk_attempts = 0
         invalid = False
-        for action in actions[:min(action_steps, horizon - executed)]:
+        chunk_length = min(len(actions), action_steps, horizon - executed)
+        history_steps = controller.config.history_steps
+        for action in actions[:chunk_length]:
             chunk_attempts += 1
             try:
                 goal, _ = sim.bounded_policy_action(action)
@@ -345,7 +347,9 @@ def rollout(
                 break
             sim.step(goal, "trajectory_rl")
             encoded = sim.encode(goal)
-            controller.observe(sim, encoded)
+            # Only the trailing history survives until the next policy decision.
+            if chunk_steps >= chunk_length - history_steps:
+                controller.observe(sim, encoded)
             executed_actions.append(encoded)
             if recorder is not None:
                 recorder.step(sim, encoded)

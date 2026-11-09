@@ -494,6 +494,32 @@ restart RL, or provision cloud resources.
 
 ### Long assisted trajectory RL
 
+For a cloud SFT full-state checkpoint and its frozen episode database,
+`python scripts/prepare_rl_transition.py --state <training_state.pt> --database
+<episodes.sqlite> --destination <new-directory>` exports an initial standalone
+policy plus byte-preserved `episode.json`/`frames.jsonl` references, without
+copying images or modifying the SFT state. Run RL from that directory with
+`--checkpoint initial_policy --collection data/simulation/rl_transition`.
+Provide the simulator model separately and set `MUJOCO_GL=egl` before Python
+starts on CUDA. This is a new RL optimizer, not a resumption of SFT Adam state.
+The transition receipt identifies the exact SFT update and source checksums.
+Online rollouts render only the trailing observation history of each action
+chunk. Earlier frames would be evicted before the next policy decision;
+physics, per-frame success/constraint checks, and optional rollout evidence
+remain unchanged. With 16-action chunks and four-frame history this avoids
+12 unused RGB renders per complete chunk.
+
+For off-instance recovery, `scripts/publish_rl_checkpoint.py` validates and
+publishes the atomic RL state (trainable projection delta, Adam, sampling RNG,
+curriculum and history), bound to a dependency tar containing matching source,
+`data_split.json`, the transition receipt, original input manifest and
+versioned SFT recovery receipt. Reconstruct the frozen initial policy from
+that SFT state before applying the RL delta; the delta alone is not a full
+model. Use a fresh task-owned `--root` per publication and `--profile
+lego-artifacts` only when publishing from the authorized operator environment;
+worker instances use their instance profile. Keep the resulting receipt,
+including both dependency and state-manifest versions, with the run.
+
 ```sh
 PYTORCH_MPS_HIGH_WATERMARK_RATIO=.65 PYTORCH_MPS_LOW_WATERMARK_RATIO=.5 \
 OMP_NUM_THREADS=2 uv run --locked python -m so101.train_trajectory_rl \
