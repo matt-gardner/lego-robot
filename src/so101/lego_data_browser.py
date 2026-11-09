@@ -14,6 +14,87 @@ from so101.generation_order import generation_order
 from so101.part_preview import thumbnail, visual_geometry
 
 
+def catalog_summary(path: Path) -> dict:
+    """Read catalog headers and readiness counts without retaining the part array."""
+    decoder = json.JSONDecoder()
+    with path.open(encoding="utf-8") as stream:
+        buffer = ""
+        eof = False
+
+        def fill() -> None:
+            nonlocal buffer, eof
+            chunk = stream.read(65536)
+            eof = not chunk
+            buffer += chunk
+            if len(buffer) > 8 * 1024 * 1024:
+                raise ValueError("Catalog entry exceeds summary reader limit")
+
+        def whitespace() -> None:
+            nonlocal buffer
+            buffer = buffer.lstrip()
+            while not buffer and not eof:
+                fill()
+                buffer = buffer.lstrip()
+
+        def token(expected: str) -> None:
+            nonlocal buffer
+            whitespace()
+            if not buffer.startswith(expected):
+                raise ValueError(f"Invalid catalog JSON: expected {expected}")
+            buffer = buffer[len(expected):]
+
+        def value():
+            nonlocal buffer
+            whitespace()
+            while True:
+                try:
+                    result, end = decoder.raw_decode(buffer)
+                    if end == len(buffer) and not eof:
+                        fill()
+                        continue
+                    buffer = buffer[end:]
+                    return result
+                except json.JSONDecodeError:
+                    if eof:
+                        raise ValueError("Invalid or truncated catalog JSON") from None
+                    fill()
+
+        token("{")
+        metadata = {}
+        verified = 0
+        while True:
+            key = value()
+            if not isinstance(key, str) or key in metadata:
+                raise ValueError("Invalid or duplicate catalog field")
+            token(":")
+            if key == "parts":
+                token("[")
+                whitespace()
+                if not buffer.startswith("]"):
+                    while True:
+                        part = value()
+                        if not isinstance(part, dict):
+                            raise ValueError("Invalid catalog part")
+                        verified += part.get("status") == "verified"
+                        whitespace()
+                        if buffer.startswith("]"):
+                            break
+                        token(",")
+                token("]")
+                metadata[key] = True
+            else:
+                metadata[key] = value()
+            whitespace()
+            if buffer.startswith("}"):
+                break
+            token(",")
+        token("}")
+        whitespace()
+        if buffer:
+            raise ValueError("Trailing catalog JSON content")
+        return {**metadata, "validated_parts": verified}
+
+
 class LegoDataBrowser:
     def __init__(self, workspace: Path, catalog_root: Path | None = None,
                  episode_root: Path | None = None):
@@ -55,6 +136,10 @@ class LegoDataBrowser:
         return path
 
     def releases(self, selected: str | None = None) -> dict[str, dict]:
+        with self.lock:
+            return self._releases(selected)
+
+    def _releases(self, selected: str | None = None) -> dict[str, dict]:
         releases = {}
         notices = self.notices()
         for kind in ("parts", "examples"):
@@ -71,8 +156,12 @@ class LegoDataBrowser:
                 summary = self.release_summaries.get(key)
                 if summary is None or selected is not None:
                     if kind == "parts":
-                        content = path.read_bytes()
-                        metadata = json.loads(content)
+                        if selected is None:
+                            metadata = catalog_summary(path)
+                            content = None
+                        else:
+                            content = path.read_bytes()
+                            metadata = json.loads(content)
                         if "parts" not in metadata:
                             continue
                         if metadata.get("schema_version") != 1:
@@ -85,7 +174,7 @@ class LegoDataBrowser:
                                 "SELECT content FROM catalog"
                             ).fetchone()[0]
                         version = metadata.get("release_id", path.stem)
-                    digest = hashlib.sha256(content).hexdigest()
+                    digest = artifact_digest if content is None else hashlib.sha256(content).hexdigest()
                     if self.artifact_hash(path) != artifact_digest:
                         raise ValueError("Release changed while reading metadata")
                     summary = {
@@ -93,7 +182,8 @@ class LegoDataBrowser:
                         "path": relative, "catalog_sha256": digest,
                         "artifact_sha256": artifact_digest,
                         "generated_at": metadata.get("generated_at") if kind == "examples" else None,
-                        "validated_parts": (sum(row.get("status") == "verified" for row in metadata["parts"])
+                        "validated_parts": (metadata["validated_parts"] if kind == "parts" and selected is None else
+                                            sum(row.get("status") == "verified" for row in metadata["parts"])
                                             if kind == "parts" else 0),
                     }
                     self.release_summaries[key] = summary

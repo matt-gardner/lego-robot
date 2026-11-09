@@ -7,7 +7,7 @@ from urllib.request import urlopen
 
 import pytest
 
-from so101.lego_data_browser import LegoDataBrowser
+from so101.lego_data_browser import LegoDataBrowser, catalog_summary
 from so101.generation_order import generation_order
 
 
@@ -24,6 +24,59 @@ def catalog(tmp_path, version="v1"):
         ],
     }))
     return path
+
+
+def test_catalog_summary_streams_parts_and_keeps_trailing_headers(tmp_path):
+    path = tmp_path / "catalog.json"
+    metadata = {"catalog_id": "large", "parts": [
+        {"part_id": str(index), "status": "verified" if index % 2 else "unavailable",
+         "description": 'escaped quote " and brace } ' * 30}
+        for index in range(6000)
+    ], "schema_version": 1}
+    path.write_text(json.dumps(metadata))
+    tracemalloc.start()
+    try:
+        summary = catalog_summary(path)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert summary == {"catalog_id": "large", "parts": True, "schema_version": 1,
+                       "validated_parts": 3000}
+    assert peak < 1024 * 1024
+
+
+@pytest.mark.parametrize("content", ['{"parts":[{}', '{"parts":[]} trailing'])
+def test_catalog_summary_rejects_truncated_or_trailing_json(tmp_path, content):
+    path = tmp_path / "catalog.json"
+    path.write_text(content)
+    with pytest.raises(ValueError):
+        catalog_summary(path)
+
+
+def test_concurrent_discovery_reads_cold_catalog_once(tmp_path, monkeypatch):
+    catalog(tmp_path)
+    browser = LegoDataBrowser(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    results = []
+    def summarize(path):
+        calls.append(path)
+        entered.set()
+        assert release.wait(5)
+        return catalog_summary(path)
+    monkeypatch.setattr("so101.lego_data_browser.catalog_summary", summarize)
+    first = threading.Thread(target=lambda: results.append(browser.releases()))
+    second = threading.Thread(target=lambda: results.append(browser.releases()))
+    first.start()
+    assert entered.wait(5)
+    second.start()
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert len(calls) == 1
+    assert len(results) == 2 and results[0] == results[1]
 
 
 def episode_release(tmp_path):
@@ -306,6 +359,11 @@ def test_warm_discovery_reuses_payload_summary_but_refreshes_notices(tmp_path, m
     release = browser.list({})["releases"][0]
     original_read = type(path).read_bytes
     reads = []
+    summaries = []
+    def summarize(candidate):
+        summaries.append(candidate)
+        return catalog_summary(candidate)
+    monkeypatch.setattr("so101.lego_data_browser.catalog_summary", summarize)
     def read(candidate):
         reads.append(candidate)
         return original_read(candidate)
@@ -323,7 +381,7 @@ def test_warm_discovery_reuses_payload_summary_but_refreshes_notices(tmp_path, m
     assert path not in reads
     path.write_text(path.read_text() + "\n")
     assert browser.list({})["releases"][0]["id"] != release["id"]
-    assert path in reads
+    assert summaries == [path]
 
 
 def test_catalog_discovery_does_not_traverse_release_assets(tmp_path):

@@ -459,6 +459,9 @@ Original curriculum recordings use cached native H.264 video combining both
 recorded cameras at their recorded frame rate, without MuJoCo reconstruction.
 Native preparation retries transient gateway errors twice; a persistent failure
 returns the control to Play for an explicit retry rather than showing a false Pause state.
+Catalog discovery is serialized across dashboard consumers and streams part
+summaries without retaining full part arrays. Selected catalog details still
+load the complete metadata, and artifact fingerprints still verify original bytes.
 Preparation uses the existing bounded movie worker and byte-range serving; the
 frame selector retains exact context for comments without fetching images during
 video playback.
