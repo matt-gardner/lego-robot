@@ -99,7 +99,8 @@ def verify_log(log: dict, trial: dict, reference: dict) -> None:
     for row in log["steps"]:
         if (row["samples_seen"] != row["step"] * trial["batch_size"]
                 or row["batch_size"] != trial["batch_size"]
-                or row["micro_batch_size"] != 16
+                or row["micro_batch_size"] != min(
+                    trial["batch_size"], config.get("micro_batch_size", 16))
                 or not all(math.isfinite(row[name]) for name in ("loss", "gradient_norm"))):
             raise RuntimeError("Incorrect exposure, microbatching, or non-finite update")
     if not math.isclose(log["steps"][-1]["learning_rate"], trial["learning_rate"], rel_tol=1e-12):

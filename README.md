@@ -405,6 +405,10 @@ Adaptive LR/batch trials may reuse an evaluated CUDA step-zero checkpoint only
 when it has no optimizer updates or Adam moments. They retain identical model,
 RNG, and frozen evaluation inputs, record the cached baseline's provenance, and
 save their own step-zero checkpoint. Later evaluations still run normally.
+Complete exports validate the standalone model, full optimizer/RNG state, frozen
+probe, and all retained quarter checkpoints against the untrained trial recipe.
+`scripts/verify_adaptive_gpu_exports.py` independently confirms their immutable
+S3 versions, sizes, and SHA-256 checksums before instance termination.
 
 ### Sample-matched local SFT sweeps
 
