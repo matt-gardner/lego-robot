@@ -410,6 +410,17 @@ probe, and all retained quarter checkpoints against the untrained trial recipe.
 `scripts/verify_adaptive_gpu_exports.py` independently confirms their immutable
 S3 versions, sizes, and SHA-256 checksums before instance termination.
 
+For the long B64/LR3e-5 duration experiment,
+`scripts/prepare_extended_training.py` extends a completed CUDA/micro8
+checkpoint while preserving its exact model, Adam, RNG, and evaluation history.
+It records the original recipe and source checksum, and preserves the original
+number of warmup updates: continuation neither restarts warmup nor decays LR.
+`scripts/stage_long_gpu_training.py` restores version-pinned inputs and launches
+this continuation on a new GPU. Its 16,384-update horizon is provisional;
+duration conclusions apply only to the frozen sweep dataset, not subsequently
+expanded or corrected data. Dashboard sync accepts the new host, instance,
+remote output directory, pinned host-key file, and exact container identity.
+
 ### Sample-matched local SFT sweeps
 
 ```sh
@@ -439,7 +450,8 @@ Equal exposure is only a compute proxy; wall time, optimizer overhead, valid
 label counts and sampling streams can differ. Adam betas remain fixed.
 The dashboard's SFT plots use logged cumulative `samples_seen` rather than
 optimizer step, aligning different batch sizes at equal training exposure.
-Frozen-set supervised loss includes the zero-sample baseline. Tooltips retain
+Validation loss (fixed held-out set) uses the frozen-set supervised loss,
+including the zero-sample baseline. Tooltips retain
 optimizer step for diagnosis; historical points without sample counts are
 omitted explicitly, not estimated from batch size. RL plots keep their step axis.
 Timing distinguishes optimizer-only duration from elapsed time since the reported

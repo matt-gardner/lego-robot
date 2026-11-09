@@ -53,9 +53,9 @@ const sftSections = [
     ].map(metric => ({...metric, phase: "train", task: "all", unit: "", logLog: true,
       note: "Losses are normalized by valid action/entity labels, not summed across the batch. No additional batch-size division. Missing components remain gaps, not zeros."}))},
   {...sections[0], id: "sft-eval"},
-  {id: "sft-frozen-loss", title: "Sample-matched frozen-set loss",
-    note: "Frozen set · training samples", open: true,
-    metrics: [{key: "supervised_loss", title: "Frozen supervised loss", phase: "eval", task: "all", unit: "",
+  {id: "sft-frozen-loss", title: "Validation loss (fixed held-out set)",
+    note: "Fixed held-out set · training samples", open: true,
+    metrics: [{key: "supervised_loss", title: "Validation loss", phase: "eval", task: "all", unit: "",
       note: "Fixed evaluation examples, diffusion noise and time. Equal training samples are a compute proxy, not equal FLOPs or elapsed time."}]},
   ...["grasp", "view", "push", "place"].map(task => ({
     ...sections[0], id: `sft-eval-${task}`, title: `${task[0].toUpperCase()}${task.slice(1)} eval metrics`,

@@ -118,6 +118,12 @@ test("SFT plots align different batch sizes by logged samples, retaining optimiz
   page.eval(`state.runs.get("11111111").series = [{phase:"eval",task:"all",points:[
     {step:0,samples_seen:0,supervised_loss:4}]}];`);
   assert.equal(page.eval('seriesFor({key:"supervised_loss",phase:"eval",task:"all"})[0].values[0].x'), 0);
+  const validation = page.eval("state.charts.find(c => c.metric.key === 'supervised_loss')");
+  assert.equal(validation.section.hidden, false);
+  assert.equal(validation.section.open, true);
+  assert.equal(validation.metric.title, "Validation loss");
+  assert.equal(page.eval("sftSections.find(s => s.id === 'sft-frozen-loss').title"),
+    "Validation loss (fixed held-out set)");
 });
 
 test("data browser prefixes catalog requests and image/movie endpoints", async () => {
