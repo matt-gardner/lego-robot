@@ -155,6 +155,33 @@ def test_curriculum_archive_appears_with_creation_date_and_original_views(datase
     (archive_root / "copy.sqlite").write_bytes(archive.read_bytes())
     assert browser.list(None, {})["curriculum_example_count"] == 1
     assert browser.list(None, {})["items"][0]["id"] == row["id"]
+    derivative = archive_root / "derivative"
+    derivative.mkdir()
+    derived_archive = derivative / "episodes.sqlite"
+    derived_archive.write_bytes(archive.read_bytes())
+    derived_metadata = {**metadata, "release_id": "derived-release",
+                        "physical_pair_render": {
+                            "kind": "lego-physical-pair-render", "source_has_images": False,
+                            "unique_training_data_claim": False, "derivative_release_id": "derived-release"}}
+    content = json.dumps(derived_metadata).encode()
+    with sqlite3.connect(derived_archive) as db:
+        db.execute("UPDATE files SET content=?,sha256=? WHERE name='episode.json'",
+                   (content, hashlib.sha256(content).hexdigest()))
+    receipt = {"release_id": "derived-release", "image_qualified": True, "sft_qualified": True,
+               "publication_status": "published",
+               "storage_sha256": hashlib.sha256(derived_archive.read_bytes()).hexdigest()}
+    (derivative / "qualification.json").write_text(json.dumps(receipt))
+    rows = browser.list(None, {})["items"]
+    original = next(item for item in rows if item["id"] == row["id"])
+    derived = next(item for item in rows if item.get("media_origin") == "derived_cpu_raster")
+    assert original["archive_item"] == derived["archive_item"]
+    assert original["id"] != derived["id"]
+    assert browser.list(None, {"archive_release": derived["archive_release"]})["total"] == 1
+    detail = browser.detail(None, "examples", derived["id"])
+    assert detail["original_recording"] is False
+    assert detail["paired_camera_images"] is True and detail["movie_available"] is True
+    assert detail["qualification"] == receipt
+    assert detail["feedback"]["item"]["id"] == original["archive_item"]
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="Native recording encoder requires ffmpeg")

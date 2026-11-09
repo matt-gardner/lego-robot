@@ -37,9 +37,25 @@ agent-message endpoint or writing under Matt's identity.
 ## Implementation and activation
 
 Reuse the existing dashboard and data browser, keeping current run views and
-labels intact. The current browser reads directory episode metadata and does
-not automatically browse arbitrary SQLite releases: implement an explicit
-read-only adapter rather than assume discovery or extraction.
+labels intact. The browser reads directory episode metadata and immutable EpisodeStorage
+SQLite releases through its read-only adapter; hidden staging paths are excluded.
+
+Physical-pair raster derivatives retain source example/family IDs and splits,
+but have distinct artifact-bound release and dashboard view IDs. They must carry
+`physical_pair_render` provenance and a matching `qualification.json` with
+image/sample validation and storage hash. These views are labeled **Derived CPU
+raster**, never original camera recordings or additional unique training data.
+Physical source acceptance, image/sample qualification, visual audit and training
+admission remain separate claims.
+
+Publication verification uses `/api/lego?release=<artifact-bound-release-id>&item=<source-example-id>`
+for provenance/frame identity, and `/api/data/all?archive_release=<artifact-bound-release-id>`
+for the exact derivative-only population. Its returned dashboard item ID selects
+details and native video through the existing `view=examples&item=<dashboard-id>`
+endpoints. Native encoding reads archived derivative images without rerunning
+physics. Original releases and their IDs/labels remain unchanged. A published
+acknowledgment requires immutable publication and live projection/media evidence;
+staging or physical success alone does not satisfy it.
 
 Own frontend/backend dashboard changes, focused tests, managed activation and
 live verification. Coordinate file ownership with realism and curriculum

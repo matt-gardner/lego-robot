@@ -304,8 +304,24 @@ class LegoDataBrowser:
                 if hashlib.sha256(content).hexdigest() != digest:
                     raise ValueError(f"Episode checksum mismatch: {source}")
                 metadata = json.loads(content)
+                derivative = metadata.get("physical_pair_render")
+                if derivative is not None:
+                    qualification = release.get("qualification")
+                    if (not isinstance(derivative, dict)
+                            or derivative.get("kind") != "lego-physical-pair-render"
+                            or derivative.get("source_has_images") is not False
+                            or derivative.get("unique_training_data_claim") is not False
+                            or derivative.get("derivative_release_id") != metadata.get("release_id")
+                            or not isinstance(qualification, dict)
+                            or qualification.get("image_qualified") is not True
+                            or qualification.get("sft_qualified") is not True
+                            or qualification.get("publication_status") != "published"
+                            or qualification.get("release_id") != metadata.get("release_id")):
+                        raise ValueError("Invalid or unqualified physical-pair render")
                 rows.append({
                     **metadata,
+                    "media_origin": "derived_cpu_raster" if derivative else "original_recordings",
+                    "qualification": release.get("qualification") if derivative else None,
                     "category": metadata.get("category", metadata.get("tags", {}).get("category")),
                     "id": metadata.get("example_id", hashlib.sha256(source.encode()).hexdigest()),
                     "source": source,

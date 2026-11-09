@@ -33,6 +33,7 @@ function endpoint(params, run = trainingContext) {
 function text(tag, value) { const node = document.createElement(tag); node.textContent = value; return node; }
 const percent = value => `${Math.round(100 * value)}%`;
 function image(item, view, frame) { return endpoint({view, item: item.id, image: frame}); }
+function pairedImages(item) { return item?.paired_camera_images || item?.original_recording; }
 function preview(item, view, frame, caption) {
   const figure = document.createElement("figure"), img = document.createElement("img");
   img.loading = "lazy"; img.alt = caption; img.src = endpoint({view, item: item.id, image: frame}, "");
@@ -64,13 +65,16 @@ function renderCard(item, view) {
         const scope = text("p", item.split === "development" ? "Generated example · Development only" : `Generated example · ${item.split || "Split not recorded"}`);
         scope.title = "Generated examples are not automatically promoted to training data.";
         card.append(scope);
+        if (item.media_origin === "derived_cpu_raster") card.append(text("p", "Derived CPU raster"));
       }
     }
     const source = {...item, id: item.example_id || item.id};
     images.append(preview(source, "examples", "overview", view === "rollouts"
       ? "Expert scene reference (NOT this rollout)"
-      : curriculum ? "Recorded external view" : item.difficulty?.provenance === "task-difficulty-v1" ? "Initial scene overview" : "Expert diagnostic overview"));
-    if (view !== "rollouts") images.append(preview(source, "examples", "initial", curriculum ? "Recorded wrist view" : "Source initial wrist view"));
+      : item.media_origin === "derived_cpu_raster" ? "Derived external view"
+        : curriculum ? "Recorded external view" : item.difficulty?.provenance === "task-difficulty-v1" ? "Initial scene overview" : "Expert diagnostic overview"));
+    if (view !== "rollouts") images.append(preview(source, "examples", "initial",
+      item.media_origin === "derived_cpu_raster" ? "Derived wrist view" : curriculum ? "Recorded wrist view" : "Source initial wrist view"));
   }
   card.append(images);
   if (view === "rollouts") {
@@ -134,10 +138,11 @@ function showFrame(seek = true) {
     if (wrist.getAttribute("src") !== source) wrist.src = source;
   }
   $("frame-value").textContent = `${frame + 1}/${detail.frames.length} | policy/source step ${detail.frames[frame].step}`;
-  if (detail.original_recording && !$("detail-preview").hidden) {
+  if (pairedImages(detail) && !$("detail-preview").hidden) {
     const external = image(detail, detail.view, `external:${frame}`);
     if ($("detail-overview").getAttribute("src") !== external) $("detail-overview").src = external;
-    $("overview-caption").textContent = "Original external camera / same recorded frame";
+    $("overview-caption").textContent = detail.original_recording
+      ? "Original external camera / same recorded frame" : "Derived external view / same archived frame";
   }
   if (seek && wristPlayback) {
     wristPlayback.originTime = Date.now();
@@ -151,7 +156,7 @@ function showFrame(seek = true) {
 function updatePlayButton() {
   const video = $("detail-movie"), combined = !!video.getAttribute("src");
   $("play-movie").disabled = combined ? !detail?.movie_available : !detail?.frames.length;
-  $("play-movie").textContent = `${playbackWanted ? "Pause" : "Play"} ${combined ? "combined view" : detail?.original_recording ? detail.movie_available ? "recorded video" : "recorded views" : "wrist view"}`;
+  $("play-movie").textContent = `${playbackWanted ? "Pause" : "Play"} ${combined ? "combined view" : pairedImages(detail) ? detail.movie_available ? "recorded video" : "recorded views" : "wrist view"}`;
 }
 function stopWristPlayback() {
   if (wristPlayback) clearTimeout(wristPlayback.timer);
@@ -170,7 +175,7 @@ function startWristPlayback() {
     originTime: Date.now(), originStep: selected.frames[Number($("frame").value)].step, timer: null,
   };
   wristPlayback = state;
-  if (selected.original_recording) {
+  if (pairedImages(selected)) {
     function recordedTick() {
       if (version !== detailRequest || !$("detail").open || wristPlayback !== state) return;
       const frame = Number($("frame").value);
@@ -188,7 +193,7 @@ function startWristPlayback() {
         updatePlayButton();
         return;
       }
-      $("movie-status").textContent = `Original wrist and external recordings: frame ${frame + 1}/${selected.frames.length}. No MuJoCo reconstruction is needed.`;
+      $("movie-status").textContent = `${selected.original_recording ? "Original recordings" : "Derived CPU raster"}: frame ${frame + 1}/${selected.frames.length}.`;
       if (frame === selected.frames.length - 1) {
         stopWristPlayback();
         playbackWanted = false;
@@ -278,7 +283,7 @@ async function playMovie() {
     updatePlayButton();
     return;
   }
-  if (detail.original_recording && detail.movie_available) {
+  if (pairedImages(detail) && detail.movie_available) {
     playbackWanted = !playbackWanted;
     if (!moviePreparation) prepareMovie();
     updatePlayButton();
@@ -296,8 +301,8 @@ async function playMovie() {
 }
 async function loadMovie(version, selected, video) {
   updatePlayButton();
-  const preparing = selected.original_recording
-    ? "Preparing native video from original camera recordings..."
+  const preparing = pairedImages(selected)
+    ? selected.original_recording ? "Preparing native video from original camera recordings..." : "Preparing native video from derived CPU raster views..."
     : "Preparing synchronized views (first playback may take up to 3 minutes)...";
   $("movie-status").textContent = preparing;
   try {
@@ -347,7 +352,7 @@ async function loadMovie(version, selected, video) {
   } catch (e) {
     if (version === detailRequest) {
       if (!wristPlayback) playbackWanted = false;
-      $("movie-status").textContent = selected.original_recording
+      $("movie-status").textContent = pairedImages(selected)
         ? `Video unavailable: ${e.message} Press Play to retry.`
         : `Combined view unavailable: ${e.message}. Recorded wrist playback remains available.`;
       video.onloadedmetadata = null;
@@ -385,15 +390,16 @@ async function showDetail(item, view) {
   $("data-run").disabled = result.origin === "curriculum";
   renderTrajectoryNavigation();
   updatePlayButton();
-  $("movie-status").textContent = result.original_recording
-    ? `${result.frames.length} original camera frames; ${result.movie_available ? "native video prepares automatically" : "combined video unavailable: a recorded camera is missing"}. No MuJoCo reconstruction is needed.`
+  $("movie-status").textContent = pairedImages(result)
+    ? `${result.frames.length} ${result.original_recording ? "original camera" : "derived CPU raster"} frames; ${result.movie_available ? "native video prepares automatically" : "paired camera missing"}.`
     : result.movie_available ? result.playback_description : "No retained trajectory recording is available for playback.";
   $("detail-title").textContent = `${item.task} / ${item.target}`;
   $("detail-kind").textContent = view === "rollouts"
     ? result.evidence_status === "available" ? `ACTUAL POLICY ROLLOUT | Step ${item.step} | assistance ${percent(item.assistance)} | ${result.scope}`
       : result.evidence_status === "expired" ? "POLICY SUMMARY ONLY: recording expired under retention limit."
         : "POLICY SUMMARY ONLY: this historical rollout did not record images or actions."
-    : result.original_recording ? "CURRICULUM EXAMPLE - original recordings; development is not training promotion."
+    : result.media_origin === "derived_cpu_raster" ? "DERIVED CPU RASTER"
+      : result.original_recording ? "CURRICULUM EXAMPLE - original recordings; development is not training promotion."
       : trainingContext ? "SOURCE DEMONSTRATION - training history below is for the selected run."
       : "SOURCE DEMONSTRATION - select a training context below to inspect run usage and policy recordings.";
   $("frame-label").hidden = !result.frames.length;
@@ -407,7 +413,9 @@ async function showDetail(item, view) {
     $("frame").max = result.frames.length - 1; $("frame").value = 0; showFrame();
   } else $("detail-image").removeAttribute("src");
   plotActions(result.actions);
-  $("trace-note").textContent = result.original_recording
+  $("trace-note").textContent = result.media_origin === "derived_cpu_raster"
+    ? "Derived CPU raster views of archived physical states."
+    : result.original_recording
     ? "Native video combines the original camera recordings, not reconstructed MuJoCo views. Frame controls retain exact recorded context for comments."
     : result.actions.length ? "Commanded arm joint positions (degrees), five joints. Gripper excluded. Play the recorded wrist view immediately while synchronized video prepares. The source overview stays static until the combined video is ready; playback then continues there at the selected position. Reconstructed views are explicitly labeled." : "No historical trajectory can be reconstructed from summary metrics alone.";
   const {metadata, source_history, frames, actions, states, qpos, recorded_trajectories, ...summary} = result;

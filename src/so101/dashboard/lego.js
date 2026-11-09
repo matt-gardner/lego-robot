@@ -256,7 +256,8 @@ async function legoOpen(release, item) {
         if (request === legoDetailRequest) legoElement("preview-status").textContent = `Geometry unavailable: ${error.message}`;
       }
     } else {
-      legoElement("preview-status").textContent = "Recorded example";
+      legoElement("preview-status").textContent = row.media_origin === "derived_cpu_raster"
+        ? "Derived CPU raster" : "Recorded example";
       legoElement("recording").hidden = false;
       legoElement("example-scope").textContent = `Split: ${row.split}. ${row.expert_acceptance}. ` +
         (detail.release.qualification?.scope || "Training membership is not inferred from success.");
@@ -343,7 +344,7 @@ async function legoLoad() {
       if (row.mjcf || legoExamples) {
         const image = document.createElement("img");
         image.loading = "lazy";
-        image.alt = legoExamples ? `Original wrist image: ${row.target_label || row.task}` :
+        image.alt = legoExamples ? `${row.media_origin === "derived_cpu_raster" ? "Derived" : "Original"} wrist image: ${row.target_label || row.task}` :
           `${row.description || row.part_id} visual geometry`;
         image.src = legoMedia(legoExamples ? {release, item: row.id, frame: 0, camera: "wrist"} :
           {release, item: row.id, preview: "image"});

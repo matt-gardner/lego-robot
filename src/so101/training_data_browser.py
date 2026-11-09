@@ -209,13 +209,18 @@ class TrainingDataBrowser:
                 for release in sorted((row for row in curriculum_releases.values() if row["kind"] == "examples"),
                                       key=generation_order):
                     for archived in self.curriculum.rows(release):
-                        if archived["id"] in seen:
+                        derived = bool(archived.get("physical_pair_render"))
+                        identity = (archived["id"], release["id"]) if derived else archived["id"]
+                        if identity in seen:
                             continue
-                        seen.add(archived["id"])
-                        key = identifier(f"curriculum:{archived['id']}")
+                        seen.add(identity)
+                        key = identifier(f"curriculum:{archived['id']}"
+                                         + (f":derived:{release['id']}" if derived else ""))
                         examples[key] = {
                             **archived, "id": key, "example_id": key, "origin": "curriculum",
                             "archive_release": release["id"], "archive_item": archived["id"],
+                            "media_origin": "derived_cpu_raster" if derived else "original_recordings",
+                            "qualification": release.get("qualification"),
                             "target": archived.get("target_label", archived.get("target", "not recorded")),
                             "difficulty": archived.get("difficulty"),
                             "difficulty_level": (archived.get("difficulty") or {}).get("level", "unrated"),
@@ -270,6 +275,8 @@ class TrainingDataBrowser:
         rows = []
         for row in index[view].values():
             example = index["examples"][row.get("example_id", row["id"])]
+            if query.get("archive_release") and row.get("archive_release") != query["archive_release"]:
+                continue
             if query.get("task", "all") not in ("all", row["task"]):
                 continue
             if query.get("difficulty", "all") not in ("all", str(row["difficulty_level"])):
@@ -325,15 +332,18 @@ class TrainingDataBrowser:
             if self.curriculum is None:
                 raise ValueError("Curriculum archive adapter is unavailable")
             archived = self.curriculum.list({"release": row["archive_release"], "item": row["archive_item"]})
+            derived = row.get("media_origin") == "derived_cpu_raster"
             return {**row, "metadata": archived["item"], "example_id": row["id"],
                     "feedback": {key: archived[key] for key in ("release", "item", "frames")},
                     "frames": [{"step": frame["frame_index"], **frame} for frame in archived["frames"]],
                     "actions": [], "movie_available": bool(archived["frames"]) and all(
                         frame["wrist"] and frame["external"] for frame in archived["frames"]),
-                    "original_recording": True,
+                    "original_recording": not derived, "paired_camera_images": True,
                     "source_history": [], "recorded_trajectories": [], "source_rollout_total": 0,
-                    "playback_description": "Native video of original synchronized wrist and external recordings; "
-                    "no MuJoCo reconstruction. Development examples are not promoted training data."}
+                    "playback_description": (
+                        "Derived CPU raster views of archived physical states."
+                        if derived else "Original synchronized wrist and external recordings."
+                    )}
         metadata = json.loads((self.source_path(row["source"]) / "episode.json").read_text())
         result = {**row, "metadata": metadata, "source_history": example["history"][-100:],
                   "source_history_total": len(example["history"]), "example_id": example["id"]}

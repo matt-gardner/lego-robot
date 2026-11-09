@@ -201,6 +201,21 @@ test("native preparation recovers a transient gateway error without per-frame pl
   assert.equal(p.run("wristPlayback"), null);
 });
 
+test("derived raster views use native archived images without claiming original recordings", async () => {
+  const p = page();
+  p.context.fetch = async route => route.includes("movie=prepare")
+    ? response(200, {ready: true})
+    : response(200, {...recording("derived"), original_recording: false,
+      paired_camera_images: true, media_origin: "derived_cpu_raster",
+      playback_description: "Derived CPU raster views of archived physical states."});
+  await p.run('showDetail({id:"derived"}, "examples")');
+  await p.run("moviePreparation.promise");
+  assert.equal(p.element("detail-movie").hidden, false);
+  assert.equal(p.element("detail-kind").textContent, "DERIVED CPU RASTER");
+  assert.doesNotMatch(p.element("movie-status").textContent, /original|reconstruct/i);
+  assert.equal(p.run("wristPlayback"), null);
+});
+
 test("failed native preparation resets Pause to Play and allows an exact retry", async () => {
   const p = page();
   let resolve;
