@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import copy
 from datetime import datetime, timezone
 import fcntl
@@ -39,9 +40,12 @@ MAX_RETRIES = 3
 BROWSER_BASE = "http://127.0.0.1:8765/lego-robot"
 
 
-def wait_memory(root: Path, stopping: threading.Event) -> bool:
+def wait_memory(root: Path, stopping: threading.Event,
+                service_publications: Callable[[], None] | None = None) -> bool:
     paused = False
     while not stopping.is_set():
+        if service_publications is not None:
+            service_publications()
         memory = memory_state()
         if not memory["pressure"] and memory["available_bytes"] >= MEMORY_ALLOWANCE:
             if paused:
@@ -160,7 +164,13 @@ def check_image(image: np.ndarray) -> None:
         raise ImageRejected("Missing, malformed or uniform paired-camera image")
 
 
-def render_pair(manifest_path: Path, destination: Path, stopping: threading.Event) -> dict:
+def render_pair(manifest_path: Path, destination: Path, stopping: threading.Event,
+                service_publications: Callable[[], None] | None = None) -> dict:
+    def checkpoint() -> bool:
+        if not stopping.is_set() and service_publications is not None:
+            service_publications()
+        return stopping.is_set()
+
     started = perf_counter()
     manifest_hash = sha256(manifest_path)
     manifest, report = verify_handoff(manifest_path)
@@ -225,9 +235,9 @@ def render_pair(manifest_path: Path, destination: Path, stopping: threading.Even
                 for index, row in enumerate(rows):
                     if stopping.is_set():
                         raise InterruptedError("Raster consumer stopped; partial derivative retained")
-                    if not wait_memory(destination, stopping):
+                    if not wait_memory(destination, stopping, service_publications):
                         raise InterruptedError("Raster consumer stopped during memory pause")
-                    if not disk.wait(1024**2, "rendering", stopping.is_set):
+                    if not disk.wait(1024**2, "rendering", checkpoint):
                         raise InterruptedError("Raster consumer stopped during storage pause")
                     sim.data.qvel[:] = row["qvel"]
                     sim.data.ctrl[:] = row["ctrl"]
@@ -276,7 +286,7 @@ def render_pair(manifest_path: Path, destination: Path, stopping: threading.Even
     atomic_json(destination / "collection.json", collection)
     stage_started = perf_counter()
     if not disk.wait(2 * sum(p.stat().st_size for p in destination.rglob("*") if p.is_file()),
-                     "sample-qualification", stopping.is_set):
+                     "sample-qualification", checkpoint):
         raise InterruptedError("Stopped before sample qualification")
     try:
         qualification = qualify_pair(destination)
@@ -511,6 +521,36 @@ def acknowledge_browser(queue: Path, request_path: Path, browser_receipt: Path) 
     return acknowledgment
 
 
+def service_browser_receipts(queue: Path, output: Path, verified_stages: set[Path]) -> None:
+    """Consume completed browser evidence without waiting for the active render to finish."""
+    for evidence in sorted((output / "browser_receipts").glob("*.json")):
+        if (queue / "acknowledged" / evidence.name).exists():
+            continue
+        journal_path = output / evidence.name
+        if not journal_path.exists():
+            continue
+        journal = json.loads(journal_path.read_bytes())
+        if (journal.get("status") not in ("browser_pending", "browser_verification_failed")
+                or not journal.get("publication_request")):
+            continue
+        digest = sha256(evidence)
+        if digest == journal.get("browser_receipt_sha256"):
+            continue
+        stage = Path(journal["derivative_root"])
+        if stage not in verified_stages:
+            verify_derivative(stage)
+            verified_stages.add(stage)
+        try:
+            acknowledge_browser(queue, Path(journal["publication_request"]), evidence)
+        except (ValueError, KeyError) as error:
+            LOGGER.error("Browser acknowledgment failed %s: %s", evidence, error)
+            journal.update(status="browser_verification_failed", reason=str(error))
+        else:
+            journal["status"] = "published"
+        journal["browser_receipt_sha256"] = digest
+        atomic_json(journal_path, journal)
+
+
 def run(queue: Path, output: Path, stopping: threading.Event, *, once: bool = False,
         publish: bool = False) -> None:
     """Sequential raster admission; publication acknowledgment requires host browser evidence."""
@@ -522,7 +562,17 @@ def run(queue: Path, output: Path, stopping: threading.Event, *, once: bool = Fa
     with (queue / ".raster-consumer.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         verified_stages = set()
+        next_receipt_check = 0.
+
+        def service_publications() -> None:
+            nonlocal next_receipt_check
+            if not publish or stopping.is_set() or perf_counter() < next_receipt_check:
+                return
+            service_browser_receipts(queue, output, verified_stages)
+            next_receipt_check = perf_counter() + 1.
+
         while not stopping.is_set():
+            service_publications()
             admitted = False
             for path in sorted((queue / "ready").glob("*.json")):
                 if stopping.is_set():
@@ -557,17 +607,8 @@ def run(queue: Path, output: Path, stopping: threading.Event, *, once: bool = Fa
                         journal.update(published_root=str(published), publication_request=str(request))
                         if journal["status"] != "browser_verification_failed":
                             journal["status"] = "browser_pending"
-                        evidence = output / "browser_receipts" / path.name
-                        if evidence.exists() and sha256(evidence) != journal.get("browser_receipt_sha256"):
-                            try:
-                                acknowledge_browser(queue, request, evidence)
-                            except (ValueError, KeyError) as error:
-                                LOGGER.error("Browser acknowledgment failed %s: %s", path, error)
-                                journal.update(status="browser_verification_failed", reason=str(error))
-                            else:
-                                journal["status"] = "published"
-                            journal["browser_receipt_sha256"] = sha256(evidence)
                         atomic_json(journal_path, journal)
+                        service_publications()
                     continue
                 attempts = journal["attempts"]
                 if len(attempts) >= MAX_RETRIES or (attempts and attempts[-1]["retry_after"] > time()):
@@ -595,7 +636,7 @@ def run(queue: Path, output: Path, stopping: threading.Event, *, once: bool = Fa
                 admitted = True
                 started = perf_counter()
                 try:
-                    receipt = render_pair(path, destination, stopping)
+                    receipt = render_pair(path, destination, stopping, service_publications)
                 except ImageRejected as error:
                     LOGGER.error("Raster image rejection %s: %s", path, error)
                     (queue / "acknowledged").mkdir(exist_ok=True)

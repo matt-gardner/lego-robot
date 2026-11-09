@@ -241,3 +241,41 @@ def test_browser_ack_requires_exact_derived_pair_evidence(published_pair, damage
     with pytest.raises(ValueError):
         consumer.acknowledge_browser(queue, request, receipt)
     assert not (queue / "acknowledged").exists()
+
+
+@pytest.mark.parametrize("invalid_receipt", [False, True])
+def test_browser_receipt_serviced_during_other_pair_memory_pause(
+        published_pair, monkeypatch, invalid_receipt):
+    queue, stage, published, request, receipt = published_pair
+    output = published.parent.parent
+    journal_path = output / request.name
+    atomic_json(journal_path, {
+        "status": "browser_pending", "derivative_root": str(stage),
+        "publication_request": str(request), "published_root": str(published),
+    })
+    if invalid_receipt:
+        evidence = json.loads(receipt.read_bytes())
+        evidence["request_sha256"] = "c" * 64
+        atomic_json(receipt, evidence)
+    active = output / ".staging" / "later-pair"
+    active.mkdir()
+    partial = active / "frames.jsonl"
+    partial.write_text('{"qpos": [0.]}\n')
+    monkeypatch.setattr(consumer, "memory_state",
+                        lambda: {"pressure": True, "available_bytes": consumer.MEMORY_ALLOWANCE})
+    stopping = threading.Event()
+    verified = set()
+
+    def service():
+        consumer.service_browser_receipts(queue, output, verified)
+        stopping.set()
+
+    assert consumer.wait_memory(active, stopping, service) is False
+    ack = queue / "acknowledged" / request.name
+    assert ack.exists() is not invalid_receipt
+    journal = json.loads(journal_path.read_bytes())
+    assert journal["status"] == ("browser_verification_failed" if invalid_receipt else "published")
+    assert partial.read_text() == '{"qpos": [0.]}\n'
+    monkeypatch.setattr(consumer, "acknowledge_browser",
+                        lambda *args: pytest.fail("Unchanged receipt was processed twice"))
+    consumer.service_browser_receipts(queue, output, verified)
