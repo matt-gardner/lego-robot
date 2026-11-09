@@ -497,7 +497,9 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                     self.respond(404, {"error": "Not found"})
                     return
                 path = path[len(base_path):]
-            if path == "/api/lego":
+            if path == "/api/health":
+                self.respond(200, {"healthy": True})
+            elif path == "/api/lego":
                 query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
                 try:
                     with lego_browser.lock:

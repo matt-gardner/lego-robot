@@ -462,6 +462,8 @@ returns the control to Play for an explicit retry rather than showing a false Pa
 Catalog discovery is serialized across dashboard consumers and streams part
 summaries without retaining full part arrays. Selected catalog details still
 load the complete metadata, and artifact fingerprints still verify original bytes.
+`/api/health` checks HTTP service readiness without loading catalogs or archives;
+catalog/data readiness and recorded-video playback require separate verification.
 Preparation uses the existing bounded movie worker and byte-range serving; the
 frame selector retains exact context for comments without fetching images during
 video playback.

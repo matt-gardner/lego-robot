@@ -79,6 +79,23 @@ def test_concurrent_discovery_reads_cold_catalog_once(tmp_path, monkeypatch):
     assert len(results) == 2 and results[0] == results[1]
 
 
+def test_http_health_does_not_discover_or_hash_archives(tmp_path, monkeypatch):
+    from so101.rl_dashboard import make_server
+    def unexpected_discovery(*args, **kwargs):
+        pytest.fail("Health must not load catalog or episode artifacts")
+    monkeypatch.setattr(LegoDataBrowser, "releases", unexpected_discovery)
+    server = make_server(tmp_path, "127.0.0.1", 0, "/lego-robot")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.server_port}/lego-robot/api/health") as response:
+            assert json.load(response) == {"healthy": True}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 def episode_release(tmp_path):
     root = tmp_path / "data"
     root.mkdir(exist_ok=True)
