@@ -26,3 +26,17 @@ def test_dynamic_and_original_container_names_remain_active(tmp_path, name, cont
     assert status["state"] == "running"
     assert status["phase"] == "training"
     assert status["error"] is None
+
+
+@pytest.mark.parametrize("running,state", [(["long-container"], "running"),
+                                          (["long-container-other"], "failed")])
+def test_long_run_uses_new_instance_and_exact_container_identity(tmp_path, running, state):
+    name = "entity_smolvla_sft_long_b64_lr3e-05"
+    module.sync({
+        "observed_at": time.time(), "running": running,
+        "logs": {name: {"status": "training", "steps": [{"step": 385}]}},
+    }, tmp_path, "new-job", instance_id="new-instance", container_name="long-container")
+    status = json.loads((tmp_path / name / "remote_status.json").read_text())
+    assert status["state"] == state
+    assert status["instance_id"] == "new-instance"
+    assert status["job_id"] == "new-job"
