@@ -76,10 +76,16 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(evidence["verification_attempts"], 755)
         self.assertEqual(evidence["total_parts"], 24985)
         self.assertEqual(evidence["release"]["catalog_sha256"], "b" * 64)
+        self.assertEqual(api.call_args_list[0].args[0], {"inventory": "parts"})
+        self.assertEqual(result["inventory_scope"], "parts")
         self.assertEqual(api.call_args_list[2].args[0],
                          {"release": "a" * 64, "status": "unavailable", "limit": "1"})
 
     def test_status_rejects_changed_publication_or_invalid_counts(self):
+        responses = self.status_responses()
+        responses[0]["releases"][0]["kind"] = "examples"
+        with self.assertRaisesRegex(ValueError, "non-parts"):
+            self.invoke_status(responses)
         for change in ({"release": {"id": "changed"}}, {"total": -1}, {"total": True}):
             responses = self.status_responses()
             responses[1] = {**responses[1], **change}

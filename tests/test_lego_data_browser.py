@@ -11,6 +11,20 @@ from so101.lego_data_browser import LegoDataBrowser, catalog_summary
 from so101.generation_order import generation_order
 
 
+def test_parts_inventory_preserves_notices_and_excludes_large_example_receipts(tmp_path, monkeypatch):
+    browser = LegoDataBrowser(tmp_path, tmp_path)
+    parts = {"id": "parts", "kind": "parts", "qualification_notices": [{"status": "invalidated"}]}
+    example = {"id": "example", "kind": "examples",
+               "qualification": {"evidence": "x" * (2 * 1024 * 1024)}}
+    monkeypatch.setattr(browser, "releases", lambda: {"parts": parts, "example": example})
+    assert browser.list({"inventory": "parts"})["releases"] == [parts]
+    assert len(json.dumps(browser.list({"inventory": "parts"}))) < 1024
+    assert len(browser.list({})["releases"]) == 2
+    for query in ({"inventory": "unknown"}, {"inventory": "parts", "release": "parts"}):
+        with pytest.raises(ValueError, match="Inventory"):
+            browser.list(query)
+
+
 def catalog(tmp_path, version="v1"):
     root = tmp_path / "data" / version
     root.mkdir(parents=True)

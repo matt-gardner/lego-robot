@@ -234,7 +234,7 @@ def status() -> dict:
         trusted(path)
         if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
             raise ValueError(f"Managed source hash mismatch: {name}")
-    releases = catalog_api().get("releases")
+    releases = catalog_api({"inventory": "parts"}).get("releases")
     if not isinstance(releases, list) or not 1 <= len(releases) <= 256:
         raise ValueError("Live catalog must contain 1..256 releases")
     fields = ("id", "kind", "version", "path", "catalog_sha256", "artifact_sha256",
@@ -244,6 +244,8 @@ def status() -> dict:
     for release in releases:
         if not isinstance(release, dict):
             raise ValueError("Invalid live catalog release")
+        if release.get("kind") != "parts":
+            raise ValueError("Live parts inventory contains a non-parts release")
         for field in ("id", "catalog_sha256", "artifact_sha256"):
             if not re.fullmatch(r"[0-9a-f]{64}", str(release.get(field, ""))):
                 raise ValueError(f"Invalid live catalog {field}")
@@ -273,6 +275,7 @@ def status() -> dict:
         raise ValueError("Live catalog verified count disagrees with release summary")
     result = {"active": True, "healthy": True, "pid": pid, "source": str(source),
               "publication": publication, "catalog_api": CATALOG_URL,
+              "inventory_scope": "parts",
               "release_count": len(releases), "parts_release_count": len(parts),
               "omitted_parts_releases": len(parts) - len(recent),
               "release_selection": "newest eight parts publications plus required v17",

@@ -57,6 +57,14 @@ physics. Original releases and their IDs/labels remain unchanged. A published
 acknowledgment requires immutable publication and live projection/media evidence;
 staging or physical success alone does not satisfy it.
 
+Managed catalog status uses `/api/lego?inventory=parts` to verify immutable parts
+publications without transferring unrelated example qualification receipts.
+This projection retains complete parts release summaries and qualification notices;
+the default inventory and selected-release browser responses are unchanged. The
+managed verifier retains its response-size and release-count limits and rejects
+non-parts rows explicitly. Its release counts describe the parts inventory only;
+data/media verification remains separate.
+
 Own frontend/backend dashboard changes, focused tests, managed activation and
 live verification. Coordinate file ownership with realism and curriculum
 workers. No GPU, training, hardware motion or deletion of historical data.

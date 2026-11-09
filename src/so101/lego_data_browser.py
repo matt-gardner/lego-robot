@@ -448,8 +448,13 @@ class LegoDataBrowser:
             return content, content_type
 
     def list(self, query: dict[str, str]) -> dict:
+        inventory = query.get("inventory", "")
+        if inventory not in ("", "parts") or (inventory and query.get("release")):
+            raise ValueError("Inventory must be parts without a selected release")
         if not query.get("release"):
             releases = list(self.releases().values())
+            if inventory == "parts":
+                releases = [row for row in releases if row["kind"] == "parts"]
             releases = ([row for row in releases if row["kind"] == "parts"] +
                         sorted((row for row in releases if row["kind"] == "examples"),
                                key=generation_order))
