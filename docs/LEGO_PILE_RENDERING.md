@@ -123,3 +123,13 @@ Rerunning the exact same implementation/profile checks completed outputs and
 restarts an incomplete episode from its saved poses; it never changes originals.
 Mitsuba and the normal MuJoCo/OpenCV runtime are optional rendering dependencies;
 use an isolated environment, not a host-mounted virtual environment.
+
+An already-running renderer loads its inventory once; changing that file does
+not remove tasks from the active process. For an explicitly requested task
+exclusion, stop the owned worker without deleting partial outputs, then run
+`so101.pathtrace_queue --output <derived-root> --exclude-task view` against the
+same frozen renderer package/profile. The dispatcher preserves the original
+inventory, writes `selected_inventory.json`, verifies completed containers and
+resumes incomplete non-excluded releases. It rejects mixed-task pairs and any
+existing excluded derivatives rather than deleting them. Completion counts
+refer to the selected inventory, not the superseded original population.
