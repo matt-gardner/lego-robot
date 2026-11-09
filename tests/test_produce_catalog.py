@@ -95,6 +95,7 @@ def test_recording_pause_precedes_camera_writes_and_simulation_steps(tmp_path, m
     sim = object.__new__(CatalogSimulation)
     sim.episode_root = tmp_path
     sim.rows = []
+    sim.record_images = True
 
     class Paused(Exception):
         pass

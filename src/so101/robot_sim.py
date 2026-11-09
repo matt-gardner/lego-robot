@@ -276,7 +276,11 @@ class BeamSimulation:
                  model: mujoco.MjModel | None = None, scene_version: int = SCENE_VERSION,
                  appearance: RendererAppearance | None = None,
                  object_names: tuple[str, ...] = OBJECT_NAMES,
-                 distractor_names: tuple[str, ...] = tuple(DISTRACTOR_SIZES)):
+                 distractor_names: tuple[str, ...] = tuple(DISTRACTOR_SIZES),
+                 record_images: bool = True):
+        if not record_images and render:
+            raise ValueError("Trajectory-only recording must disable rendering")
+        self.record_images = record_images
         self.model_root = model_root
         self.scene_version = scene_version
         self.appearance = appearance
@@ -1008,22 +1012,34 @@ class BeamSimulation:
         if substeps < 1:
             raise ValueError("Recording FPS exceeds physics timestep resolution")
         target = np.clip(target, self.limits[:, 0], self.limits[:, 1])
+        capture_started = time.perf_counter()
         if self.episode_root is not None:
             row = {
                 "index": len(self.rows), "elapsed": self.data.time - self.frame_start,
                 "camera_elapsed": self.data.time - self.frame_start, "camera_age": 0.,
                 "state": self.state().tolist(), "action": self.encode(target).tolist(),
                 "qpos": self.data.qpos.tolist(),
-                "image": f"wrist/{len(self.rows):06}.jpg", "phase": phase,
+                "phase": phase,
             }
             if self.active_target is not None and not self.command_entities:
                 self.command_entities = [(self.active_target, "object")]
-            if self.command_entities and self.renderer is not None:
+            row.update(
+                command_roles=[role for _, role in self.command_entities],
+                command_entity_ids=[entity for entity, _ in self.command_entities],
+            )
+            if self.record_images and self.command_entities and self.renderer is not None:
                 row.update(self._recording_command_labels())
-            path = self.episode_root / row["image"]
-            if not cv2.imwrite(str(path), cv2.cvtColor(self.image(), cv2.COLOR_RGB2BGR)):
-                raise RuntimeError(f"Failed to save {path}")
+            if self.record_images:
+                row["image"] = f"wrist/{len(self.rows):06}.jpg"
+                path = self.episode_root / row["image"]
+                if not cv2.imwrite(str(path), cv2.cvtColor(self.image(), cv2.COLOR_RGB2BGR)):
+                    raise RuntimeError(f"Failed to save {path}")
+            else:
+                row.update(qvel=self.data.qvel.tolist(), ctrl=self.data.ctrl.tolist(),
+                           act=self.data.act.tolist())
             self.rows.append(row)
+        capture_seconds = time.perf_counter() - capture_started
+        physics_started = time.perf_counter()
         self.data.ctrl[self.actuators] = target
         interval_penetration = 0.
         interval_table_penetration = 0.
@@ -1056,6 +1072,11 @@ class BeamSimulation:
             )
         if not np.isfinite(self.data.qpos).all() or any(w.number for w in self.data.warning):
             raise RuntimeError("Simulation became unstable")
+        if self.episode_root is not None and not self.record_images:
+            self.rows[-1]["timings_seconds"] = {
+                "trajectory_capture": capture_seconds,
+                "physics_step_and_contact_checks": time.perf_counter() - physics_started,
+            }
 
     def move(self, target: np.ndarray, phase: str, *, seconds: float | None = None):
         start = self.data.ctrl[self.actuators].copy()

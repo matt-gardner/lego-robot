@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+from time import perf_counter
 
 import cv2
 import mujoco
@@ -45,7 +46,8 @@ def load_appearance(path: Path) -> RendererAppearance:
     return implementations[profile_id](path)
 
 
-def validate_recording(root: Path, metadata: dict, rows: list[dict], nq: int) -> None:
+def validate_recording(root: Path, metadata: dict, rows: list[dict], nq: int,
+                       *, physical_only: bool = False) -> None:
     validate_clean_expert(metadata, rows)
     fps = metadata.get("fps")
     if type(fps) not in (int, float) or not np.isfinite(fps) or fps <= 0:
@@ -63,11 +65,17 @@ def validate_recording(root: Path, metadata: dict, rows: list[dict], nq: int) ->
             values = np.asarray(row.get(key), dtype=float)
             if values.shape != (count,) or not np.isfinite(values).all():
                 raise ValueError(f"Invalid catalog recording {key}")
+        if physical_only:
+            for key, count in metadata["physical_state_dimensions"].items():
+                values = np.asarray(row.get(key), dtype=float)
+                if values.shape != (count,) or not np.isfinite(values).all():
+                    raise ValueError(f"Invalid physical trajectory {key}")
         if (not np.isfinite(row["elapsed"])
                 or abs(row["elapsed"] - index / metadata["fps"]) > 1e-7):
             raise ValueError("Catalog recording has incorrect pre-action timing")
-        for key in ("command_boxes", "command_visibility", "command_depth_m",
-                    "command_depth_valid"):
+        for key in (() if physical_only else (
+            "command_boxes", "command_visibility", "command_depth_m", "command_depth_valid"
+        )):
             values = np.asarray(row.get(key), dtype=float)
             shape = (len(identities), 5) if key == "command_boxes" else (len(identities),)
             if values.shape != shape or not np.isfinite(values).all():
@@ -77,6 +85,10 @@ def validate_recording(root: Path, metadata: dict, rows: list[dict], nq: int) ->
             depth = row.get(key, float("inf"))
             if not np.isfinite(depth) or not 0 <= depth <= limit:
                 raise ValueError(f"Invalid or excessive catalog recording {key}")
+        if physical_only:
+            if any(key in row for key in ("image", "external_image", "command_boxes")):
+                raise ValueError("Physical trajectory unexpectedly contains rendered output")
+            continue
         for key in ("image", "external_image"):
             name = row.get(key)
             if not isinstance(name, str):
@@ -92,8 +104,11 @@ def validate_recording(root: Path, metadata: dict, rows: list[dict], nq: int) ->
                 raise ValueError(f"Uniform catalog image: {path}")
 
 
-def record_pair(sim: CatalogSimulation, output: Path) -> dict:
+def record_pair(sim: CatalogSimulation, output: Path, *, physical_only: bool = False) -> dict:
     """Accept a scene pair only when both independently recorded commands pass."""
+    if physical_only and (sim.record_images or sim.renderer is not None):
+        raise ValueError("Physical-only collection requires a non-rendering simulator")
+    pair_started = perf_counter()
     output.mkdir(parents=True, exist_ok=False)
     (output / "model.xml").write_text(sim.xml)
     mujoco.mj_saveModel(sim.model, str(output / "model.mjb"), None)
@@ -157,6 +172,8 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         "scene_archive_sha256": archive_hashes,
         "tags": sim.plan["tags"], "attempts": [], "successful_episodes": [],
     }
+    if physical_only:
+        report.update(qualification_stage="physical-only", images_pending=True)
     report["release_id"] = hashlib.sha256(json.dumps(
         [report["scene_id"], report["generator_sha256"], report["renderer"], archive_hashes],
         sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -169,11 +186,14 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         report.update(scene_family_id=sim.plan["scene_family_id"], split=sim.plan["split"])
     atomic_json(output / "collection.json", report)
     candidates = []
+    archive_seconds = perf_counter() - pair_started
     for index, command in enumerate(sim.plan["commands"]):
         sim.restore_initial()
         root = output / f"command_{index}"
-        (root / "wrist").mkdir(parents=True)
-        (root / "external").mkdir()
+        root.mkdir(parents=True)
+        if not physical_only:
+            (root / "wrist").mkdir()
+            (root / "external").mkdir()
         for name in archive_hashes:
             os.link(output / name, root / name)
         shutil.copytree(source, root / "source", copy_function=os.link)
@@ -194,6 +214,13 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         }
         if "scene_family_id" in report:
             metadata.update(scene_family_id=report["scene_family_id"], split=report["split"])
+        if physical_only:
+            metadata.update(qualification_stage="physical-only", images_pending=True)
+            metadata["physical_state_dimensions"] = {
+                "qvel": sim.model.nv, "ctrl": sim.model.nu, "act": sim.model.na,
+            }
+        execution_started = perf_counter()
+        validation_seconds = 0.
         try:
             sim.observe_recovery_start(
                 command["object_instance_id"], command["task"], command["destination_id"],
@@ -202,12 +229,31 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
             metadata["outcome"] = "success" if result["success"] else "failed"
             metadata["verification"] = result
             if result["success"]:
-                validate_recording(root, metadata, sim.rows, sim.model.nq)
+                validation_started = perf_counter()
+                validate_recording(root, metadata, sim.rows, sim.model.nq,
+                                   physical_only=physical_only)
+                validation_seconds = perf_counter() - validation_started
         except (ValueError, RuntimeError) as error:
             LOGGER.error("Catalog command %s failed: %s", command["command_id"], error)
             metadata["outcome"] = "failed"
             metadata["verification"] = {"success": False, "reason": str(error)}
         metadata.update(frames=len(sim.rows), duration=len(sim.rows) / sim.fps)
+        if physical_only:
+            metadata["timings_seconds"] = {
+                "execution_including_physics": perf_counter() - execution_started - validation_seconds,
+                "trajectory_validation": validation_seconds,
+                "physics_step_and_contact_checks": sum(
+                    row["timings_seconds"]["physics_step_and_contact_checks"]
+                    for row in sim.rows if "timings_seconds" in row
+                ),
+                "trajectory_capture": sum(
+                    row["timings_seconds"]["trajectory_capture"]
+                    for row in sim.rows if "timings_seconds" in row
+                ),
+            }
+            metadata["completed_step_timing_count"] = sum(
+                "timings_seconds" in row for row in sim.rows
+            )
         if metadata["outcome"] == "failed":
             try:
                 state = capture_scene_state(sim.model, sim.data, sim.xml, sim.plan,
@@ -222,7 +268,8 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
             for row in sim.rows:
                 stream.write(json.dumps(row, allow_nan=False) + "\n")
         if metadata["outcome"] == "success":
-            metadata["generated_at"] = datetime.now(timezone.utc).isoformat()
+            timestamp_key = "trajectory_generated_at" if physical_only else "generated_at"
+            metadata[timestamp_key] = datetime.now(timezone.utc).isoformat()
         atomic_json(root / "episode.json", metadata)
         if metadata["outcome"] == "success":
             candidates.append(str(root.resolve()))
@@ -233,10 +280,16 @@ def record_pair(sim: CatalogSimulation, output: Path) -> dict:
         atomic_json(output / "collection.json", report)
     if len(candidates) == 2:
         report["successful_episodes"] = candidates
-        report["status"] = "complete"
-        report["generated_at"] = datetime.now(timezone.utc).isoformat()
+        report["status"] = "physically_validated" if physical_only else "complete"
+        timestamp_key = "trajectory_generated_at" if physical_only else "generated_at"
+        report[timestamp_key] = datetime.now(timezone.utc).isoformat()
     else:
         report["status"] = "incomplete"
+    if physical_only:
+        report["timings_seconds"] = {
+            "archive_setup": archive_seconds,
+            "pair_recording_and_validation": perf_counter() - pair_started,
+        }
     atomic_json(output / "collection.json", report)
     sim.episode_root = None
     return report

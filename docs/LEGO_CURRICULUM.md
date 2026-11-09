@@ -1,8 +1,46 @@
 # Workstream 4: Continuous LEGO data curriculum
 
-Approved by Matt November 8, 2026. This dedicated session owns curriculum,
-producer, deterministic checks, recovery extraction and visual sanity audits.
-Catalog, dashboard, realism and host integration have separate owners.
+Approved by Matt November 8, 2026. This dedicated session owns scene preparation,
+physics-only trajectories, clean paired physical validation, stage timings and
+the accepted-pair handoff. Rendering, image-dependent qualification and browser
+publication are downstream responsibilities. Catalog and host integration have
+separate owners.
+
+## Physics-first generation and downstream handoff
+
+`python -m so101.produce_physical_catalog` runs the manipulation-only schedule
+without constructing a renderer or writing images. It records pre-action full
+qpos, qvel, actuator state/control, encoded robot state/action, phase, elapsed
+simulation time and command identities/roles. Native physics and clean
+single-pass checks remain active; both commands independently restore the same
+settled state. Failed or interrupted attempts never enter the rendering queue.
+
+Accepted pairs have collection status `physically_validated`, not `complete`.
+The immutable schema-version-1 `lego-physical-pair` manifest in
+`render_queue/ready/<release_id>.json` contains the source pair root, file hashes,
+two example IDs, protected family/split membership and wall-clock stage timings.
+It explicitly marks `images_pending: true` and `sft_qualified: false`.
+The downstream worker restores each saved pre-action qpos and calls
+`mj_forward`; it must not replay controls, mutate physical source files or
+infer image/SFT qualification from physical success. Recompute image-dependent
+labels from the rendering model and retain explicit derivative provenance.
+
+The manifest and source files remain in place. Once downstream processing has
+finished, the consumer writes `render_queue/acknowledged/<release_id>.json`
+with matching `release_id` and terminal status `published` or `image_rejected`.
+The producer uses those acknowledgments only for backpressure, not promotion.
+Admission reserves 2 GiB within a 4 GiB outstanding-queue budget and pauses on
+memory pressure or insufficient memory/disk capacity. No source data is deleted.
+Validated interrupted handoffs are rediscovered on restart; incomplete
+trajectories are retained and never relabeled as successes.
+
+Measured wall timings include proposal, construction/settling, paired execution
+and physical validation, and handoff packaging. Each episode additionally
+separates physics/contact-check time, trajectory capture time and numeric
+validation time. These are nested measurements, not additive stages.
+`timing_<sequence>.json` records the final packaging duration; the manifest
+contains the preceding stage timings. Failed-stage elapsed times are explicit.
+Existing image-producing collectors remain legacy interfaces, not this process.
 
 `wrist-cad-v6` is an explicit recording profile restoring the original upstream
 robot CAD jaw visuals, rather than the unmeasured tapered cosmetic sleeves in

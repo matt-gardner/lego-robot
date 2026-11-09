@@ -33,8 +33,11 @@ class CatalogSimulation(BeamSimulation):
         stationarity_metric: str = "legacy-component-v1",
         velocity_tolerance: float = .005,
         before_recording_write: Callable[[], None] | None = None,
+        record_images: bool = True,
     ):
         self.before_recording_write = before_recording_write
+        if not record_images and render:
+            raise ValueError("Trajectory-only recording must disable rendering")
         root = ET.fromstring(scene_xml(model_root, SCENE_VERSION))
         if contact_solver == "pyramidal-v1":
             option = root.find("option")
@@ -68,7 +71,7 @@ class CatalogSimulation(BeamSimulation):
         model = mujoco.MjModel.from_xml_string(self.xml)
         names = tuple(obj["instance_id"] for obj in plan["objects"])
         super().__init__(model_root, model=model, render=False,
-                         object_names=names, distractor_names=())
+                         object_names=names, distractor_names=(), record_images=record_images)
         self.catalog = catalog
         self.plan = plan
         self.appearance = appearance
@@ -202,7 +205,9 @@ class CatalogSimulation(BeamSimulation):
                                position_tolerance=.0002, rotation_tolerance=.01)
 
     def step(self, target: np.ndarray, phase: str):
-        if self.episode_root is None:
+        if self.episode_root is None or not self.record_images:
+            if self.episode_root is not None and self.before_recording_write is not None:
+                self.before_recording_write()
             return super().step(target, phase)
         if self.before_recording_write is not None:
             self.before_recording_write()
