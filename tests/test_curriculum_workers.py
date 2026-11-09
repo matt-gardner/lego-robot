@@ -19,9 +19,11 @@ def test_pressure_prevents_admission_and_affinity_bounds_parallelism():
                         resident_bytes=[1000], pressure=False) == 1
 
 
-@pytest.mark.parametrize("pressure,expected_workers", [(False, 2), (True, 1)])
+@pytest.mark.parametrize("pressure,expected_workers,retire", [
+    (False, 2, False), (True, 1, False), (False, 2, True),
+])
 def test_supervisor_fans_out_after_matching_measurement_and_stops_children(
-    tmp_path, monkeypatch, pressure, expected_workers
+    tmp_path, monkeypatch, pressure, expected_workers, retire
 ):
     commands, processes, killed = [], {}, []
     monkeypatch.setattr("so101.curriculum_workers.recipe",
@@ -29,9 +31,14 @@ def test_supervisor_fans_out_after_matching_measurement_and_stops_children(
     monkeypatch.setattr("so101.curriculum_workers.shutil.which", lambda name: "/usr/bin/ionice")
     monkeypatch.setattr("so101.curriculum_workers.os.sched_getaffinity", lambda pid: {0, 1})
     monkeypatch.setattr("so101.curriculum_workers.memory_state",
-                        lambda: {"available_bytes": 8 * 1024**2, "pressure": pressure})
+                        lambda: {"available_bytes": 8 * 1024**2,
+                                 "pressure": pressure or (retire and len(commands) >= 2)})
     monkeypatch.setattr("so101.curriculum_workers.process_state", lambda pid: processes.get(pid))
-    monkeypatch.setattr("so101.curriculum_workers.os.kill", lambda pid, sig: killed.append(pid))
+    def kill(pid, sig):
+        killed.append(pid)
+        if retire:
+            processes.pop(pid, None)
+    monkeypatch.setattr("so101.curriculum_workers.os.kill", kill)
     class Child:
         def __init__(self, command, **kwargs):
             self.pid = 8000 + len(commands)
@@ -45,7 +52,7 @@ def test_supervisor_fans_out_after_matching_measurement_and_stops_children(
                               "peak_rss_kib": 1024}],
             }))
         def poll(self):
-            return None
+            return -15 if retire and self.pid not in processes else None
         def wait(self):
             processes.pop(self.pid, None)
             return 0
@@ -53,7 +60,7 @@ def test_supervisor_fans_out_after_matching_measurement_and_stops_children(
     class Stop:
         cycles = 0
         def is_set(self):
-            return self.cycles == 3
+            return self.cycles == (6 if retire else 3)
         def wait(self, seconds):
             self.cycles += 1
     root = tmp_path / "supervisor"

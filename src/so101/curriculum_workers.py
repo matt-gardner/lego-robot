@@ -93,7 +93,10 @@ def supervise(root: Path, catalog: Path, appearance: Path, part_ids: list[str],
                     if process is None or process[0] == "Z" or process[1] != worker["start"]:
                         child = children.pop(index, None)
                         code = child.poll() if child is not None else None
-                        if code not in (None, 0):
+                        expected_termination = (
+                            worker["status"] == "stopping" and code == -signal.SIGTERM
+                        )
+                        if code not in (None, 0) and not expected_termination:
                             raise RuntimeError(f"Worker {index} exited {code}; inspect {worker['log']}")
                         worker["status"] = "exited"
                         worker["returncode"] = code
