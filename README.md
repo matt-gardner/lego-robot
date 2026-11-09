@@ -457,6 +457,8 @@ intake receipt clears browser storage. Confirmed comments are not kept as histor
 or shown on other examples. Sign-in appears only on an actual authentication rejection.
 Original curriculum recordings use cached native H.264 video combining both
 recorded cameras at their recorded frame rate, without MuJoCo reconstruction.
+Native preparation retries transient gateway errors twice; a persistent failure
+returns the control to Play for an explicit retry rather than showing a false Pause state.
 Preparation uses the existing bounded movie worker and byte-range serving; the
 frame selector retains exact context for comments without fetching images during
 video playback.

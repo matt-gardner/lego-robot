@@ -188,6 +188,38 @@ test("original archive prepares native video, autoplays on readiness and avoids 
   assert.equal(routes.filter(route => route.includes("movie=prepare")).length, 1);
 });
 
+test("native preparation recovers a transient gateway error without per-frame playback", async () => {
+  const p = page();
+  let attempts = 0;
+  p.context.fetch = async route => route.includes("movie=prepare")
+    ? ++attempts === 1 ? response(502, null, "text/html") : response(200, {ready: true})
+    : response(200, {...recording("native"), original_recording: true});
+  await p.run('showDetail({id:"native"}, "examples")');
+  await p.run("moviePreparation.promise");
+  assert.equal(attempts, 2);
+  assert.equal(p.element("detail-movie").hidden, false);
+  assert.equal(p.run("wristPlayback"), null);
+});
+
+test("failed native preparation resets Pause to Play and allows an exact retry", async () => {
+  const p = page();
+  let resolve;
+  p.context.fetch = async route => route.includes("movie=prepare")
+    ? new Promise(done => { resolve = done; })
+    : response(200, {...recording("native"), original_recording: true});
+  await p.run('showDetail({id:"native"}, "examples")');
+  await p.run("playMovie()");
+  const pending = p.run("moviePreparation.promise");
+  resolve(response(500, {error: "encoder failed"}));
+  await pending;
+  assert.equal(p.run("playbackWanted"), false);
+  assert.equal(p.run("moviePreparation"), null);
+  assert.match(p.element("play-movie").textContent, /^Play/);
+  assert.match(p.element("movie-status").textContent, /encoder failed.*Press Play to retry/);
+  await p.run("playMovie()");
+  assert.notEqual(p.run("moviePreparation"), null);
+});
+
 test("HTML gateway and sign-in responses are not parsed as JSON", async () => {
   const p = page();
   p.context.fetch = async () => ({

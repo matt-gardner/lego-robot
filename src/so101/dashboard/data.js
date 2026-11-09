@@ -14,11 +14,15 @@ async function get(url) {
     const message = response.redirected
       ? "Sign-in may have expired. Refresh the page and sign in again."
       : `Gateway returned HTTP ${response.status} instead of JSON. Retry or refresh the page.`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
   const body = await response.json();
   if (!response.ok) {
-    throw new Error(body.error || `HTTP ${response.status}`);
+    const error = new Error(body.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -299,8 +303,19 @@ async function loadMovie(version, selected, video) {
   try {
     const prepareURL = endpoint({view: selected.view, item: selected.id, movie: "prepare"});
     const deadline = Date.now() + 6 * 60 * 1000;
+    let gatewayFailures = 0;
     while (true) {
-      const status = await get(prepareURL);
+      let status;
+      try {
+        status = await get(prepareURL);
+        gatewayFailures = 0;
+      } catch (error) {
+        if (version !== detailRequest || !$("detail").open) return false;
+        if (![502, 504].includes(error.status) || ++gatewayFailures > 2 || Date.now() >= deadline) throw error;
+        $("movie-status").textContent = "Video preparation connection interrupted. Retrying...";
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
       if (version !== detailRequest || !$("detail").open) return false;
       if (status.ready) break;
       if (Date.now() >= deadline) throw new Error("Playback preparation timed out. Retry playback.");
@@ -331,7 +346,10 @@ async function loadMovie(version, selected, video) {
     return true;
   } catch (e) {
     if (version === detailRequest) {
-      $("movie-status").textContent = `Combined view unavailable: ${e.message}. Recorded wrist playback remains available.`;
+      if (!wristPlayback) playbackWanted = false;
+      $("movie-status").textContent = selected.original_recording
+        ? `Video unavailable: ${e.message} Press Play to retry.`
+        : `Combined view unavailable: ${e.message}. Recorded wrist playback remains available.`;
       video.onloadedmetadata = null;
       video.removeAttribute("src"); video.load(); video.hidden = true;
       $("detail-preview").hidden = !selected.frames.length;
