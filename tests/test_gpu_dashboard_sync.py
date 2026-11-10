@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,3 +69,62 @@ def test_trajectory_mirror_rejects_path_escape(tmp_path):
             "observed_at": time.time(), "running": [],
             "logs": {"../escaped": {"rl_estimator": "denoising-grpo"}},
         }, tmp_path, "job", container_name="rl-container")
+
+
+@pytest.mark.parametrize("existing", ["absent", "running", "stopped", "different"])
+def test_prepared_launch_is_idempotent_and_preserves_existing_trainers(tmp_path, monkeypatch, existing):
+    command = ["docker", "run", "--detach", "--name", "trainer", "image",
+               "python", "-m", "so101.train_trajectory_rl"]
+    path = tmp_path / "command.json"
+    path.write_text(json.dumps(command))
+    monkeypatch.setattr(module.sys, "argv", ["launch", str(path), "trainer"])
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv == command:
+            return SimpleNamespace(returncode=0)
+        assert argv == ["docker", "inspect", "trainer"]
+        if existing == "absent" and len(calls) == 1:
+            return SimpleNamespace(returncode=1, stderr="No such object: trainer")
+        return SimpleNamespace(returncode=0, stdout=json.dumps([{
+            "Config": {"Image": "other" if existing == "different" else "image",
+                       "Cmd": command[6:]},
+            "State": {"Running": existing != "stopped"},
+        }]))
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    if existing in ("stopped", "different"):
+        with pytest.raises((ValueError, RuntimeError)):
+            exec(module.REMOTE_LAUNCH, {})
+    else:
+        exec(module.REMOTE_LAUNCH, {})
+    assert sum(argv == command for argv in calls) == int(existing == "absent")
+
+
+def test_launch_automatically_starts_mirroring_without_watch_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.sys, "argv", [
+        "sync", "--output", str(tmp_path), "--job-id", "job",
+        "--container-name", "trainer", "--launch-command", "/remote/command.json",
+    ])
+    calls = []
+    monkeypatch.setattr(module, "remote_request", lambda *args: calls.append("launch") or {})
+    monkeypatch.setattr(module, "watch", lambda args: calls.append(("watch", args.watch)))
+    module.main()
+    assert calls == ["launch", ("watch", True)]
+
+
+@pytest.mark.parametrize("step,completed", [(1, False), (10, True)])
+def test_mirror_finishes_with_trainer_and_surfaces_failure(tmp_path, monkeypatch, step, completed):
+    monkeypatch.setattr(module, "remote_request", lambda *args: {
+        "observed_at": time.time(), "running": [],
+        "logs": {"full_model_rl": {"steps": [{"step": step}], "validation": [],
+                                 "rl_estimator": "denoising-grpo", "run_config": {"steps": 10}}},
+    })
+    args = SimpleNamespace(remote_root="/remote", output=tmp_path, job_id="job",
+                           instance_id="instance", container_name="trainer")
+    if completed:
+        assert module.refresh(args) is True
+    else:
+        with pytest.raises(RuntimeError, match="Trainer exited"):
+            module.refresh(args)

@@ -344,9 +344,19 @@ dashboard server remains running.
 Cloud history remains available locally during an eviction; worker state, contact
 age and checkpoint backup step appear beside the run. `cloud_training.py watch`
 maintains the mirror without exposing an unauthenticated dashboard on the VM.
-Direct GPU runs can use `scripts/sync_gpu_dashboard.py`; trajectory logs are
+Direct GPU runs use `scripts/sync_gpu_dashboard.py`; trajectory logs are
 recognized by their RL estimator, without requiring a particular run name.
 Each successful refresh updates both the run heartbeat and mirror status.
+For new direct GPU runs, launch the prepared remote Docker command through
+`scripts/sync_gpu_dashboard.py --launch-command /remote/trainer-command.json`
+with the run's `--host`, `--known-hosts`, `--instance-id`, `--job-id`,
+`--container-name`, `--remote-root` and local `--output`. This is the standard
+direct-GPU launch path: it automatically starts persistent 20-second dashboard
+mirroring, without a separate `--watch` command. Run this launcher as the
+persistent background owner, not a one-shot shell. It verifies the named trainer
+is running, reuses only an exact matching active command, refuses to overwrite a
+stopped/different trainer, and holds the mirror lock before launching. The mirror
+exits after completion and surfaces premature trainer exit as a failure.
 Scrolling over a plot scrolls the page,
 without changing its axes. Drag to pan, and double-click or use **Reset view**
 to restore the full history. The recent-step table shows
