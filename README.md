@@ -344,6 +344,9 @@ dashboard server remains running.
 Cloud history remains available locally during an eviction; worker state, contact
 age and checkpoint backup step appear beside the run. `cloud_training.py watch`
 maintains the mirror without exposing an unauthenticated dashboard on the VM.
+Direct GPU runs can use `scripts/sync_gpu_dashboard.py`; trajectory logs are
+recognized by their RL estimator, without requiring a particular run name.
+Each successful refresh updates both the run heartbeat and mirror status.
 Scrolling over a plot scrolls the page,
 without changing its axes. Drag to pan, and double-click or use **Reset view**
 to restore the full history. The recent-step table shows

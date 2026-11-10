@@ -61,7 +61,12 @@ def sync(snapshot, output, job_id, instance_id="i-02ba0e9a61e1c68ef", container_
         raise ValueError("Remote observation is not current")
     result = []
     for name, log in snapshot["logs"].items():
-        trajectory = re.fullmatch(r"curriculum_rl_[0-9]+", name) is not None
+        if Path(name).name != name or name in ("", ".", ".."):
+            raise ValueError(f"Invalid GPU trial directory: {name}")
+        trajectory = (
+            re.fullmatch(r"curriculum_rl_[0-9]+", name) is not None
+            or log.get("rl_estimator") in ("flow-mse", "denoising-grpo")
+        )
         if trajectory:
             if container_name is None or "validation" not in log:
                 raise ValueError("Trajectory mirrors require an explicit container and validation log")
@@ -167,7 +172,11 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             watch(args)
     else:
-        refresh(args)
+        complete = refresh(args)
+        atomic_json(args.output / "sync_status.json", {
+            "state": "completed" if complete else "running",
+            "observed_at": time.time(), "error": None,
+        })
 
 
 if __name__ == "__main__":

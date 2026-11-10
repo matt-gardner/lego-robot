@@ -45,15 +45,26 @@ def test_long_run_uses_new_instance_and_exact_container_identity(tmp_path, runni
 @pytest.mark.parametrize("running,step,state", [
     (["rl-container"], 1, "running"), ([], 1, "failed"), ([], 10, "completed"),
 ])
-def test_trajectory_mirror_retains_unassisted_validation(tmp_path, running, step, state):
+@pytest.mark.parametrize("name", ["curriculum_rl_7656", "full_model_rl"])
+def test_trajectory_mirror_retains_unassisted_validation(tmp_path, running, step, state, name):
     log = {"steps": [{"step": step}], "validation": [{"step": 0}],
            "run_config": {"steps": 10}}
+    if name == "full_model_rl":
+        log["rl_estimator"] = "denoising-grpo"
     module.sync({
         "observed_at": time.time(), "running": running,
-        "logs": {"curriculum_rl_7656": log},
+        "logs": {name: log},
     }, tmp_path, "job", container_name="rl-container")
-    destination = tmp_path / "curriculum_rl_7656"
+    destination = tmp_path / name
     assert json.loads((destination / "trajectory_rl.json").read_text()) == log
     status = json.loads((destination / "remote_status.json").read_text())
     assert status["state"] == state
     assert not (destination / "sft_training.json").exists()
+
+
+def test_trajectory_mirror_rejects_path_escape(tmp_path):
+    with pytest.raises(ValueError, match="Invalid GPU trial"):
+        module.sync({
+            "observed_at": time.time(), "running": [],
+            "logs": {"../escaped": {"rl_estimator": "denoising-grpo"}},
+        }, tmp_path, "job", container_name="rl-container")
