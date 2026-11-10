@@ -33,7 +33,24 @@ Record nominal LEGO physics; arbitrary material randomization is not requested.
 
 ## Shared catalog interface
 
-Publish an immutable versioned directory with `catalog.json`, schema version 1:
+Publish one current directory with `catalog.json`, schema version 1. Matt clarified
+November 10 that historical catalog versions are not required. Use
+`--catalog-id current --previous OUTPUT/current/catalog.json` for subsequent
+batches. Build and validate the replacement before switching directories, then
+remove the superseded tree; do not accumulate releases. The two directory renames
+have a brief unavailable interval; failed installation restores the previous tree.
+Consumers resolve the current catalog at problem creation and record part IDs and
+content/asset hashes, rejecting incompatible assets rather than silently replacing
+geometry in existing problems. Hash provenance does not require retaining old
+catalog directories.
+
+Readers must hold `so101.lego_parts_catalog.catalog_read_lock(manifest)` across
+loading the manifest and all asset reads, snapshot creation or MuJoCo compilation.
+The yielded path is the manifest path. Releasing it does not pin filesystem assets:
+finish copying/compiling before leaving the context. Publication takes an exclusive
+lock on the same `.catalog.lock` file outside the current tree, including preparation
+and qualification, so new readers wait during a batch. This intentionally simple
+coordination also serializes publishers; no historical catalog trees are required.
 
 ```json
 {

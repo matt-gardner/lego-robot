@@ -1,3 +1,4 @@
+import fcntl
 import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -67,6 +68,53 @@ def test_import_publication_hashes_and_immutability(tmp_path):
     source.write_text("corrupted")
     with pytest.raises(ValueError, match="corrupt"):
         validate(path.parent)
+
+
+def test_current_catalog_replaces_without_retaining_history(tmp_path):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ldraw/parts/1.dat", "0 Official test\n")
+    output = tmp_path / "catalogs"
+    path = publish(archive, output, "current", ())
+    with pytest.raises(ValueError, match="requires"):
+        publish(archive, output, "current", ())
+    assert publish(archive, output, "current", (), previous=path) == path
+    validate(path.parent)
+    assert sorted(p.name for p in output.iterdir()) == [".catalog.lock", "current"]
+
+
+def test_current_catalog_restores_previous_on_install_failure(tmp_path, monkeypatch):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ldraw/parts/1.dat", "0 Official test\n")
+    output = tmp_path / "catalogs"
+    path = publish(archive, output, "current", ())
+    original = path.read_bytes()
+    rename = catalog_module.os.rename
+
+    def fail_install(source, target):
+        if Path(target) == path.parent and not str(source).endswith("-previous"):
+            raise OSError("installation failed")
+        return rename(source, target)
+
+    monkeypatch.setattr(catalog_module.os, "rename", fail_install)
+    with pytest.raises(OSError, match="installation failed"):
+        publish(archive, output, "current", (), previous=path)
+    assert path.read_bytes() == original
+    validate(path.parent)
+    assert sorted(p.name for p in output.iterdir()) == [".catalog.lock", "current"]
+
+
+def test_catalog_reader_holds_shared_lock_until_assets_are_consumed(tmp_path):
+    manifest = tmp_path / "current/catalog.json"
+    with catalog_module.catalog_read_lock(manifest) as pinned:
+        assert pinned == manifest
+        with (tmp_path / ".catalog.lock").open("a+b") as competitor:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(competitor.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with (tmp_path / ".catalog.lock").open("a+b") as competitor:
+        fcntl.flock(competitor.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(competitor.fileno(), fcntl.LOCK_UN)
 
 
 def test_surface_prisms_preserve_cavity_and_convert_y_height_to_z(tmp_path):

@@ -1,8 +1,8 @@
-"""Import official LDraw sources and publish immutable, qualified MuJoCo shells.
+"""Import official LDraw sources and publish qualified MuJoCo shells.
 
 Run with --archive complete.zip --output /mnt/data/lego-catalog --catalog-id ID.
-Use --previous CATALOG_JSON to retain verified parts in the next release.
-Immutable sources/assets are hardlinked between releases on the same filesystem.
+Use --catalog-id current --previous OUTPUT/current/catalog.json to update one
+catalog without retaining old releases. Sources/assets remain read-only.
 Use --requalify-previous after a converter change; prior results are not reused.
 Use --next-undecorated N with --previous to select the next N unverified plain
 definitions in stable ID order. Decorated definitions are imported but never
@@ -18,7 +18,9 @@ not a claim of robot graspability or calibrated LEGO material properties.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import errno
+import fcntl
 import hashlib
 import inspect
 import json
@@ -396,7 +398,36 @@ def conversion_sha256() -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+@contextmanager
+def catalog_read_lock(manifest: Path):
+    """Keep catalog paths stable through loading, asset reads and compilation."""
+    manifest = Path(manifest).absolute()
+    with _catalog_lock(manifest.parent.parent, exclusive=False):
+        yield manifest
+
+
+@contextmanager
+def _catalog_lock(output: Path, *, exclusive: bool):
+    output.mkdir(parents=True, exist_ok=True)
+    with (output / ".catalog.lock").open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def publish(archive: Path, output: Path, catalog_id: str,
+            part_ids: tuple[str, ...] = DEFAULT_PARTS,
+            previous: Path | None = None,
+            next_undecorated: int | None = None,
+            requalify_previous: bool = False) -> Path:
+    with _catalog_lock(output, exclusive=True):
+        return _publish(archive, output, catalog_id, part_ids, previous,
+                        next_undecorated, requalify_previous)
+
+
+def _publish(archive: Path, output: Path, catalog_id: str,
             part_ids: tuple[str, ...] = DEFAULT_PARTS,
             previous: Path | None = None,
             next_undecorated: int | None = None,
@@ -405,8 +436,11 @@ def publish(archive: Path, output: Path, catalog_id: str,
         raise ValueError("catalog_id must be a single directory name")
     output.mkdir(parents=True, exist_ok=True)
     destination = output / catalog_id
-    if destination.exists():
+    if destination.exists() and catalog_id != "current":
         raise FileExistsError(f"Immutable catalog already exists: {destination}")
+    if destination.exists() and (
+            previous is None or previous.absolute() != (destination / "catalog.json").absolute()):
+        raise ValueError("Replacing current requires its catalog.json as --previous")
     staging = Path(tempfile.mkdtemp(prefix=".catalog-staging-", dir=output))
     try:
         archive_sha = sha256(archive)
@@ -545,14 +579,29 @@ def publish(archive: Path, output: Path, catalog_id: str,
         for path in staging.rglob("*"):
             path.chmod(0o555 if path.is_dir() else 0o444)
         staging.chmod(0o555)
-        os.rename(staging, destination)
+        if destination.exists():
+            retired = staging.with_name(staging.name + "-previous")
+            os.rename(destination, retired)
+            try:
+                os.rename(staging, destination)
+            except BaseException:
+                os.rename(retired, destination)
+                raise
+            retired.chmod(0o755)
+            for path in retired.rglob("*"):
+                if path.is_dir():
+                    path.chmod(0o755)
+            shutil.rmtree(retired)
+        else:
+            os.rename(staging, destination)
         return destination / "catalog.json"
     except BaseException:
-        for path in staging.rglob("*"):
-            if path.is_dir():
-                path.chmod(0o755)
-        staging.chmod(0o755)
-        shutil.rmtree(staging)
+        if staging.exists():
+            for path in staging.rglob("*"):
+                if path.is_dir():
+                    path.chmod(0o755)
+            staging.chmod(0o755)
+            shutil.rmtree(staging)
         raise
 
 
