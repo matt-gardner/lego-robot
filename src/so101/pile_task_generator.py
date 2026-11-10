@@ -57,11 +57,12 @@ def propose_pile(catalog, seed: int, sequence: int, count: int, color_mode: str)
     palette = list(RGBA)
     rng.shuffle(palette)
     palette = palette[:1 if color_mode == "monochrome" else 2 if color_mode == "few" else len(palette)]
-    for obj in plan["objects"]:
+    for index, obj in enumerate(plan["objects"]):
         obj["color"] = palette[int(rng.integers(len(palette)))]
-        obj["position_relative_to_scene_m"][:2] = (
+        obj["pile_drop_xy_relative_m"] = (
             np.asarray(obj["position_relative_to_scene_m"][:2]) * .35
         ).tolist()
+        obj["position_relative_to_scene_m"] = [10. + index, 0., 1.]
     plan["generator"] = "native-pile-tasks-v1"
     plan["drop_strategy"] = "sequential-low-clearance-v1"
     plan["color_mode"] = color_mode
@@ -100,7 +101,7 @@ def drop_pieces_sequentially(sim) -> None:
                 )))
             part = sim.part_metadata[obj["part_id"]]
             lower = (part.vertical_bounds_m or (-part.dimensions_m[2] / 2, 0.))[0]
-            relative = obj["position_relative_to_scene_m"]
+            relative = obj.get("pile_drop_xy_relative_m", obj["position_relative_to_scene_m"])
             sim.data.qpos[qadr:qadr + 3] = [
                 sim.scene_origin[0] + relative[0],
                 sim.scene_origin[1] + relative[1], top - lower + .003,
