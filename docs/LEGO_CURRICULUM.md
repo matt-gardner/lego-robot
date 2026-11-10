@@ -18,6 +18,10 @@ settled before the next drop. Future pieces wait outside the workspace without
 gravity, which is restored before each insertion. This avoids a tall airborne
 column and its count-dependent impact energy; final scenes retain ordinary
 gravity, contact, stationarity, and exact-reset checks.
+The initializer compiles compensation support before restoring the original
+body settings: MuJoCo ignores runtime `body_gravcomp` changes when compiled
+`ngravcomp` is zero. Pending pieces must remain stationary during actual physics
+steps, not just at initial placement.
 Initial visibility is not
 measured during image-free generation; geometry-based burial tags are explicitly
 proxies, not claims about visible fraction.

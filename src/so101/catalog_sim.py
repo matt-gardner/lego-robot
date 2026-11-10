@@ -70,7 +70,22 @@ class CatalogSimulation(BeamSimulation):
                                   scene_origin_m=tuple(self.scene_origin))
         if appearance is not None:
             self.xml = appearance.apply_xml(self.xml)
-        model = mujoco.MjModel.from_xml_string(self.xml)
+        compile_xml = self.xml
+        initial_gravcomp = {}
+        if initialize_objects is not None:
+            root = ET.fromstring(self.xml)
+            for obj in plan["objects"]:
+                body = root.find(f".//body[@name='{obj['instance_id']}']")
+                if body is None:
+                    raise ValueError("Initializer object is absent from scene XML")
+                initial_gravcomp[obj["instance_id"]] = float(body.get("gravcomp", "0"))
+                body.set("gravcomp", "1")
+            compile_xml = ET.tostring(root, encoding="unicode")
+        model = mujoco.MjModel.from_xml_string(compile_xml)
+        if initialize_objects is not None:
+            # Runtime gravcomp updates are ignored when compiled ngravcomp is zero.
+            for name, gravity in initial_gravcomp.items():
+                model.body_gravcomp[model.body(name).id] = gravity
         names = tuple(obj["instance_id"] for obj in plan["objects"])
         super().__init__(model_root, model=model, render=False,
                          object_names=names, distractor_names=(), record_images=record_images)

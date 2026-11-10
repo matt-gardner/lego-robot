@@ -59,6 +59,30 @@ class LegoSceneTests(unittest.TestCase):
         return assemble_scene(BASE, self.catalog, self.plan if plan is None else plan,
                               scene_origin_m=(0., 0., 0.))
 
+    def test_initializer_can_hold_pending_objects_against_gravity(self):
+        for index, obj in enumerate(self.plan["objects"]):
+            obj["position_relative_to_scene_m"] = [10. + index, 0., 1.]
+
+        def initialize(sim):
+            np.testing.assert_array_equal(sim.model.body_gravcomp, 0.)
+            addresses = []
+            for obj in self.plan["objects"]:
+                body = sim.model.body(obj["instance_id"]).id
+                joint = int(sim.model.body_jntadr[body])
+                addresses.append(int(sim.model.jnt_qposadr[joint]))
+                sim.model.body_gravcomp[body] = 1.
+            initial = sim.data.qpos.copy()
+            for _ in range(300):
+                mujoco.mj_step(sim.model, sim.data)
+            for address in addresses:
+                np.testing.assert_allclose(sim.data.qpos[address:address + 3],
+                                           initial[address:address + 3], atol=1e-12)
+            raise RuntimeError("initializer physics verified")
+
+        with self.assertRaisesRegex(RuntimeError, "initializer physics verified"):
+            CatalogSimulation(self.catalog, self.plan, render=False,
+                              initialize_objects=initialize)
+
     def test_dynamic_instances_have_distinct_assets_joints_and_materials(self):
         xml = self.assemble()
         model = mujoco.MjModel.from_xml_string(xml)
