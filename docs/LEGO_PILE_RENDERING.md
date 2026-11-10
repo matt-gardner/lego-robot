@@ -47,6 +47,46 @@ cavity, clutch or training-data qualification. Lighting is an OpenGL
 area-source approximation, not path-traced global illumination. Better
 appearance is not camera calibration or evidence of real-robot transfer.
 
+## Fresh photo-style piles
+
+`so101.photo_pile_generator` uses the retained 90-piece photo-demo XML as
+immutable body/visual-hull templates, not as a saved-state initializer:
+
+```bash
+PYTHONPATH=src OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  python -m so101.photo_pile_generator \
+  --source /path/to/b887f204-big-pile-compact-settled \
+  --root /path/to/new-photo-pool --pieces 20 --seed 20261111
+```
+
+Only 20..90 pieces are supported. Each proposal samples fresh XY/yaw positions
+within the original 70 mm footprint and inserts the pieces using low-height
+gravity drops. Pending pieces are parked and reset until their insertion.
+Inserted bodies are never frozen or restored from an old scene. Original
+gravity, visual-hull collisions and solver settings remain unchanged.
+Every insertion and the final full scene must meet the photo-demo
+surface-speed limit of 0.5 mm/s continuously for 0.5 seconds and the original
+5 mm penetration cap; actual maximum insertion and final-settle penetration
+are recorded separately. Each insertion has a 10-second simulated timeout;
+the insertion sequence also has a 120-second wall-time budget.
+
+The producer runs at idle CPU priority, admits work only with 2 GiB available
+memory and 10 GiB free disk, and pauses before exhausting a 4 GiB output budget.
+It holds a single-writer lock. `STOP` in the output root or its parent, SIGTERM,
+or SIGINT stops the producer without modifying completed scenes. An interrupted
+unpublished proposal is retried with the same seed. Completed/rejected attempt
+receipts advance the seed on restart. The root pins the source model, piece
+count, initial seed and implementation hash; changed configurations require
+a separate root. `--attempts N` bounds a run; the default continuously generates.
+
+Each successful scene is staged and verified by exact model/full-state restore
+and NPZ equality before publication. Failures are explicit rejection receipts,
+not partially admitted scenes. Status is in `status.json`. Outputs remain
+separate from native task pools, frozen datasets and training acceptance.
+The source's historical `catalog-demo` labels are retained, not invented part
+identities. Saved models/states are renderable by the appearance command above;
+generation itself does not produce a photograph or establish RL/SFT acceptance.
+
 ## Optional CPU path tracing
 
 `so101.pathtrace_pile` consumes a pinned `scene.json` world-space PLY
