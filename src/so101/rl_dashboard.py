@@ -25,6 +25,7 @@ from urllib.parse import urlsplit, parse_qs
 
 from so101.training_data_browser import TrainingDataBrowser
 from so101.lego_data_browser import LegoDataBrowser
+from so101.bucket_dashboard import BucketDashboard
 
 
 ASSETS = Path(__file__).with_name("dashboard")
@@ -446,11 +447,12 @@ def dashboard_header(path: str) -> str:
         "/data": ("DATA", "Data browser"),
         "/lego": ("PARTS", "LEGO parts"),
         "/examples": ("RECORDINGS", "Recorded examples"),
+        "/buckets": ("DATA BUCKETS", "Data buckets"),
     }
     section, title = pages[path]
     links = "".join(
         f'<a href="{route}"' + (' aria-current="page"' if route == path else "") + f'>{label}</a>'
-        for route, label in (("/lego", "Parts"), ("/data", "Data"),
+        for route, label in (("/lego", "Parts"), ("/data", "Data"), ("/buckets", "Data buckets"),
                              ("/examples", "Recorded examples"), ("/", "Training"))
     )
     status = ('<div class="connection"><span id="connection">Connecting</span>'
@@ -472,6 +474,7 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
     browser = TrainingDataBrowser(root.resolve().parent)
     lego_browser = LegoDataBrowser(root.resolve().parent, lego_catalog_root, lego_episode_root)
     browser.curriculum = lego_browser
+    buckets = BucketDashboard(root.resolve().parent / "data" / "bucket_dashboard")
     assets = {
         "/": ("index.html", "text/html; charset=utf-8"),
         "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -484,6 +487,9 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
         "/lego.js": ("lego.js", "text/javascript; charset=utf-8"),
         "/lego.css": ("lego.css", "text/css; charset=utf-8"),
         "/part-viewer.js": ("part-viewer.js", "text/javascript; charset=utf-8"),
+        "/buckets": ("buckets.html", "text/html; charset=utf-8"),
+        "/buckets.js": ("buckets.js", "text/javascript; charset=utf-8"),
+        "/buckets.css": ("buckets.css", "text/css; charset=utf-8"),
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -499,6 +505,22 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                 path = path[len(base_path):]
             if path == "/api/health":
                 self.respond(200, {"healthy": True})
+            elif path in ("/api/buckets", "/api/buckets/image"):
+                try:
+                    if path.endswith("/image"):
+                        query = parse_qs(urlsplit(self.path).query)
+                        body, content_type = buckets.image(query["problem"][0], int(query["index"][0]))
+                        self.send_body(200, body, content_type)
+                    else:
+                        self.respond(200, buckets.snapshot())
+                except FileNotFoundError:
+                    self.respond(404, {"error": "Bucket snapshot or initial image has not been published"})
+                except (ValueError, KeyError, TypeError, IndexError) as error:
+                    LOGGER.warning("Invalid bucket publication/request: %s", error)
+                    self.respond(400, {"error": str(error)})
+                except OSError as error:
+                    LOGGER.exception("Cannot read bucket publication")
+                    self.respond(500, {"error": str(error)})
             elif path == "/api/lego":
                 query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
                 try:

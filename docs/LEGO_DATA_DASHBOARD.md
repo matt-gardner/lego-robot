@@ -1,5 +1,39 @@
 # Workstream 2: Interactive catalog and curriculum dashboard
 
+## Data buckets publication (schema 1)
+
+The read-only `/buckets` page reads `data/bucket_dashboard` beside the configured
+outputs root. Trainer owns calibration and INITIAL renders; generator owns native
+problem identities/tags. `current.json` atomically publishes
+`{"path":"snapshots/<id>/manifest.json","sha256":"<manifest bytes SHA256>"}`.
+Write immutable snapshot assets before replacing this pointer.
+The manifest has `kind: lego-data-buckets`, `schema_version: 1`,
+`generated_at`, `measurement_status` (screening/calibrating/qualified),
+`provenance` (generator/source/grader/protocol hashes), `protocol`, `buckets`,
+`problems`, and `groups`. Unknown extension fields are retained.
+
+Buckets enumerate every bucket/task population independently of measured samples:
+`{id,label,population_total,tasks:[{task,population_total}]}`. Problems enumerate
+the entire population, with stable `id`, `bucket_id`, `task`, source identity and
+hash, split, native scene/task IDs where applicable, tags, provenance,
+`feasibility:{status,evidence}`, and `initial_images`. Missing measurements,
+physical qualification, visibility/reach and images are explicitly unmeasured.
+Image entries contain snapshot-relative `path`, byte `sha256`, `camera`, actual
+`width/height` and renderer/protocol provenance; PNG/JPEG only, no upscaling claim.
+Images are hash-checked and served only through exact published problem identity.
+
+Groups join by `problem_id`; legacy raw groups may join the exact
+bucket/task/source/problem_index tuple. Preserve assistance, attempts (rollouts),
+successes, invalid actions, trajectories, seed, measurement status and
+`mixed_group_yield:{eligible,total}`. Feasibility failure attribution is null
+unless measured; observed unsuccessful rollouts do not establish infeasibility.
+Pilot four-rollout groups are screening only, never calibrated qualification.
+The page shows app-derived Wilson 95% descriptive intervals (without accounting
+for group/seed correlation), actual within-group mixed yield, per-problem curves
+and within-bucket observed spread. Piece count/proxy tags are not difficulty,
+and pooled 50% success does not imply per-problem learnability. No GPU queries,
+model loads, old deleted renders or temporary paths are used.
+
 Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
 browsing, feedback and activation, not collection or part qualification.
 
