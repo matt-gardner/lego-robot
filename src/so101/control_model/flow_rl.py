@@ -9,6 +9,20 @@ import torch
 from torch import Tensor
 
 
+@dataclass
+class ReplayVelocity:
+    evaluate: Callable[[Tensor, Tensor], Tensor]
+    backward_prefix: Callable[[], None]
+
+    def __call__(self, latent: Tensor, timestep: Tensor) -> Tensor:
+        return self.evaluate(latent, timestep)
+
+
+def finish_velocity_backward(velocity: Callable[[Tensor, Tensor], Tensor]) -> None:
+    if isinstance(velocity, ReplayVelocity):
+        velocity.backward_prefix()
+
+
 def to_device(value: Any, device: str) -> Any:
     if isinstance(value, Tensor):
         return value.to(device)

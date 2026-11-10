@@ -43,6 +43,7 @@ from so101.train_trajectory_rl import (
 from so101.control_model.flow_rl import (
     FlowTransition,
     clipped_policy_loss,
+    finish_velocity_backward,
     gaussian_log_prob,
     reparameterize_flow_path,
     sample_flow_path,
@@ -97,7 +98,8 @@ def test_denoising_backward_does_not_reuse_cropped_suffix_graph() -> None:
     assert not cache.layers[0].keys.requires_grad
 
 
-def test_full_model_replay_recomputes_original_batch_and_updates_prefix_parameters():
+@pytest.mark.parametrize("objective", ["independent", "pathwise", "likelihood"])
+def test_full_model_replay_reuses_prefix_and_preserves_full_gradients(objective):
     class Prefix(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -111,6 +113,7 @@ def test_full_model_replay_recomputes_original_batch_and_updates_prefix_paramete
 
     class Model(torch.nn.Module):
         _rl_velocity_function = EntityVLAFlowMatching._rl_velocity_function
+        denoising_log_probs_entity = EntityVLAFlowMatching.denoising_log_probs_entity
 
         def __init__(self):
             super().__init__()
@@ -147,19 +150,64 @@ def test_full_model_replay_recomputes_original_batch_and_updates_prefix_paramete
         sampled = velocity(torch.ones(2, 1, 1), torch.ones(2))
     row_inputs = tuple(value[1:2] for value in batch)
     replay = policy.model._rl_velocity_function(row_inputs, captured[0])
+    reference = deepcopy(policy.model)
+
+    def reference_velocity(latent, timestep):
+        prefix, pad, _, _ = reference._prefix_with_entities(*batch)
+        _, cache = reference.vlm_with_expert.forward(inputs_embeds=[prefix, None])
+        return reference._denoise_step_entity(
+            pad[1:2], FrozenObservation.copy_cache(cache, "cpu", 1, detach=False), latent, timestep,
+        )
+
     optimizer = torch.optim.AdamW(parameters, lr=1e-3)
     before = [parameter.detach().clone() for parameter in parameters]
-    for _ in range(3):
-        value = replay(torch.ones(1, 1, 1), torch.ones(1))
-        torch.testing.assert_close(value, sampled[1:2], rtol=0., atol=1e-4)
-        value.sum().backward()
-    assert policy.model.batch_sizes == [2] * 4
+    if objective in ("pathwise", "likelihood"):
+        with torch.no_grad():
+            _, path = sample_flow_path(
+                reference_velocity, torch.ones(1, 1, 1), 10, .1, record_noise=True,
+            )
+        if objective == "pathwise":
+            expected = reparameterize_flow_path(
+                reference_velocity, path, torch.device("cpu"), checkpoint_velocity=False,
+            )
+            actual = reparameterize_flow_path(replay, path, torch.device("cpu"))
+            torch.testing.assert_close(actual, expected)
+            actual.sum().backward()
+            expected.sum().backward()
+        else:
+            for value, transition in zip(
+                policy.model.denoising_log_probs_entity(row_inputs, path, captured[0]),
+                path, strict=True,
+            ):
+                timestep = torch.full((1,), transition.time)
+                mean, std = transition_distribution(
+                    transition.latent, reference_velocity(transition.latent, timestep),
+                    transition.time, transition.step_size, transition.noise_scale,
+                )
+                expected = gaussian_log_prob(
+                    transition.next_latent, mean, std, transition.active_shape,
+                )
+                torch.testing.assert_close(value, expected)
+                (-value.mean()).backward()
+                (-expected.mean()).backward()
+    else:
+        for _ in range(3):
+            value = replay(torch.ones(1, 1, 1), torch.ones(1))
+            torch.testing.assert_close(value, sampled[1:2], rtol=0., atol=1e-4)
+            value.sum().backward()
+            reference_velocity(torch.ones(1, 1, 1), torch.ones(1)).sum().backward()
+    if objective != "likelihood":
+        finish_velocity_backward(replay)
+    assert policy.model.batch_sizes == [2] * 2
     assert all(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in parameters)
+    for actual, expected in zip(parameters, reference.parameters(), strict=True):
+        torch.testing.assert_close(actual.grad, expected.grad)
     optimizer.step()
     assert all(not torch.equal(old, parameter) for old, parameter in zip(before, parameters, strict=True))
     captured[0].cache.layers[0].keys += .1
+    replay(torch.ones(1, 1, 1), torch.ones(1)).sum().backward()
     with pytest.raises(AssertionError):
-        replay(torch.ones(1, 1, 1), torch.ones(1))
+        finish_velocity_backward(replay)
 
 
 def args() -> Namespace:

@@ -17,6 +17,8 @@ from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, VLAFlowMatc
 
 from so101.control_model.flow_rl import (
     FlowTransition,
+    ReplayVelocity,
+    finish_velocity_backward,
     gaussian_log_prob,
     independent_noise_like,
     sample_flow_path,
@@ -68,6 +70,8 @@ class EntityModelConfig:
 
 
 class EntityVLAFlowMatching(VLAFlowMatching):
+    rl_replay_implementation = "prefix-vjp-v1"
+
     def init_entity_modules(self, entity_config: EntityModelConfig) -> None:
         self.entity_config = entity_config
         text_hidden = self.vlm_with_expert.config.text_config.hidden_size
@@ -278,10 +282,49 @@ class EntityVLAFlowMatching(VLAFlowMatching):
             return prefix_pad, prefix_cache
 
         if full_gradients:
-            # Rebuild the exact original batch per transition, keeping prefix autograd.
-            return lambda latent, timestep: self._denoise_step_entity(
-                *prefix_features(), latent, timestep,
-            )
+            if frozen_observation is None:
+                with torch.no_grad():
+                    pad, cache = prefix_features()
+            else:
+                if frozen_observation.replay_inputs is None or frozen_observation.row is None:
+                    raise ValueError("Full-model replay requires the original observation batch")
+                pad = frozen_observation.pad.to(inputs[4].device)
+                cache = frozen_observation.cache
+            if cache is None:
+                raise ValueError("Full-model replay requires observation cache features")
+            leaves = FrozenObservation.copy_cache(cache, inputs[4].device)
+            tensors = [
+                getattr(layer, name).requires_grad_(True)
+                for layer in leaves.layers for name in ("keys", "values")
+            ]
+
+            def evaluate(latent, timestep):
+                with torch.profiler.record_function("rl.denoise_replay"):
+                    return self._denoise_step_entity(
+                        pad, FrozenObservation.copy_cache(leaves, inputs[4].device, detach=False),
+                        latent, timestep,
+                    )
+
+            def backward_prefix():
+                gradients = [value.grad for value in tensors]
+                if not any(value is not None for value in gradients):
+                    raise ValueError("Full-model replay must backpropagate its losses before finalizing the prefix")
+                with torch.profiler.record_function("rl.prefix_recompute"):
+                    _, original = prefix_features()
+                sources = [
+                    getattr(layer, name) for layer in original.layers for name in ("keys", "values")
+                ]
+                active = [(source, gradient) for source, gradient in zip(sources, gradients, strict=True)
+                          if gradient is not None]
+                # Accumulated cache derivatives give the exact prefix vector-Jacobian product.
+                with torch.profiler.record_function("rl.prefix_backward"):
+                    torch.autograd.backward(
+                        [source for source, _ in active], [gradient for _, gradient in active],
+                    )
+                for value in tensors:
+                    value.grad = None
+
+            return ReplayVelocity(evaluate, backward_prefix)
         if frozen_observation is not None:
             pad = frozen_observation.pad.to(inputs[4].device)
             cache = FrozenObservation.copy_cache(frozen_observation.cache, inputs[4].device)
@@ -347,6 +390,7 @@ class EntityVLAFlowMatching(VLAFlowMatching):
             yield gaussian_log_prob(
                 transition.next_latent.to(device), mean, std, transition.active_shape
             )
+        finish_velocity_backward(velocity)
 
     def forward_entity(
         self,

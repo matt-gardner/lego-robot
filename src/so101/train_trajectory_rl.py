@@ -2013,6 +2013,7 @@ def train(args: argparse.Namespace) -> None:
                     getattr(args, "native_pool_manifest", None), output,
                 )
             step_start = time.monotonic()
+            phase_seconds = {"rollouts": 0., "jerk_backward": 0., "task_backward": 0., "optimizer": 0.}
             optimizer.zero_grad(set_to_none=True)
             accepted_groups = 0
             jerk_groups = 0
@@ -2113,6 +2114,7 @@ def train(args: argparse.Namespace) -> None:
                     jerk_margin = jerk_profile["margin"] if jerk_profile is not None else None
                     capture_path = (output / "rollouts" / f"step_{step:06}" / f"group_{task_index}_{attempt}.json"
                                     if getattr(args, "record_rollouts", False) else None)
+                    rollout_started = time.monotonic()
                     trajectories = (rollout_group(
                         rollout_sims, controller, episode,
                         [args.seed + step * 100_000 + task_index * 10_000
@@ -2145,6 +2147,7 @@ def train(args: argparse.Namespace) -> None:
                         )
                         for rollout_index in range(args.group_size)
                     ])
+                    phase_seconds["rollouts"] += time.monotonic() - rollout_started
                     success_count = sum(
                         item.success for item in trajectories
                     )
@@ -2277,12 +2280,14 @@ def train(args: argparse.Namespace) -> None:
                     jerk_group_metrics = {}
                     if jerk_enabled:
                         before_jerk = gradient_vector(parameters, component_device)
+                        jerk_started = time.monotonic()
                         jerk_losses = group_jerk_backward(
                             controller, trajectories,
                             torch.as_tensor(sim.encode(sim.limits[:, 0]), device=args.device),
                             torch.as_tensor(sim.encode(sim.limits[:, 1]), device=args.device),
                             jerk_weight, jerk_scale, jerk_margin,
                         )
+                        phase_seconds["jerk_backward"] += time.monotonic() - jerk_started
                         jerk_gradient_sum.sub_(before_jerk)
                         del before_jerk
                         jerk_gradient_sum.add_(gradient_vector(parameters, component_device))
@@ -2369,6 +2374,7 @@ def train(args: argparse.Namespace) -> None:
                         np.abs(advantages).sum() + 1e-6
                     )
                     losses = []
+                    task_started = time.monotonic()
                     for trajectory, advantage in zip(
                         trajectories, advantages, strict=True
                     ):
@@ -2379,6 +2385,7 @@ def train(args: argparse.Namespace) -> None:
                             args.policy_clip,
                         ))
                         trajectory.decisions.clear()
+                    phase_seconds["task_backward"] += time.monotonic() - task_started
                     accepted_groups += 1
                     accepted_for_task += 1
                     group_rows.append({
@@ -2420,12 +2427,17 @@ def train(args: argparse.Namespace) -> None:
                     boundary_sum=boundary_gradient_sum, boundary_groups=boundary_groups,
                 )
                 update_groups = int(active)
-            probes = (
-                full_model_gradient_probes(controller.policy)
-                if trainable_scope == "all" and sampling_noise is not None and update_groups
-                and "full_model_gradient_audit" not in log else {}
-            )
+            probes = {}
+            replay_implementation = None
+            if trainable_scope == "all" and sampling_noise is not None and update_groups:
+                replay_implementation = getattr(
+                    controller.policy.model, "rl_replay_implementation", "per-transition-prefix-v1",
+                )
+                if log.get("full_model_gradient_audit", {}).get("implementation") != replay_implementation:
+                    probes = full_model_gradient_probes(controller.policy)
+            optimizer_started = time.monotonic()
             update_metrics = policy_optimizer_step(optimizer, parameters, update_groups, args.gradient_clip)
+            phase_seconds["optimizer"] += time.monotonic() - optimizer_started
             if probes:
                 audit = {}
                 for group, (name, parameter, index, before) in probes.items():
@@ -2433,7 +2445,11 @@ def train(args: argparse.Namespace) -> None:
                     if before == after or not math.isfinite(after):
                         raise ValueError(f"Full-model optimizer did not effectively update {group}")
                     audit[group] = {"parameter": name, "index": index, "before": before, "after": after}
-                log["full_model_gradient_audit"] = {"step": step, "groups": audit}
+                if "full_model_gradient_audit" in log:
+                    log.setdefault("full_model_gradient_audit_history", []).append(log["full_model_gradient_audit"])
+                log["full_model_gradient_audit"] = {
+                    "step": step, "implementation": replay_implementation, "groups": audit,
+                }
             update_metrics.update(component_metrics)
             if regularizers_enabled and not update_groups:
                 update_metrics["optimizer_skip_reason"] = (
@@ -2448,12 +2464,14 @@ def train(args: argparse.Namespace) -> None:
                     **update_metrics,
                 }), flush=True)
             elapsed = time.monotonic() - step_start
+            phase_seconds["other"] = elapsed - sum(phase_seconds.values())
             step_times.append(elapsed)
             rolling = float(np.mean(step_times[-5:]))
             step_row = {
                 "step": step,
                 "completed_at": time.time(),
                 "step_seconds": elapsed,
+                "wall_phase_seconds": phase_seconds,
                 "rolling_step_seconds": rolling,
                 "eta_seconds": rolling * (args.steps - step),
                 "accepted_groups": accepted_groups,

@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from .flow_rl import reparameterize_flow_path, to_device
+from .flow_rl import finish_velocity_backward, reparameterize_flow_path, to_device
 
 
 def action_jerk_gradient(actions: np.ndarray, scale: float, margin: float = 0.):
@@ -41,6 +41,7 @@ def replay_command_gradients(controller, trajectory, low, high, coefficient, gra
         physical = actions[0, :count, :6] * torch.as_tensor(controller.action_std, device=controller.device) + torch.as_tensor(controller.action_mean, device=controller.device)
         commands = torch.maximum(torch.minimum(physical, high), low) if bounded else physical
         (commands * weights.to(controller.device) * coefficient).sum().backward()
+        finish_velocity_backward(velocity)
     if position != len(gradients):
         raise ValueError("Recorded decisions and command gradients differ")
 

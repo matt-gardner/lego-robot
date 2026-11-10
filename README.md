@@ -985,9 +985,16 @@ unfrozen and optimized with FP32 weights, so small AdamW updates do not round
 away in BF16 storage. The first active update verifies nonzero gradients and
 actual parameter changes through vision, language backbone, history, entities
 and the action expert/projections. Heads unused by the RL objective need not
-receive gradients. Observation prefix features are recomputed differentiably
-for each transition, using the original rollout batch and selected row; replay
-must match recorded features within absolute `1e-4`. Regularizer component
+receive gradients. Replay accumulates observation-cache derivatives across
+denoising transitions, then recomputes the original rollout batch once and
+backpropagates their vector-Jacobian product through the selected row. This
+preserves full-model gradients without repeating the vision/text prefix for
+every denoising step; replay must still match recorded features within absolute
+`1e-4`. Streaming likelihood losses must be backpropagated before advancing the
+iterator; pathwise replay finalizes its prefix after loss backward. A changed
+replay implementation triggers another parameter-update audit, retaining the
+earlier audit. Each update records rollout, jerk-backward, task-backward,
+optimizer and remaining wall time in `wall_phase_seconds`. Regularizer component
 buffers live on CPU in full-model mode to avoid several full-model GPU copies.
 The historical `--trainable-scope action-projections` remains explicit opt-in:
 its vision/text prefix is frozen and may remain BF16, while its action expert
