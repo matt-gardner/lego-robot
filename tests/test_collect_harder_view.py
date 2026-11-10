@@ -6,6 +6,23 @@ import pytest
 from so101 import collect_harder_view as collector
 
 
+def test_spatial_strata_vary_target_and_camera_pose_without_outcome_inputs():
+    recipes = [collector.spatial_recipe(index) for index in range(24)]
+    assert len({tuple(recipe["target_xy"]) for recipe in recipes}) == 12
+    assert {recipe["target_yaw"] for recipe in recipes} == {-.9, .9}
+    assert len({tuple(recipe["joint_offsets"]) for recipe in recipes}) > 2
+    assert collector.spatial_recipe(3) == recipes[3]
+
+
+def test_family_groups_same_seed_regardless_of_target_or_candidate():
+    original = {"initial": {"seed": 123, "scene_version": 3}, "target": "studded"}
+    variant = {"initial": {"seed": 123, "scene_version": 3}, "target": "hollow",
+               "candidate_recipe": collector.spatial_recipe(2)}
+    assert collector.scene_family(original) == collector.scene_family(variant)
+    variant["initial"]["seed"] = 124
+    assert collector.scene_family(original) != collector.scene_family(variant)
+
+
 def test_context_switch_restores_gl_context_then_offscreen_buffer(monkeypatch):
     events = []
     context = object()

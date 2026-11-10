@@ -5,6 +5,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 
@@ -21,6 +22,26 @@ MAX_OUTPUT_BYTES = 64 * 1024**2
 
 class ReplayStateMismatch(ValueError):
     """A finite candidate trajectory fails strict independent state replay."""
+
+
+def scene_family(metadata: dict) -> str:
+    return hashlib.sha256(json.dumps(
+        [metadata["initial"]["seed"], metadata["initial"].get("scene_version", 1)],
+    ).encode()).hexdigest()
+
+
+def spatial_recipe(index: int) -> dict:
+    """Predeclared geometry strata, independent of policy/development outcomes."""
+    return {
+        "target_xy": [.16 + .04 * (index % 4),
+                      (-1 if index % 2 else 1) * (.10 + .035 * (index // 4 % 3))],
+        "target_yaw": (-1 if index // 2 % 2 else 1) * .9,
+        "joint_offsets": [
+            (-1 if index % 2 else 1) * .65,
+            (-1 if index // 4 % 2 else 1) * .30,
+            0., 0., (-1 if index // 8 % 2 else 1) * .55, 0.,
+        ],
+    }
 
 
 class ReferenceSimulation(BeamSimulation):
@@ -96,7 +117,8 @@ def replay_reference(sim: BeamSimulation, metadata: dict, rows: list[dict]) -> d
 
 
 def collect(collection: Path, model_root: Path, output: Path, *,
-            training_sources: Path | None = None, attempts: int = 16) -> dict:
+            training_sources: Path | None = None, attempts: int = 16,
+            profile: str = "base-v1", exclude_manifest: Path | None = None) -> dict:
     if not 2 <= attempts <= 64:
         raise ValueError("Require 2..64 bounded attempts")
     check_storage(output.parent)
@@ -108,12 +130,21 @@ def collect(collection: Path, model_root: Path, output: Path, *,
     ):
         raise ValueError("Training sources must be a nonempty JSON list of absolute episode paths")
     allowed = {Path(name).resolve() for name in allowed}
+    if profile not in ("base-v1", "spatial-v2"):
+        raise ValueError("Unknown VIEW candidate profile")
+    if profile == "spatial-v2" and exclude_manifest is None:
+        raise ValueError("Spatial candidates require the previous manifest for family exclusion")
+    excluded = set()
+    if exclude_manifest is not None:
+        previous = json.loads(exclude_manifest.read_text())
+        excluded = {entry["scene_family_id"] for entry in previous["episodes"]}
     report = load_catalog(collection)
     sources = []
     for name in report["successful_episodes"]:
         source = Path(name)
         metadata = json.loads((source / "episode.json").read_text())
-        if metadata["task"] == "view" and source.resolve() in allowed:
+        if (metadata["task"] == "view" and source.resolve() in allowed
+                and scene_family(metadata) not in excluded):
             sources.append((source, metadata))
     if not sources:
         raise ValueError("Source collection has no successful VIEW episodes")
@@ -124,6 +155,7 @@ def collect(collection: Path, model_root: Path, output: Path, *,
         "schema_version": 1, "kind": "harder-view-references",
         "status": "building", "task": "view", "policy_difficulty_measured": False,
         "sft_qualified": False, "episodes": [], "attempts": [],
+        "candidate_profile": profile, "excluded_families": sorted(excluded),
     }
     sim = ReferenceSimulation(model_root, render=True)
     replay = None
@@ -138,13 +170,29 @@ def collect(collection: Path, model_root: Path, output: Path, *,
             metadata = copy.deepcopy(original)
             activate_render_context(sim)
             target, _, _ = restore_episode(sim, metadata)
-            offset = (-1 if index % 2 else 1) * (.35 + .15 * (index // 2 % 4))
-            joint = sim.qadr[0]
-            angle = sim.data.qpos[joint] + offset
-            if not sim.limits[0, 0] + .01 <= angle <= sim.limits[0, 1] - .01:
+            recipe = spatial_recipe(index) if profile == "spatial-v2" else {
+                "joint_offsets": [
+                    (-1 if index % 2 else 1) * (.35 + .15 * (index // 2 % 4)),
+                    0., 0., 0., 0., 0.,
+                ],
+            }
+            arm = sim.data.qpos[sim.qadr] + np.asarray(recipe["joint_offsets"])
+            if np.any(arm < sim.limits[:, 0] + .01) or np.any(
+                arm > sim.limits[:, 1] - .01
+            ):
                 manifest["attempts"].append({"index": index, "reason": "joint_limit"})
                 continue
-            sim.data.qpos[joint] = angle
+            sim.data.qpos[sim.qadr] = arm
+            if profile == "spatial-v2":
+                joint = sim.model.joint(f"{target}_free")
+                address = int(joint.qposadr[0])
+                yaw = recipe["target_yaw"]
+                sim.data.qpos[address:address + 2] = recipe["target_xy"]
+                sim.data.qpos[address + 3:address + 7] = [
+                    math.cos(yaw / 2), 0., 0., math.sin(yaw / 2),
+                ]
+                sim.data.qvel[int(joint.dofadr[0]):int(joint.dofadr[0]) + 6] = 0.
+                sim.yaws[target] = yaw
             sim.data.qvel[sim.dofs] = 0.
             sim.data.ctrl[sim.actuators] = sim.data.qpos[sim.qadr]
             mujoco.mj_forward(sim.model, sim.data)
@@ -162,7 +210,16 @@ def collect(collection: Path, model_root: Path, output: Path, *,
             sim.frame_start = sim.data.time
             episode = output / f"candidate_{index:03}"
             sim.episode_root = None
-            result = sim.demonstrate_view(target)
+            try:
+                result = sim.demonstrate_view(target)
+            except RuntimeError as error:
+                if not str(error).startswith("No vertical IK solution for "):
+                    raise
+                manifest["attempts"].append({
+                    "index": index, "reason": "unreachable_expert_vantage",
+                    "detail": str(error), "candidate_recipe": recipe,
+                })
+                continue
             if not result["success"]:
                 manifest["attempts"].append({"index": index, "reason": "expert_failed"})
                 continue
@@ -177,15 +234,14 @@ def collect(collection: Path, model_root: Path, output: Path, *,
             if not verification["success"]:
                 manifest["attempts"].append({"index": index, "reason": "replay_goal_failed"})
                 continue
-            family = hashlib.sha256(json.dumps(
-                [metadata["initial"]["seed"], metadata["initial"].get("scene_version", 1)],
-            ).encode()).hexdigest()
+            family = scene_family(metadata)
             split = "development" if int(family[:8], 16) % 5 == 0 else "train"
             metadata.update(
                 outcome="success", task="view", frames=len(sim.rows), fps=sim.fps,
                 initial_view_metrics=initial, reference_replay=verification,
                 source_episode=str(source.resolve()), scene_family_id=family, split=split,
                 sft_qualified=False,
+                candidate_profile=profile, candidate_recipe=recipe,
             )
             frame_bytes = "".join(json.dumps(row, allow_nan=False) + "\n"
                                   for row in sim.rows).encode()
@@ -221,9 +277,12 @@ def main() -> None:
                         help="JSON absolute episode-path list from the frozen training split")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--attempts", type=int, default=16)
+    parser.add_argument("--profile", choices=("base-v1", "spatial-v2"), default="base-v1")
+    parser.add_argument("--exclude-manifest", type=Path)
     args = parser.parse_args()
     collect(args.collection, args.model_root, args.output,
-            training_sources=args.training_sources, attempts=args.attempts)
+            training_sources=args.training_sources, attempts=args.attempts,
+            profile=args.profile, exclude_manifest=args.exclude_manifest)
 
 
 if __name__ == "__main__":

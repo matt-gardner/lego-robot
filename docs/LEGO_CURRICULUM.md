@@ -29,6 +29,14 @@ difficulty or SFT qualification. No references exist until collection and replay
 succeed. Runtime launch belongs to the trainer owner while local storage is blocked.
 The required training-source allowlist is a JSON list of absolute episode paths
 from the trainer's frozen training membership, excluding heldout scene families.
+For a separate spatial candidate experiment, add `--profile spatial-v2
+--exclude-manifest <previous manifest.json>`. This excludes every previously
+admitted family and predeclares target XY/yaw plus base/shoulder/wrist pose strata.
+Target height stays at its original table-supported height; no unsupported piles
+or silent goal changes are introduced. Initial collisions, unreachable expert
+vantages, and finite replay mismatches are rejected explicitly. These strata are
+not proven harder: screen policy success on train families only, select the
+recipe without development feedback, and evaluate untouched development families.
 
 `python -m so101.produce_physical_catalog` runs the manipulation-only schedule
 without constructing a renderer or writing images. It records pre-action full
