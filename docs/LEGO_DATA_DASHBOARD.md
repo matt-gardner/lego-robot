@@ -2,8 +2,12 @@
 
 ## Data buckets publication (schema 1)
 
-The read-only `/buckets` page reads `data/bucket_dashboard` beside the configured
-outputs root. Trainer owns calibration and INITIAL renders; generator owns native
+The read-only `/buckets` page reads `--bucket-dashboard-root`, defaulting to
+`data/bucket_dashboard` beside the configured outputs root. The current producer
+publication uses
+`outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/bucket_dashboard`
+in the shared data workspace (writable by the producer without permissions changes).
+Trainer owns calibration and INITIAL renders; generator owns native
 problem identities/tags. `current.json` atomically publishes
 `{"path":"snapshots/<id>/manifest.json","sha256":"<manifest bytes SHA256>"}`.
 Write immutable snapshot assets before replacing this pointer.

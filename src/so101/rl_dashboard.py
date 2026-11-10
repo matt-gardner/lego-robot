@@ -466,7 +466,8 @@ def dashboard_header(path: str) -> str:
 
 def make_server(root: Path, host: str, port: int, base_path: str = "",
                 notice: str = "", lego_catalog_root: Path | None = None,
-                lego_episode_root: Path | None = None) -> ThreadingHTTPServer:
+                lego_episode_root: Path | None = None,
+                bucket_dashboard_root: Path | None = None) -> ThreadingHTTPServer:
     base_path = base_path.rstrip("/")
     if not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*", base_path):
         raise ValueError("Base path must contain only slash-separated letters, digits, _ or -")
@@ -474,7 +475,7 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
     browser = TrainingDataBrowser(root.resolve().parent)
     lego_browser = LegoDataBrowser(root.resolve().parent, lego_catalog_root, lego_episode_root)
     browser.curriculum = lego_browser
-    buckets = BucketDashboard(root.resolve().parent / "data" / "bucket_dashboard")
+    buckets = BucketDashboard(bucket_dashboard_root or root.resolve().parent / "data" / "bucket_dashboard")
     assets = {
         "/": ("index.html", "text/html; charset=utf-8"),
         "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -678,13 +679,15 @@ def main() -> None:
                         help="Read-only directory containing versioned LEGO catalog releases")
     parser.add_argument("--lego-episode-root", type=Path,
                         help="Read-only directory containing immutable episode SQLite releases")
+    parser.add_argument("--bucket-dashboard-root", type=Path,
+                        help="Read-only directory containing current.json bucket snapshot pointer")
     args = parser.parse_args()
     if not args.root.is_dir():
         parser.error(f"Run directory does not exist: {args.root}")
     logging.basicConfig(level=logging.INFO)
     try:
         server = make_server(args.root, args.host, args.port, args.base_path, args.notice,
-                             args.lego_catalog_root, args.lego_episode_root)
+                             args.lego_catalog_root, args.lego_episode_root, args.bucket_dashboard_root)
     except ValueError as error:
         parser.error(str(error))
     print(f"RL dashboard: http://{args.host}:{server.server_port}{args.base_path.rstrip('/')}/",
