@@ -198,6 +198,7 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
                 sim = CatalogSimulation(
                     catalog, plan, model_root=robot_root, render=False, record_images=False,
                     contact_solver="pyramidal-v1", stationarity_metric="surface-speed-v2",
+                    initial_arm_position=(.14, -.12, .09),
                 )
             except mujoco.FatalError as error:
                 if "mj_stackAlloc: out of memory" not in str(error):

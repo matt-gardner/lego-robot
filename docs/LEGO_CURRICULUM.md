@@ -10,6 +10,9 @@ accepted pile supplies VIEW/GRASP/PUSH/PLACE tasks for every piece, including
 occluded pieces, without policy screening or assumed solvability. Two opaque
 physical panels provide additional VIEW obstructions. They are placed outside the
 settled pile bounds only after pile creation, never in the falling pieces' path.
+Native generation parks the gripper beside the pile at `(0.14, -0.12, 0.09)` m,
+not directly above the drop column. The legacy catalog recorder's default
+initial arm position is unchanged.
 Initial visibility is not
 measured during image-free generation; geometry-based burial tags are explicitly
 proxies, not claims about visible fraction.

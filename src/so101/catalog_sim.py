@@ -34,6 +34,7 @@ class CatalogSimulation(BeamSimulation):
         velocity_tolerance: float = .005,
         before_recording_write: Callable[[], None] | None = None,
         record_images: bool = True,
+        initial_arm_position: tuple[float, float, float] = (.20, 0., .09),
     ):
         self.before_recording_write = before_recording_write
         if not record_images and render:
@@ -84,7 +85,7 @@ class CatalogSimulation(BeamSimulation):
         }
         if appearance is not None:
             appearance.apply_model(self.model)
-        home = self.ik(np.array([.20, 0., .09]), 0.)
+        home = self.ik(np.asarray(initial_arm_position), 0.)
         home[-1] = self.limits[-1, 0] + .55 * np.ptp(self.limits[-1])
         self.data.qpos[self.qadr] = home
         self.data.ctrl[self.actuators] = home
