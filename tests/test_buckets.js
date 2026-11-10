@@ -52,4 +52,14 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.ok(all.some(e=>e.src==="api/buckets/image?problem=first&index=0&snapshot=snapshot"));
   assert.ok(all.some(e=>e.textContent==="Initial scene images not published."));
   assert.ok(all.some(e=>e.textContent==="Unmeasured: no valid rollout counts published."));
+  const overview=elements.get("populations").children[0];
+  assert.equal(overview.children.length,3);
+  const measured=overview.children.find(row=>row.children[1]?.textContent==="push");
+  const unmeasured=overview.children.find(row=>row.children[1]?.textContent==="place");
+  assert.equal(measured.children[3].textContent,"0");
+  assert.equal(measured.children[4].textContent,"100.0% (4/4)");
+  assert.equal(unmeasured.children[3].textContent,"Unmeasured");
+  measured.listeners.click();
+  assert.equal(elements.get("bucket").value,"b");
+  assert.match(elements.get("count").textContent,/1 matching problems/);
 });

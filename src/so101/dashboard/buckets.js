@@ -72,26 +72,39 @@ async function start() {
     const sourcePath=s=>typeof s==="object" ? s?.path : s;
     const groupFor=p=>groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index);
     const bucketIds=[...new Set([...buckets.map(b=>b.id),...problems.map(p=>p.bucket)])].sort();
+    const overview=node("table"), heading=node("tr");
+    for (const label of ["Bucket", "Task", "Problems", "Assistance tested", "Success", "95% CI", "Rollouts / groups", "Measured problems", "Mixed groups", "Per-problem success range", "Initial images"]) heading.append(node("th",label));
+    overview.append(heading);
     for (const id of bucketIds) {
       const b=buckets.find(x=>x.id===id), ps=problems.filter(p=>p.bucket===id);
-      const section=node("section",undefined,"bucket-summary");
-      section.append(node("h2",b?.label || id),node("p",`Population: ${b?.population_total ?? "unknown"}; enumerated ${ps.length}.`));
       const tasks=[...new Set([...(b?.tasks || []).map(t=>t.task),...ps.map(p=>p.task)])].sort();
       for (const task of tasks) {
         const tp=ps.filter(p=>p.task===task), declared=b?.tasks?.find(t=>t.task===task)?.population_total;
-        const d=node("details");d.append(node("summary",`${task}: ${declared ?? "unknown"} total; ${tp.length} enumerated`));
-        stats(d,tp.flatMap(groupFor));
-        const assistance=[...new Set(tp.flatMap(p=>aggregate(groupFor(p)).map(c=>c.assistance)))].sort((a,b)=>a-b);
-        for (const a of assistance) {
-          const rates=tp.flatMap(p=>aggregate(groupFor(p)).filter(c=>c.assistance===a).map(c=>c.successes/c.n));
-          d.append(node("p",`Assistance ${a}: within-bucket observed per-problem success range ${(Math.min(...rates)*100).toFixed(1)}–${(Math.max(...rates)*100).toFixed(1)}% across ${rates.length}/${tp.length} problems. Not calibrated difficulty.`));
+        const cells=aggregate(tp.flatMap(groupFor));
+        for (const c of cells.length ? cells : [null]) {
+          const rates=c ? tp.flatMap(p=>aggregate(groupFor(p)).filter(x=>x.assistance===c.assistance).map(x=>x.successes/x.n)) : [];
+          const row=node("tr"), ci=c ? wilson(c.successes,c.n) : null;
+          const values=[b?.label || id,task,declared ?? `${tp.length} enumerated`,
+            c ? c.assistance : "Unmeasured",
+            c ? `${(100*c.successes/c.n).toFixed(1)}% (${c.successes}/${c.n})` : "—",
+            ci ? ci.map(x=>(100*x).toFixed(1)+"%").join("–") : "—",
+            c ? `${c.n} / ${c.groups}` : "0 / 0",
+            `${rates.length}/${tp.length}`,
+            c ? `${c.mixed}/${c.groups}` : "—",
+            rates.length ? `${(Math.min(...rates)*100).toFixed(0)}–${(Math.max(...rates)*100).toFixed(0)}%` : "—",
+            `${tp.filter(p=>p.initial_images?.length).length}/${tp.length}`];
+          for (const value of values) row.append(node("td",String(value)));
+          row.addEventListener("click",()=>{
+            document.getElementById("bucket").value=id;
+            document.getElementById("task").value=task;
+            shown=24;render();
+          });
+          overview.append(row);
         }
-        if (!assistance.length) d.append(node("p","Within-bucket assistance spread: unmeasured.","missing"));
-        section.append(d);
       }
-      document.getElementById("populations").append(section);
       const opt=node("option",id);opt.value=id;document.getElementById("bucket").append(opt);
     }
+    document.getElementById("populations").append(overview);
     for (const task of [...new Set(problems.map(p=>p.task))].sort()) {const o=node("option",task);o.value=task;document.getElementById("task").append(o);}
     let shown=24;
     function render() {
