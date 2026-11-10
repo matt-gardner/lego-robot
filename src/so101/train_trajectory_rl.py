@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Generator
 import copy
+import hashlib
 import json
 import math
 import random
@@ -608,19 +609,75 @@ def rollout_group(
             iterator.close()
 
 
+def load_auxiliary_view(path: Path, validation: list[CorpusEpisode]):
+    manifest = json.loads(path.read_text())
+    if (manifest.get("schema_version") != 1 or manifest.get("status") != "complete"
+            or manifest.get("kind") != "harder-view-references"):
+        raise ValueError("Auxiliary VIEW manifest is not a completed reference collection")
+    heldout = {
+        (item.metadata["initial"]["seed"], item.metadata["initial"].get("scene_version", 1))
+        for item in validation
+    }
+    splits = {"train": [], "development": []}
+    families: dict[str, str] = {}
+    seen = set()
+    for entry in manifest["episodes"]:
+        source = Path(entry["path"])
+        if not source.is_absolute() or str(source) in seen or entry["split"] not in splits:
+            raise ValueError("Invalid auxiliary VIEW episode path or split")
+        seen.add(str(source))
+        for name in ("episode.json", "frames.jsonl"):
+            if hashlib.sha256((source / name).read_bytes()).hexdigest() != entry["sha256"][name]:
+                raise ValueError(f"Auxiliary VIEW artifact hash mismatch: {source / name}")
+        metadata = json.loads((source / "episode.json").read_text())
+        initial = metadata["initial"]
+        family = (initial["seed"], initial.get("scene_version", 1))
+        expected_family = hashlib.sha256(json.dumps(list(family)).encode()).hexdigest()
+        if (family in heldout or metadata["task"] != "view"
+                or metadata["outcome"] != "success"
+                or not metadata["reference_replay"]["success"]
+                or not np.isfinite(metadata["reference_replay"]["maximum_qpos_error"])
+                or metadata["reference_replay"]["maximum_qpos_error"] > 1e-7
+                or entry["scene_family_id"] != expected_family
+                or metadata["scene_family_id"] != expected_family
+                or metadata["split"] != entry["split"]):
+            raise ValueError("Auxiliary VIEW admission or held-out exclusion failed")
+        previous = families.setdefault(expected_family, entry["split"])
+        if previous != entry["split"]:
+            raise ValueError("Auxiliary VIEW scene family crosses train/development")
+        splits[entry["split"]].append(CorpusEpisode(source, metadata))
+    if not all(splits.values()):
+        raise ValueError("Auxiliary VIEW requires both train and development references")
+    return splits, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def assign_group_rewards(
     trajectories: list[Trajectory],
     success_weight: float = 1.,
     completion_weight: float = .5,
     smoothness_weight: float = 1.,
+    reference_free_completion: bool = False,
 ) -> None:
-    for item in trajectories:
+    completion = completion_values(trajectories, reference_free_completion)
+    for item, score in zip(trajectories, completion, strict=True):
         item.reward = (
             success_weight
-            + completion_weight * item.completion_efficiency
+            + completion_weight * float(score)
             + smoothness_weight * item.smoothness
             if item.success else 0.
         )
+
+
+def completion_values(trajectories: list[Trajectory], reference_free: bool) -> np.ndarray:
+    if not reference_free:
+        return np.asarray([item.completion_efficiency for item in trajectories], dtype=np.float32)
+    longest = max((item.steps for item in trajectories if item.success), default=1)
+    if longest <= 0:
+        raise ValueError("Successful completion requires a positive rollout length")
+    return np.asarray([
+        1. - item.steps / longest if item.success else 0.
+        for item in trajectories
+    ], dtype=np.float32)
 
 
 def normalized_component_advantage(
@@ -643,6 +700,7 @@ def group_advantages(
     success_weight: float,
     completion_weight: float,
     smoothness_weight: float,
+    reference_free_completion: bool = False,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     success = np.asarray([
         item.success for item in trajectories
@@ -651,9 +709,7 @@ def group_advantages(
     components = {
         "success": normalized_component_advantage(success),
         "completion": normalized_component_advantage(
-            np.asarray([
-                item.completion_efficiency for item in trajectories
-            ], dtype=np.float32),
+            completion_values(trajectories, reference_free_completion),
             successful,
         ),
         "smoothness": normalized_component_advantage(
@@ -1108,6 +1164,43 @@ def recover_zero_success_group(state: dict[str, Any], key: str, successes: int,
     return event
 
 
+def record_target_success_group(
+    state: dict[str, Any], key: str, successes: int, total: int,
+    maximum: float, step: int,
+) -> dict[str, Any] | None:
+    task = state["tasks"][key]
+    window = task.setdefault("success_window", [])
+    window.append({"successes": successes, "total": total})
+    del window[:-4]
+    task["groups_at_level"] += 1
+    task["rollouts_at_level"] += total
+    task["successes_at_level"] += successes
+    if len(window) < 4:
+        return None
+    rate = sum(row["successes"] for row in window) / sum(
+        row["total"] for row in window
+    )
+    task["rolling_success_rate"] = rate
+    previous = float(task["level"])
+    direction = -1 if rate > .6 else 1 if rate < .4 else 0
+    current = round(min(maximum, max(
+        float(state["minimum"]),
+        previous + direction * float(state["decrement"]),
+    )), 6)
+    if current == previous:
+        return None
+    event = {
+        "step": step, "task": key, "previous": previous, "current": current,
+        "kind": "target_success", "success_rate": rate,
+        "successes": sum(row["successes"] for row in window),
+        "total": sum(row["total"] for row in window),
+    }
+    state["events"].append(event)
+    task.update(level=current, perfect_group_streak=0, groups_at_level=0,
+                rollouts_at_level=0, successes_at_level=0, success_window=[])
+    return event
+
+
 def record_solved_problem(
     bucket: dict[str, Any],
     episode: CorpusEpisode,
@@ -1311,6 +1404,11 @@ def train(args: argparse.Namespace) -> None:
         (output / "data_split.json").write_text(json.dumps(
             split_payload, indent=2
         ))
+    auxiliary_view = None
+    auxiliary_path = getattr(args, "auxiliary_view_manifest", None)
+    if auxiliary_path is not None:
+        auxiliary_view, auxiliary_sha = load_auxiliary_view(auxiliary_path, validation)
+        training["view"] = [*training["view"], *auxiliary_view["train"]]
     jerk_references = (ReferenceJerkMargins(
         {task: [str(item.source) for item in episodes] for task, episodes in training.items()},
         args.horizon, 10, hold_final=False,
@@ -1430,7 +1528,20 @@ def train(args: argparse.Namespace) -> None:
             "current": training_objective,
         })
     log["training_objective"] = training_objective
+    if log.get("auxiliary_view") and auxiliary_view is None:
+        raise ValueError("Resume requires the previously admitted auxiliary VIEW manifest")
+    if auxiliary_view is not None:
+        admission = {"manifest": str(auxiliary_path), "sha256": auxiliary_sha,
+                     "train": len(auxiliary_view["train"]),
+                     "development": len(auxiliary_view["development"])}
+        if log.get("auxiliary_view", admission) != admission:
+            raise ValueError("Cannot replace the admitted auxiliary VIEW manifest on resume")
+        log["auxiliary_view"] = admission
     if jerk_references is not None:
+        if getattr(args, "reference_jerk_fallback", False):
+            if "frozen_jerk_calibration" not in log:
+                log["frozen_jerk_calibration"] = jerk_references.calibrate_fallback()
+            atomic_json(output / "frozen_jerk_calibration.json", log["frozen_jerk_calibration"])
         jerk_definition = {
             "weight": jerk_weight, "scale": jerk_scale, **jerk_references.protocol(),
             "loss": "max(RMS_command_jerk - problem_reference_jerk, 0)^2 / scale^2",
@@ -1438,6 +1549,9 @@ def train(args: argparse.Namespace) -> None:
             "missing_references": "disable jerk loss for that problem; retain task policy gradients",
             "gradient": "reparameterized denoising; recorded observations fixed, no simulator gradients",
         }
+        if getattr(args, "reference_jerk_fallback", False):
+            jerk_definition["missing_references"] = "frozen 75th-percentile successful-training-reference margin; never calibrated from RL"
+            jerk_definition["fallback_calibration"] = "frozen_jerk_calibration.json"
         if log.get("jerk_regularizer") != jerk_definition:
             log.setdefault("jerk_regularizer_changes", []).append({
                 "start_step": log["steps"][-1]["step"] + 1 if log["steps"] else 1,
@@ -1470,6 +1584,11 @@ def train(args: argparse.Namespace) -> None:
     ]
     start_step = log["steps"][-1]["step"] + 1 if log["steps"] else 1
     reward_definition = {
+        "completion": (
+            "1 - steps / longest_successful_steps within the task group; successful-only normalized advantage"
+            if getattr(args, "reference_free_completion", False)
+            else "reference-relative completion efficiency"
+        ),
         "smoothness": "min(expert_jerk_p10 / max(rms_jerk, 1e-6), 1)",
         "smoothness_scope": "successful trajectories",
         "advantage": "independently normalized absolute-score components",
@@ -1518,6 +1637,15 @@ def train(args: argparse.Namespace) -> None:
                 "reason": "Increase existing gold-prefix assistance when a group supplies no task-reward gradient",
             })
         mastery_curriculum["recover_zero_success_groups"] = recovery_enabled
+        target_success = getattr(args, "target_success_curriculum", False)
+        if mastery_curriculum.get("target_success", False) != target_success:
+            log.setdefault("curriculum_strategy_changes", []).append({
+                "start_step": start_step, "target_success": target_success,
+                "window_groups": 4, "success_band": [.4, .6],
+            })
+            for task_state in mastery_curriculum["tasks"].values():
+                task_state["success_window"] = []
+        mastery_curriculum["target_success"] = target_success
     if jerk_references is not None:
         atomic_json(output / "jerk_reference_margins.json", jerk_references.snapshot())
     write_log(output, log)
@@ -1571,6 +1699,16 @@ def train(args: argparse.Namespace) -> None:
                 "start_step": start_step,
                 "target_step": args.steps,
             }), flush=True)
+        if auxiliary_view is not None and not log.get("auxiliary_view_validation"):
+            development = validation_metrics(
+                sim, controller, auxiliary_view["development"], bounds,
+                args.seed + 1_900_000, args.horizon, args.action_steps,
+                sampling_noise,
+            )
+            development["step"] = start_step - 1
+            development["phase"] = "before_auxiliary_training"
+            log["auxiliary_view_validation"] = [development]
+            write_log(output, log)
         for step in range(start_step, args.steps + 1):
             step_start = time.monotonic()
             optimizer.zero_grad(set_to_none=True)
@@ -1603,7 +1741,11 @@ def train(args: argparse.Namespace) -> None:
                     episode = (
                         training_by_source[solved_problem["source"]]
                         if solved_problem is not None
-                        else training[task][int(rng.integers(len(training[task])))]
+                        else (
+                            auxiliary_view["train"][int(rng.integers(len(auxiliary_view["train"])))]
+                            if auxiliary_view is not None and task == "view"
+                            else training[task][int(rng.integers(len(training[task])))]
+                        )
                     )
                     start_proximity = 0.
                     has_obstacles = bool(
@@ -1650,6 +1792,10 @@ def train(args: argparse.Namespace) -> None:
                         start_proximity = solved_problem["start_proximity"]
                     jerk_profile = (jerk_references.summary(episode.source, start_proximity)
                                     if jerk_references is not None else None)
+                    if jerk_references is not None and getattr(args, "reference_jerk_fallback", False):
+                        jerk_profile = jerk_references.summary_with_fallback(
+                            episode.source, start_proximity, log["frozen_jerk_calibration"],
+                        )
                     jerk_margin = jerk_profile["margin"] if jerk_profile is not None else None
                     capture_path = (output / "rollouts" / f"step_{step:06}" / f"group_{task_index}_{attempt}.json"
                                     if getattr(args, "record_rollouts", False) else None)
@@ -1701,13 +1847,26 @@ def train(args: argparse.Namespace) -> None:
                         and curriculum_max > 0
                         and step >= args.curriculum_start_step
                     ):
-                        mastery_ready = record_mastery_group(
-                            mastery_curriculum,
-                            assistance_key,
-                            success_count,
-                            args.group_size,
-                        )
-                        if recovery_enabled and success_count == 0:
+                        if mastery_curriculum.get("target_success", False):
+                            mastery_event = record_target_success_group(
+                                mastery_curriculum, assistance_key, success_count,
+                                len(trajectories), curriculum_max, step,
+                            )
+                            mastery_ready = False
+                            if mastery_event is not None:
+                                print(json.dumps({
+                                    "event": "curriculum_target_success",
+                                    **mastery_event,
+                                }), flush=True)
+                        else:
+                            mastery_ready = record_mastery_group(
+                                mastery_curriculum,
+                                assistance_key,
+                                success_count,
+                                args.group_size,
+                            )
+                        if (recovery_enabled and success_count == 0
+                                and not mastery_curriculum.get("target_success", False)):
                             recovery_event = recover_zero_success_group(
                                 mastery_curriculum, assistance_key, success_count,
                                 curriculum_max, step,
@@ -1772,6 +1931,7 @@ def train(args: argparse.Namespace) -> None:
                         args.success_advantage_weight,
                         args.completion_advantage_weight,
                         args.smoothness_advantage_weight,
+                        getattr(args, "reference_free_completion", False),
                     )
                     jerk_group_metrics = {}
                     if jerk_enabled:
@@ -1787,7 +1947,7 @@ def train(args: argparse.Namespace) -> None:
                         jerk_groups += int(regularized)
                         jerk_group_metrics = {
                             "jerk_margin": jerk_margin, "jerk_losses": jerk_losses,
-                            "jerk_reference_scope": "problem",
+                            "jerk_reference_scope": jerk_profile.get("reference_scope", "problem"),
                             "jerk_reference_source": str(episode.source),
                             "jerk_regularizer_enabled": jerk_margin is not None,
                             "jerk_regularizer_applied": any(cost is not None and cost > 0 for cost in jerk_losses),
@@ -1858,6 +2018,7 @@ def train(args: argparse.Namespace) -> None:
                         args.success_advantage_weight,
                         args.completion_advantage_weight,
                         args.smoothness_advantage_weight,
+                        getattr(args, "reference_free_completion", False),
                     )
                     denominator = float(
                         np.abs(advantages).sum() + 1e-6
@@ -1975,6 +2136,14 @@ def train(args: argparse.Namespace) -> None:
                 )
                 log["validation"].append(metrics)
                 step_row["validation"] = metrics
+                if auxiliary_view is not None:
+                    development = validation_metrics(
+                        sim, controller, auxiliary_view["development"], bounds,
+                        args.seed + 1_900_000, args.horizon, args.action_steps,
+                        sampling_noise,
+                    )
+                    development["step"] = step
+                    log.setdefault("auxiliary_view_validation", []).append(development)
                 save_delta_checkpoint(
                     output / f"delta_step_{step:03}.pt",
                     controller,
@@ -2118,6 +2287,14 @@ def main() -> None:
     parser.add_argument("--curriculum-min", type=float, default=0.)
     parser.add_argument("--recover-zero-success-groups", action="store_true",
                         help="Increase gold-prefix assistance by the existing curriculum increment after zero-success groups.")
+    parser.add_argument("--target-success-curriculum", action="store_true",
+                        help="Adapt assistance using four recent groups toward 40-60% success, instead of perfect-group mastery.")
+    parser.add_argument("--reference-jerk-fallback", action="store_true",
+                        help="Use a frozen 75th-percentile successful-reference jerk margin when a problem has no usable reference.")
+    parser.add_argument("--reference-free-completion", action="store_true",
+                        help="Normalize successful-rollout length within each task group instead of using expert completion efficiency.")
+    parser.add_argument("--auxiliary-view-manifest", type=Path,
+                        help="Hash-bound harder VIEW train/development references; preserves original fixed validation split.")
     parser.add_argument(
         "--push-curriculum-max", type=float, default=.95
     )

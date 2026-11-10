@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -90,6 +91,50 @@ class ReferenceJerkMargins:
             "fixed_horizon": self.hold_final,
             "window": ("expert suffix after the same assistance prefix; hold final command to fill the fixed horizon"
                        if self.hold_final else "expert suffix after the same assistance prefix; stop at reference end or horizon"),
+        }
+
+    def calibrate_fallback(self) -> dict:
+        profiles = [self.summary(source, 0.) for source in sorted(self.sources)]
+        valid = [item for item in profiles if item["margin"] is not None]
+        if not valid:
+            raise ValueError("No valid successful references for pooled jerk calibration")
+        provenance = []
+        for item in valid:
+            path = self.workspace / item["source"]
+            provenance.append({
+                "source": item["source"], "task": item["command"],
+                "margin": item["margin"],
+                "sha256": {
+                    name: hashlib.sha256((path / name).read_bytes()).hexdigest()
+                    for name in ("episode.json", "frames.jsonl")
+                },
+            })
+        return {
+            "schema": 1, "scope": "frozen_successful_training_references",
+            "percentile": 75, "margin": float(np.percentile(
+                [item["margin"] for item in valid], 75,
+            )), "reference_count": len(valid),
+            "excluded_count": len(profiles) - len(valid),
+            "protocol": self.protocol(), "assistance": 0.,
+            "references": provenance,
+        }
+
+    def summary_with_fallback(self, source: str | Path, assistance: float,
+                              calibration: dict) -> dict:
+        profile = self.summary(source, assistance)
+        if profile["margin"] is not None:
+            return profile
+        if (calibration["protocol"] != self.protocol()
+                or calibration["scope"] != "frozen_successful_training_references"
+                or calibration["reference_count"] < 1
+                or not np.isfinite(calibration["margin"]) or calibration["margin"] < 0):
+            raise ValueError("Invalid frozen reference jerk calibration")
+        return {
+            **profile, "margin": calibration["margin"],
+            "reference_count": calibration["reference_count"],
+            "reference_scope": "frozen_reference_pool",
+            "problem_reference_disabled_reason": profile["disabled_reason"],
+            "disabled_reason": None,
         }
 
     def snapshot(self) -> dict:

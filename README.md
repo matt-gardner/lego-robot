@@ -520,6 +520,34 @@ path is complete, then batches their CPU transfer. Replay still receives the
 same CPU tensors and sampled noise, without forcing a GPU/CPU synchronization
 between every denoising step.
 
+`--target-success-curriculum` replaces perfect-group mastery checks and
+single-group zero-success recovery with a per-task rolling four-group success
+window. Above 60% success, gold-prefix assistance decreases by the configured
+curriculum decrement; below 40%, it increases, bounded by the existing minimum
+and task maximum. A changed level starts a fresh window. Windows and strategy
+transitions are checkpointed, preserving model, optimizer and RNG history on
+resume. The target encourages mixed binary outcomes, not a guarantee of
+improved learning; unassisted fixed held-out evaluation is unchanged.
+
+`--reference-jerk-fallback` calibrates a frozen 75th-percentile margin from
+successful training reference trajectories only (never RL rollouts), using
+unassisted reference windows and the same five-joint units, horizon and FPS.
+The checkpoint retains the calibration and exact reference-file hashes;
+`frozen_jerk_calibration.json` exports its provenance. A usable problem-specific
+reference still takes precedence; otherwise the pooled margin supplies the
+jerk loss. `--reference-free-completion` instead rewards shorter successful
+rollouts within each task group, independently normalizing this advantage
+among successes. Failed rollouts receive no completion bonus. Historical
+reference-relative completion-efficiency metrics remain unchanged.
+
+`--auxiliary-view-manifest` admits a completed image-free harder-VIEW reference
+manifest after checking file hashes, successful replay receipts and scene-family
+separation from the frozen validation set and between auxiliary splits. Main
+VIEW groups sample the auxiliary training references; the original collection
+and fixed validation memberships stay unchanged. Auxiliary development success
+is logged separately before its first training update and at validation
+intervals; successful expert replay alone does not establish policy difficulty.
+
 `--batch-rollouts` optionally batches inference across a training group's
 independent simulator instances on CUDA or CPU. Each trajectory retains its
 own observation history and seeded noise generator, including after other

@@ -18,6 +18,31 @@ def test_reference_window_matches_assistance_and_holds_final_command():
     np.testing.assert_array_equal(reference_window(actions, 6, .5), window)
 
 
+def test_frozen_fallback_uses_only_successful_references_and_preserves_problem_margin(tmp_path):
+    sources = []
+    for index, outcome in enumerate(("success", "success", "failed")):
+        path = tmp_path / str(index)
+        path.mkdir()
+        (path / "episode.json").write_text(json.dumps({"task": "push", "outcome": outcome, "fps": 10}))
+        actions = np.zeros((8, 6))
+        actions[:, 0] = (index + 1) * (-1.) ** np.arange(8)
+        (path / "frames.jsonl").write_text("".join(
+            json.dumps({"action": row.tolist()}) + "\n" for row in actions))
+        sources.append(str(path))
+    margins = ReferenceJerkMargins({"push": sources}, 8, 10, hold_final=False)
+    frozen = margins.calibrate_fallback()
+    assert frozen["reference_count"] == 2 and frozen["excluded_count"] == 1
+    assert frozen["margin"] == pytest.approx(np.percentile(
+        [margins.summary(source, 0.)["margin"] for source in sources[:2]], 75))
+    assert margins.summary_with_fallback(sources[0], 0., frozen) == margins.summary(sources[0], 0.)
+    fallback = margins.summary_with_fallback("new_problem", 0., frozen)
+    assert fallback["margin"] == frozen["margin"]
+    assert fallback["reference_scope"] == "frozen_reference_pool"
+    assert frozen["references"][0]["sha256"]["frames.jsonl"]
+    with pytest.raises(ValueError):
+        margins.summary_with_fallback("new_problem", 0., {**frozen, "margin": float("nan")})
+
+
 def test_each_problem_uses_its_own_reference_and_disables_only_missing_references(tmp_path):
     sources = []
     for index, (amplitude, outcome, fps) in enumerate(((1, "success", 10), (3, "success", 10),

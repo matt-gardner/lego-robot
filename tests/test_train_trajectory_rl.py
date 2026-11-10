@@ -1,6 +1,7 @@
 from argparse import Namespace
 from copy import deepcopy
 import json
+import hashlib
 import random
 from types import SimpleNamespace
 
@@ -18,11 +19,14 @@ from so101.train_trajectory_rl import (
     initialize_mastery_curriculum,
     mastery_assistance,
     record_mastery_group,
+    record_target_success_group,
     resolve_mastery_check,
     recover_zero_success_group,
     replay_gold_prefix,
     assign_group_rewards,
     group_advantages,
+    completion_values,
+    load_auxiliary_view,
     initialize_solved_problems,
     record_solved_problem,
     sample_solved_problem,
@@ -112,6 +116,80 @@ def test_curriculum_selects_task_and_obstacle_levels() -> None:
     assert curriculum_maximum("grasp", False, config) == .95
     assert curriculum_maximum("view", False, config) == .95
     assert curriculum_maximum("grasp", True, config) == .8
+
+
+@pytest.mark.parametrize("successes,expected", [(3, .9), (2, .95), (1, 1.)])
+def test_target_success_uses_mixed_groups_and_waits_for_window(successes, expected):
+    state = initialize_mastery_curriculum({}, args())
+    mastery_assistance(state, "push", .95)
+    for step in range(3):
+        assert record_target_success_group(state, "push", successes, 4, 1., step) is None
+    event = record_target_success_group(state, "push", successes, 4, 1., 3)
+    assert state["tasks"]["push"]["level"] == expected
+    assert (event is None) == (successes == 2)
+    if event:
+        assert event["total"] == 16
+        assert state["tasks"]["push"]["success_window"] == []
+
+
+def test_target_success_bounds_and_resume_window():
+    state = initialize_mastery_curriculum({}, args())
+    mastery_assistance(state, "view", 0.)
+    for step in range(4):
+        assert record_target_success_group(state, "view", 4, 4, 0., step) is None
+    mastery_assistance(state, "push", .95)
+    record_target_success_group(state, "push", 0, 4, .95, 1)
+    resumed = json.loads(json.dumps(state))
+    for step in range(2, 5):
+        assert record_target_success_group(resumed, "push", 0, 4, .95, step) is None
+    assert resumed["tasks"]["push"]["level"] == .95
+
+
+def test_reference_free_completion_rewards_shorter_successes_without_expert_scores():
+    rows = [
+        SimpleNamespace(success=True, steps=20, completion_efficiency=0., smoothness=0.),
+        SimpleNamespace(success=True, steps=40, completion_efficiency=0., smoothness=0.),
+        SimpleNamespace(success=False, steps=1, completion_efficiency=1., smoothness=0.),
+    ]
+    np.testing.assert_allclose(completion_values(rows, True), [.5, 0., 0.])
+    advantages, components = group_advantages(rows, 1., .5, 0., True)
+    assert components["completion"][0] > 0 > components["completion"][1]
+    assert components["completion"][2] == 0
+    assign_group_rewards(rows, 1., .5, 0., True)
+    assert rows[0].reward > rows[1].reward > rows[2].reward
+    assert np.isfinite(advantages).all()
+
+
+def test_auxiliary_view_verifies_hashes_and_excludes_heldout_families(tmp_path):
+    entries = []
+    for seed, split in [(1, "train"), (2, "development")]:
+        source = tmp_path / str(seed)
+        source.mkdir()
+        family = hashlib.sha256(json.dumps([seed, 1]).encode()).hexdigest()
+        metadata = {
+            "task": "view", "outcome": "success", "initial": {"seed": seed},
+            "reference_replay": {"success": True, "maximum_qpos_error": 1e-8},
+            "scene_family_id": family, "split": split,
+        }
+        (source / "episode.json").write_text(json.dumps(metadata))
+        (source / "frames.jsonl").write_text("{}\n")
+        entries.append({
+            "path": str(source), "split": split, "scene_family_id": family,
+            "sha256": {name: hashlib.sha256((source / name).read_bytes()).hexdigest()
+                       for name in ("episode.json", "frames.jsonl")},
+        })
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"schema_version": 1, "status": "complete",
+                               "kind": "harder-view-references", "episodes": entries}))
+    admitted, digest = load_auxiliary_view(path, [])
+    assert len(admitted["train"]) == len(admitted["development"]) == 1
+    assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    heldout = CorpusEpisode(tmp_path / "heldout", {"initial": {"seed": 1}})
+    with pytest.raises(ValueError, match="held-out"):
+        load_auxiliary_view(path, [heldout])
+    (tmp_path / "1/frames.jsonl").write_text("changed")
+    with pytest.raises(ValueError, match="hash mismatch"):
+        load_auxiliary_view(path, [])
 
 
 def test_assistance_only_decreases_after_perfect_mastery_window() -> None:
