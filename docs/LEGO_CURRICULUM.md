@@ -15,7 +15,9 @@ Native generation parks the gripper beside the pile at `(0.14, -0.12, 0.09)` m,
 not directly above the drop column. The legacy catalog recorder's default
 initial arm position is unchanged.
 Pieces are introduced one at a time just above the current pile bounds and
-settled before the next drop. Future pieces wait outside the workspace without
+settled before the next drop. Drop height uses the rotated geometry's vertical
+bounding-box extent, not its bounding-sphere radius, so wide flat pieces do not
+cause unnecessarily high drops. Future pieces wait outside the workspace without
 gravity, which is restored before each insertion. This avoids a tall airborne
 column and its count-dependent impact energy; final scenes retain ordinary
 gravity, contact, stationarity, and exact-reset checks.

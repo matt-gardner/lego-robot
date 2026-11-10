@@ -32,6 +32,32 @@ def test_continuous_schedule_revisits_small_piles_after_largest_range(tmp_path, 
     assert json.loads((tmp_path / "attempt_000000144.json").read_text())["status"] == "rejected"
 
 
+def test_sequential_drop_does_not_turn_flat_piece_width_into_drop_height(monkeypatch):
+    model = mujoco.MjModel.from_xml_string("""<mujoco><worldbody>
+      <body name="a"><freejoint/><geom type="box" size=".15 .02 .001"/></body>
+      <body name="b"><freejoint/><geom type="box" size=".15 .02 .001"/></body>
+    </worldbody></mujoco>""")
+    data = mujoco.MjData(model)
+    sim = SimpleNamespace(
+        model=model, data=data, xml="", scene_origin=np.array([.22, 0., generator.TABLE_Z]),
+        plan={"objects": [{"instance_id": name, "part_id": "flat",
+                           "position_relative_to_scene_m": [0., 0., 1.]}
+                          for name in ("a", "b")]},
+        part_metadata={"flat": SimpleNamespace(
+            vertical_bounds_m=(-.001, .001), dimensions_m=(.30, .04, .002))},
+    )
+    drops = []
+
+    def settle(*_args, **_kwargs):
+        index = len(drops)
+        drops.append(float(data.qpos[index * 7 + 2]))
+        data.qpos[index * 7 + 2] = generator.TABLE_Z + .001 + index * .002
+
+    monkeypatch.setattr(generator, "settle_data", settle)
+    generator.drop_pieces_sequentially(sim)
+    np.testing.assert_allclose(drops, [generator.TABLE_Z + .004, generator.TABLE_Z + .006])
+
+
 def test_random_catalog_sampling_and_monochrome_are_reproducible():
     parts = tuple(Part(str(index), "brick", (.008, .016, .01), "", ())
                   for index in range(20))

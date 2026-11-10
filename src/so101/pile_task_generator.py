@@ -96,8 +96,12 @@ def drop_pieces_sequentially(sim) -> None:
             geoms = np.flatnonzero(np.isin(sim.model.geom_bodyid, active_bodies))
             top = TABLE_Z
             if len(geoms):
+                bounds = sim.model.geom_aabb[geoms]
+                vertical = sim.data.geom_xmat[geoms].reshape(-1, 3, 3)[:, 2, :]
                 top = max(top, float(np.max(
-                    sim.data.geom_xpos[geoms, 2] + sim.model.geom_rbound[geoms]
+                    sim.data.geom_xpos[geoms, 2]
+                    + np.sum(vertical * bounds[:, :3], axis=1)
+                    + np.sum(np.abs(vertical) * bounds[:, 3:], axis=1)
                 )))
             part = sim.part_metadata[obj["part_id"]]
             lower = (part.vertical_bounds_m or (-part.dimensions_m[2] / 2, 0.))[0]
