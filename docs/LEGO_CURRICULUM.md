@@ -8,7 +8,9 @@ verified parts from the single current catalog, cycles monochrome/few/many-color
 distributions, and increases piece counts across successive proposals. Every
 accepted pile supplies VIEW/GRASP/PUSH/PLACE tasks for every piece, including
 occluded pieces, without policy screening or assumed solvability. Two opaque
-physical panels provide additional VIEW obstructions. Initial visibility is not
+physical panels provide additional VIEW obstructions. They are placed outside the
+settled pile bounds only after pile creation, never in the falling pieces' path.
+Initial visibility is not
 measured during image-free generation; geometry-based burial tags are explicitly
 proxies, not claims about visible fraction.
 

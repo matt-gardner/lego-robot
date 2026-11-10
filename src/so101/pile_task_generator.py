@@ -144,6 +144,29 @@ def describe_scene(sim, plan: dict) -> tuple[list[dict], list[dict], dict]:
     }
 
 
+def add_settled_view_walls(sim, plan: dict) -> None:
+    mujoco.mj_forward(sim.model, sim.data)
+    bodies = {sim.model.body(obj["instance_id"]).id for obj in plan["objects"]}
+    geoms = np.flatnonzero(np.isin(sim.model.geom_bodyid, list(bodies)))
+    centers = sim.data.geom_xpos[geoms]
+    radii = sim.model.geom_rbound[geoms]
+    lower = np.min(centers - radii[:, None], axis=0)
+    upper = np.max(centers + radii[:, None], axis=0)
+    tree = ET.fromstring(sim.xml)
+    for index, lateral in enumerate((lower[1] - .011, upper[1] + .011)):
+        name = f"pile_view_obstruction_{index}"
+        position = [(lower[0] + upper[0]) / 2, lateral, TABLE_Z + .045]
+        sim.model.geom_pos[sim.model.geom(name).id] = position
+        node = tree.find(f".//geom[@name='{name}']")
+        node.set("pos", " ".join(map(str, position)))
+    sim.xml = ET.tostring(tree, encoding="unicode")
+    mujoco.mj_forward(sim.model, sim.data)
+    panels = {sim.model.geom(f"pile_view_obstruction_{i}").id for i in range(2)}
+    for contact in sim.data.contact:
+        if contact.dist < -.000001 and panels.intersection((contact.geom1, contact.geom2)):
+            raise ValueError("Settled VIEW wall intersects existing scene")
+
+
 def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int,
                    count: int, color_mode: str, model_root: Path = MODEL_ROOT) -> dict:
     sim = None
@@ -162,10 +185,10 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
             world = robot.getroot().find("worldbody")
             if world is None:
                 raise ValueError("Robot model lacks worldbody")
-            for index, lateral in enumerate((-.065, .065)):
+            for index in range(2):
                 ET.SubElement(world, "geom", {
                     "name": f"pile_view_obstruction_{index}", "type": "box",
-                    "pos": f".22 {lateral} {TABLE_Z + .045}",
+                    "pos": f".22 0 {-10 - index}",
                     "size": ".035 .006 .045", "rgba": ".25 .25 .25 1",
                 })
             robot.write(robot_root / "so101.xml")
@@ -181,13 +204,14 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
                     raise
                 raise ValueError(f"Pile constraint arena exhausted: {error}") from error
     try:
+        add_settled_view_walls(sim, plan)
         instances, tasks, tags = describe_scene(sim, plan)
         support = support_graph(sim.model, sim.data, list(sim.object_metadata))
         if support["unsupported_objects"] or not support["object_object_edges"]:
             raise ValueError("Settled proposal is not a table-connected contacting pile")
         tags["contact_graph"] = support
         tags["view_obstructions"] = {
-            "kind": "two-fixed-opaque-panels", "count": 2,
+            "kind": "two-post-settling-opaque-panels", "count": 2,
             "initial_target_occlusion_measured": False,
         }
         scene = {
@@ -255,6 +279,7 @@ def candidate_rejection(error: ValueError) -> bool:
         "Catalog scene did not settle before physics timeout",
         "Settled proposal is not a table-connected contacting pile",
         "Pile constraint arena exhausted:",
+        "Settled VIEW wall intersects existing scene",
     ))
 
 

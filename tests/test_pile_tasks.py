@@ -215,6 +215,24 @@ def test_generated_target_positions_match_post_integration_reset():
     assert tasks[0]["initial_target_position"][2] == data.qpos[2]
 
 
+def test_view_walls_added_outside_settled_pile_preserve_piece_state():
+    xml = """<mujoco><worldbody>
+      <body name="piece" pos=".22 0 .1"><freejoint/><geom size=".03"/></body>
+      <geom name="pile_view_obstruction_0" type="box" size=".035 .006 .045" pos="0 0 -10"/>
+      <geom name="pile_view_obstruction_1" type="box" size=".035 .006 .045" pos="0 0 -11"/>
+    </worldbody></mujoco>"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    before = data.qpos.copy()
+    sim = SimpleNamespace(model=model, data=data, xml=xml)
+    generator.add_settled_view_walls(sim, {"objects": [{"instance_id": "piece"}]})
+    np.testing.assert_array_equal(data.qpos, before)
+    assert model.geom_pos[model.geom("pile_view_obstruction_0").id, 1] < -.036
+    assert model.geom_pos[model.geom("pile_view_obstruction_1").id, 1] > .036
+    rebuilt = mujoco.MjModel.from_xml_string(sim.xml)
+    np.testing.assert_array_equal(model.geom_pos, rebuilt.geom_pos)
+
+
 def test_worker_excludes_families_and_reuses_completed_result(tmp_path, monkeypatch):
     value = request(tmp_path)
     value["excluded_scene_families"] = [
