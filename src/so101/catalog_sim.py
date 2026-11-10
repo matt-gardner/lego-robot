@@ -35,6 +35,7 @@ class CatalogSimulation(BeamSimulation):
         before_recording_write: Callable[[], None] | None = None,
         record_images: bool = True,
         initial_arm_position: tuple[float, float, float] = (.20, 0., .09),
+        initialize_objects: Callable[["CatalogSimulation"], None] | None = None,
     ):
         self.before_recording_write = before_recording_write
         if not record_images and render:
@@ -89,6 +90,8 @@ class CatalogSimulation(BeamSimulation):
         home[-1] = self.limits[-1, 0] + .55 * np.ptp(self.limits[-1])
         self.data.qpos[self.qadr] = home
         self.data.ctrl[self.actuators] = home
+        if initialize_objects is not None:
+            initialize_objects(self)
         _, _, self.settled_snapshot = settle_data(
             self.model, self.data, self.xml, plan, contact_solver=contact_solver,
             stationarity_metric=stationarity_metric, velocity_tolerance=velocity_tolerance,

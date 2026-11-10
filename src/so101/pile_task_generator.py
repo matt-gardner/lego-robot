@@ -23,7 +23,7 @@ from so101.cloud_checkpoint import atomic_json
 from so101.curriculum_workers import memory_state
 from so101.lego_curriculum import load_catalog, prepare_scene
 from so101.lego_parts_catalog import catalog_read_lock
-from so101.lego_scene import RGBA, capture_scene_state
+from so101.lego_scene import RGBA, capture_scene_state, settle_data
 from so101.pile_task_runtime import GRADER_VERSION, create_simulation, load_problem
 from so101.robot_sim import MODEL_ROOT, TABLE_Z
 from so101.settled_piles import support_graph
@@ -63,6 +63,7 @@ def propose_pile(catalog, seed: int, sequence: int, count: int, color_mode: str)
             np.asarray(obj["position_relative_to_scene_m"][:2]) * .35
         ).tolist()
     plan["generator"] = "native-pile-tasks-v1"
+    plan["drop_strategy"] = "sequential-low-clearance-v1"
     plan["color_mode"] = color_mode
     plan["destinations"] = [
         {"destination_id": "destination_0", "position_relative_to_scene_m": [0., -.14, .00002]},
@@ -72,6 +73,48 @@ def propose_pile(catalog, seed: int, sequence: int, count: int, color_mode: str)
     plan["pair_id"] = plan["scene_id"]
     plan["commands"] = []
     return plan
+
+
+def drop_pieces_sequentially(sim) -> None:
+    objects = sim.plan["objects"]
+    slots = []
+    for index, obj in enumerate(objects):
+        body = sim.model.body(obj["instance_id"]).id
+        joint = int(sim.model.body_jntadr[body])
+        qadr = int(sim.model.jnt_qposadr[joint])
+        dadr = int(sim.model.jnt_dofadr[joint])
+        slots.append((body, qadr, dadr, float(sim.model.body_gravcomp[body])))
+        sim.model.body_gravcomp[body] = 1.
+        sim.data.qpos[qadr:qadr + 3] = [10. + index, 0., 1.]
+        sim.data.qvel[dadr:dadr + 6] = 0.
+    active = []
+    try:
+        for obj, (body, qadr, dadr, gravity) in zip(objects, slots):
+            mujoco.mj_forward(sim.model, sim.data)
+            active_bodies = [sim.model.body(item["instance_id"]).id for item in active]
+            geoms = np.flatnonzero(np.isin(sim.model.geom_bodyid, active_bodies))
+            top = TABLE_Z
+            if len(geoms):
+                top = max(top, float(np.max(
+                    sim.data.geom_xpos[geoms, 2] + sim.model.geom_rbound[geoms]
+                )))
+            part = sim.part_metadata[obj["part_id"]]
+            lower = (part.vertical_bounds_m or (-part.dimensions_m[2] / 2, 0.))[0]
+            relative = obj["position_relative_to_scene_m"]
+            sim.data.qpos[qadr:qadr + 3] = [
+                sim.scene_origin[0] + relative[0],
+                sim.scene_origin[1] + relative[1], top - lower + .003,
+            ]
+            sim.data.qvel[dadr:dadr + 6] = 0.
+            sim.model.body_gravcomp[body] = gravity
+            active.append(obj)
+            settle_data(
+                sim.model, sim.data, sim.xml, {**sim.plan, "objects": list(active)},
+                contact_solver="pyramidal-v1", stationarity_metric="surface-speed-v2",
+            )
+    finally:
+        for body, _, _, gravity in slots:
+            sim.model.body_gravcomp[body] = gravity
 
 
 def describe_scene(sim, plan: dict) -> tuple[list[dict], list[dict], dict]:
@@ -199,6 +242,7 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
                     catalog, plan, model_root=robot_root, render=False, record_images=False,
                     contact_solver="pyramidal-v1", stationarity_metric="surface-speed-v2",
                     initial_arm_position=(.14, -.12, .09),
+                    initialize_objects=drop_pieces_sequentially,
                 )
             except mujoco.FatalError as error:
                 if "mj_stackAlloc: out of memory" not in str(error):

@@ -233,6 +233,41 @@ def test_view_walls_added_outside_settled_pile_preserve_piece_state():
     np.testing.assert_array_equal(model.geom_pos, rebuilt.geom_pos)
 
 
+def test_sequential_drop_keeps_future_pieces_out_of_column_and_restores_gravity(monkeypatch):
+    xml = """<mujoco><worldbody>
+      <body name="a"><freejoint/><geom size=".01"/></body>
+      <body name="b"><freejoint/><geom size=".01"/></body>
+    </worldbody></mujoco>"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    plan = {"objects": [
+        {"instance_id": name, "part_id": "part", "position_relative_to_scene_m": [0., 0., 10.]}
+        for name in ("a", "b")
+    ]}
+    sim = SimpleNamespace(
+        model=model, data=data, plan=plan, xml=xml,
+        scene_origin=np.array([.22, 0., generator.TABLE_Z]),
+        part_metadata={"part": SimpleNamespace(
+            vertical_bounds_m=(-.01, .01), dimensions_m=(.02, .02, .02),
+        )},
+    )
+    calls = []
+
+    def settle(_model, _data, _xml, active_plan, **kwargs):
+        calls.append(len(active_plan["objects"]))
+        assert data.qpos[2] < generator.TABLE_Z + .1
+        if len(calls) == 1:
+            assert data.qpos[7] > 10
+            assert model.body_gravcomp[model.body("b").id] == 1
+        else:
+            assert data.qpos[9] < generator.TABLE_Z + .1
+
+    monkeypatch.setattr(generator, "settle_data", settle)
+    generator.drop_pieces_sequentially(sim)
+    assert calls == [1, 2]
+    np.testing.assert_array_equal(model.body_gravcomp, 0)
+
+
 def test_worker_excludes_families_and_reuses_completed_result(tmp_path, monkeypatch):
     value = request(tmp_path)
     value["excluded_scene_families"] = [
