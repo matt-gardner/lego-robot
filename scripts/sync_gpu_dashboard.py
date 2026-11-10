@@ -46,7 +46,8 @@ image = command[python - 1]
 expected = command[python:]
 probe = subprocess.run(['docker', 'inspect', name], capture_output=True, text=True)
 if probe.returncode:
-    if 'No such' not in probe.stderr:
+    if not any(message in probe.stderr.lower()
+               for message in ('no such object:', 'no such container:')):
         raise RuntimeError(probe.stderr)
     subprocess.run(command, check=True, stdout=sys.stderr)
     probe = subprocess.run(['docker', 'inspect', name], check=True, capture_output=True, text=True)
@@ -137,13 +138,16 @@ def sync(snapshot, output, job_id, instance_id="i-02ba0e9a61e1c68ef", container_
 
 
 def remote_request(args, program, arguments):
-    response = subprocess.run([
-        "ssh", "-i", "/home/claude/.ssh/lego_gpu_ed25519",
-        "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-        "-o", "UserKnownHostsFile=" + str(args.known_hosts),
-        "-o", "ConnectTimeout=10", "ubuntu@" + args.host,
-        "sudo -n python3 -c " + shlex.quote(program) + " " + shlex.join(arguments),
-    ], check=True, capture_output=True, text=True, timeout=30)
+    try:
+        response = subprocess.run([
+            "ssh", "-i", "/home/claude/.ssh/lego_gpu_ed25519",
+            "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=" + str(args.known_hosts),
+            "-o", "ConnectTimeout=10", "ubuntu@" + args.host,
+            "sudo -n python3 -c " + shlex.quote(program) + " " + shlex.join(arguments),
+        ], check=True, capture_output=True, text=True, timeout=30)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Remote trainer/dashboard request failed: {error.stderr.strip()}") from error
     return json.loads(response.stdout)
 
 

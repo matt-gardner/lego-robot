@@ -71,7 +71,7 @@ def test_trajectory_mirror_rejects_path_escape(tmp_path):
         }, tmp_path, "job", container_name="rl-container")
 
 
-@pytest.mark.parametrize("existing", ["absent", "running", "stopped", "different"])
+@pytest.mark.parametrize("existing", ["absent", "absent-lowercase", "unreachable", "running", "stopped", "different"])
 def test_prepared_launch_is_idempotent_and_preserves_existing_trainers(tmp_path, monkeypatch, existing):
     command = ["docker", "run", "--detach", "--name", "trainer", "image",
                "python", "-m", "so101.train_trajectory_rl"]
@@ -85,8 +85,11 @@ def test_prepared_launch_is_idempotent_and_preserves_existing_trainers(tmp_path,
         if argv == command:
             return SimpleNamespace(returncode=0)
         assert argv == ["docker", "inspect", "trainer"]
-        if existing == "absent" and len(calls) == 1:
-            return SimpleNamespace(returncode=1, stderr="No such object: trainer")
+        if existing.startswith("absent") and len(calls) == 1:
+            message = "error: no such object: trainer" if existing == "absent-lowercase" else "No such object: trainer"
+            return SimpleNamespace(returncode=1, stderr=message)
+        if existing == "unreachable":
+            return SimpleNamespace(returncode=1, stderr="Cannot connect to the Docker daemon")
         return SimpleNamespace(returncode=0, stdout=json.dumps([{
             "Config": {"Image": "other" if existing == "different" else "image",
                        "Cmd": command[6:]},
@@ -94,12 +97,21 @@ def test_prepared_launch_is_idempotent_and_preserves_existing_trainers(tmp_path,
         }]))
 
     monkeypatch.setattr(module.subprocess, "run", run)
-    if existing in ("stopped", "different"):
+    if existing in ("stopped", "different", "unreachable"):
         with pytest.raises((ValueError, RuntimeError)):
             exec(module.REMOTE_LAUNCH, {})
     else:
         exec(module.REMOTE_LAUNCH, {})
-    assert sum(argv == command for argv in calls) == int(existing == "absent")
+    assert sum(argv == command for argv in calls) == int(existing.startswith("absent"))
+
+
+def test_remote_request_surfaces_captured_error(monkeypatch):
+    def run(*args, **kwargs):
+        raise module.subprocess.CalledProcessError(1, ["ssh"], stderr="GPU mount does not exist")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="GPU mount does not exist"):
+        module.remote_request(SimpleNamespace(known_hosts="/known", host="gpu"), "", [])
 
 
 def test_launch_automatically_starts_mirroring_without_watch_flag(tmp_path, monkeypatch):
