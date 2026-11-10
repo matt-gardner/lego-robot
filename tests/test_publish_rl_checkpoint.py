@@ -41,3 +41,15 @@ def test_recovery_rejects_mismatched_training_contract(tmp_path, monkeypatch, mu
     torch.save(state, path)
     with pytest.raises(ValueError, match=error):
         publisher.check(path)
+    if mutation == "parameters":
+        state["model"] = {
+            "model.action_in_proj.weight": torch.ones(2),
+            "model.vlm_with_expert.vlm.weight": torch.ones(3),
+        }
+        state["log"].update(trainable_scope="all", trainable_parameter_count=5)
+        torch.save(state, path)
+        assert publisher.check(path)["step"] == 1
+        state["model"].pop("model.vlm_with_expert.vlm.weight")
+        torch.save(state, path)
+        with pytest.raises(ValueError, match="Incomplete"):
+            publisher.check(path)

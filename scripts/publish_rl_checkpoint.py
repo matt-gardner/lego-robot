@@ -25,8 +25,17 @@ def check(path: Path) -> dict:
             or [row["step"] for row in log["steps"]] != list(range(1, state["step"] + 1))
             or not log["validation"] or not log["assistance_curriculum"]):
         raise ValueError("RL snapshot lost its authorized objective, history, or curriculum")
-    if not all(name.startswith(("model.action_in_proj.", "model.action_out_proj."))
-               for name in state["model"]):
+    scope = log.get("trainable_scope", "action-projections")
+    if scope == "all":
+        if (sum(value.numel() for value in state["model"].values())
+                != log.get("trainable_parameter_count")
+                or not any("vlm_with_expert" in name for name in state["model"])
+                or not all(torch.isfinite(value).all() for value in state["model"].values())):
+            raise ValueError("Incomplete or nonfinite full-model RL state")
+    elif scope != "action-projections" or not all(
+        name.startswith(("model.action_in_proj.", "model.action_out_proj."))
+        for name in state["model"]
+    ):
         raise ValueError("Unexpected trainable parameters in projection-only RL state")
     plan_device_rng(state, "cuda", False, None)
     if not {"python", "numpy", "sampling", "torch", "device"} <= state["rng"].keys():
@@ -42,6 +51,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--profile", help="Explicit operator AWS profile; omit on an instance-profile worker")
+    parser.add_argument("--max-state-bytes", type=int, default=16 * 1024 ** 3)
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
     # Atomically replaced trainer states remain immutable after opening/copying.
@@ -77,7 +87,7 @@ def main():
     })
     manifest = publisher.publish(
         snapshot, args.root, job_id=args.job_id, step=verified["step"],
-        spec_sha256=spec_sha, max_bytes=128 * 1024 * 1024,
+        spec_sha256=spec_sha, max_bytes=args.max_state_bytes,
         validate_snapshot=check,
     )
     receipt = {"state_manifest": asdict(manifest), "dependencies": asdict(dependencies),

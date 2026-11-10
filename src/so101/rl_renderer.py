@@ -17,7 +17,7 @@ class PathtraceSimulation(BeamSimulation):
     """Path tracing of a forward-only CAD visual twin, never the physics model."""
 
     def __init__(self, *args, samples: int | None = None, threads: int | None = None,
-                 backend: str | None = None, **kwargs):
+                 backend: str | None = None, visual_xml: str | None = None, **kwargs):
         self.pathtrace_backend = backend if backend is not None else getattr(
             self, "pathtrace_backend", "cpu-pathtrace",
         )
@@ -31,7 +31,8 @@ class PathtraceSimulation(BeamSimulation):
         )
         if self.pathtrace_samples < 1 or self.pathtrace_threads < 1:
             raise ValueError("Pathtrace samples and threads must be positive")
-        if kwargs.get("appearance") is not None or kwargs.get("model") is not None:
+        if (kwargs.get("appearance") is not None
+                or kwargs.get("model") is not None and visual_xml is None):
             raise ValueError("Online path tracing requires the standard recorded scene identity")
         super().__init__(*args, **kwargs)
         try:
@@ -40,7 +41,7 @@ class PathtraceSimulation(BeamSimulation):
                            samples=self.pathtrace_samples,
                            threads=self.pathtrace_threads)
             xml = cad_render_xml(
-                scene_xml(self.model_root, self.scene_version),
+                visual_xml if visual_xml is not None else scene_xml(self.model_root, self.scene_version),
                 (self.model_root / "so101.xml").read_text(),
             )
             self.rgb_model = mujoco.MjModel.from_xml_string(xml)
@@ -63,6 +64,10 @@ class PathtraceSimulation(BeamSimulation):
                 },
                 "robot_xml_sha256": hashlib.sha256(
                     (self.model_root / "so101.xml").read_bytes(),
+                ).hexdigest(),
+                "scene_xml_sha256": hashlib.sha256(
+                    (visual_xml if visual_xml is not None
+                     else scene_xml(self.model_root, self.scene_version)).encode(),
                 ).hexdigest(),
                 "reset_renderer": None,
                 "scope": "Appearance-only RGB; not camera calibration or transfer qualification",

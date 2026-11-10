@@ -84,10 +84,11 @@ def action_boundary_backward(controller, trajectory, low, high, coefficient: flo
     return cost
 
 
-def gradient_vector(parameters):
+def gradient_vector(parameters, device=None):
     return torch.cat([
-        parameter.grad.detach().flatten() if parameter.grad is not None
-        else parameter.new_zeros(parameter.numel())
+        parameter.grad.detach().flatten().to(device=device or parameter.device)
+        if parameter.grad is not None
+        else torch.zeros(parameter.numel(), dtype=parameter.dtype, device=device or parameter.device)
         for parameter in parameters
     ])
 
@@ -115,20 +116,27 @@ def group_action_boundary_backward(controller, trajectories, low, high, weight, 
 
 def normalize_gradient_components(parameters, jerk_sum, policy_groups: int, jerk_groups: int,
                                   *, boundary_sum=None, boundary_groups: int = 0):
+    """Consume component buffers in place, avoiding full-model GPU-sized temporaries."""
     active = any(parameter.grad is not None for parameter in parameters)
-    task = (gradient_vector(parameters) - jerk_sum
-            - (boundary_sum if boundary_sum is not None else 0)) / max(policy_groups, 1)
-    jerk = jerk_sum / max(jerk_groups, 1)
-    boundary = boundary_sum / max(boundary_groups, 1) if boundary_sum is not None else 0
-    combined = task + jerk + boundary
+    task = gradient_vector(parameters, jerk_sum.device)
+    task.sub_(jerk_sum)
+    if boundary_sum is not None:
+        task.sub_(boundary_sum)
+    task.div_(max(policy_groups, 1))
+    jerk = jerk_sum.div_(max(jerk_groups, 1))
+    boundary = boundary_sum.div_(max(boundary_groups, 1)) if boundary_sum is not None else None
     position = 0
     if active:
         for parameter in parameters:
-            value = combined[position:position + parameter.numel()].view_as(parameter)
+            selection = slice(position, position + parameter.numel())
+            value = task[selection] + jerk[selection]
+            if boundary is not None:
+                value.add_(boundary[selection])
+            value = value.view_as(parameter)
             if parameter.grad is not None:
                 parameter.grad.copy_(value)
             elif bool(value.any()):
-                parameter.grad = value.clone()
+                parameter.grad = value.to(device=parameter.device, dtype=parameter.dtype, copy=True)
             position += parameter.numel()
     task_norm, jerk_norm = float(task.norm()), float(jerk.norm())
     metrics = {

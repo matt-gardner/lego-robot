@@ -21,6 +21,7 @@ from so101.control_model.flow_rl import (
     independent_noise_like,
     sample_flow_path,
     transition_distribution,
+    to_device,
 )
 
 
@@ -28,22 +29,28 @@ from so101.control_model.flow_rl import (
 class FrozenObservation:
     pad: Tensor
     cache: Cache
+    replay_inputs: tuple | None = None
+    row: int | None = None
 
     @classmethod
-    def from_row(cls, pad: Tensor, cache: Cache | None, row: int) -> FrozenObservation:
+    def from_row(cls, pad: Tensor, cache: Cache | None, row: int,
+                 replay_inputs: tuple | None = None) -> FrozenObservation:
         if cache is None:
             raise ValueError("Batched trajectory replay requires cached observation features")
-        return cls(pad[row:row + 1].detach().to("cpu", copy=True), cls.copy_cache(cache, "cpu", row))
+        return cls(pad[row:row + 1].detach().to("cpu", copy=True),
+                   cls.copy_cache(cache, "cpu", row), replay_inputs, row)
 
     @staticmethod
-    def copy_cache(cache: Cache, device: str | torch.device, row: int | None = None) -> Cache:
+    def copy_cache(cache: Cache, device: str | torch.device, row: int | None = None,
+                   detach: bool = True) -> Cache:
         result = copy.copy(cache)
         result.layers = []
         for layer in cache.layers:
             copied = copy.copy(layer)
             selection = slice(None) if row is None else slice(row, row + 1)
-            copied.keys = layer.keys[selection].detach().to(device, copy=True)
-            copied.values = layer.values[selection].detach().to(device, copy=True)
+            keys, values = layer.keys[selection], layer.values[selection]
+            copied.keys = (keys.detach() if detach else keys).to(device, copy=True)
+            copied.values = (values.detach() if detach else values).to(device, copy=True)
             result.layers.append(copied)
         return result
 
@@ -239,7 +246,42 @@ class EntityVLAFlowMatching(VLAFlowMatching):
         self, inputs: tuple, frozen_observation: FrozenObservation | None = None,
         capture: Callable[[Tensor, Cache | None], None] | None = None,
     ) -> Callable[[Tensor, Tensor], Tensor]:
-        # RL trains only the action projections; observation features remain frozen.
+        full_gradients = getattr(self, "rl_train_full_model", False) and torch.is_grad_enabled()
+        def prefix_features():
+            prefix_inputs = inputs
+            if frozen_observation is not None:
+                if frozen_observation.replay_inputs is None or frozen_observation.row is None:
+                    raise ValueError("Full-model replay requires the original observation batch")
+                prefix_inputs = to_device(frozen_observation.replay_inputs, inputs[4].device)
+            prefix, prefix_pad, attention, _ = self._prefix_with_entities(*prefix_inputs)
+            _, prefix_cache = self.vlm_with_expert.forward(
+                attention_mask=make_att_2d_masks(prefix_pad, attention),
+                position_ids=torch.cumsum(prefix_pad, dim=1) - 1,
+                past_key_values=None, inputs_embeds=[prefix, None],
+                use_cache=self.config.use_cache,
+            )
+            if frozen_observation is not None:
+                row = frozen_observation.row
+                prefix_pad = prefix_pad[row:row + 1]
+                prefix_cache = FrozenObservation.copy_cache(
+                    prefix_cache, inputs[4].device, row, detach=False,
+                )
+                torch.testing.assert_close(prefix_pad.detach().cpu(), frozen_observation.pad)
+                for actual, expected in zip(
+                    prefix_cache.layers, frozen_observation.cache.layers, strict=True,
+                ):
+                    for name in ("keys", "values"):
+                        torch.testing.assert_close(
+                            getattr(actual, name).detach().cpu(), getattr(expected, name),
+                            rtol=0., atol=1e-4,
+                        )
+            return prefix_pad, prefix_cache
+
+        if full_gradients:
+            # Rebuild the exact original batch per transition, keeping prefix autograd.
+            return lambda latent, timestep: self._denoise_step_entity(
+                *prefix_features(), latent, timestep,
+            )
         if frozen_observation is not None:
             pad = frozen_observation.pad.to(inputs[4].device)
             cache = FrozenObservation.copy_cache(frozen_observation.cache, inputs[4].device)

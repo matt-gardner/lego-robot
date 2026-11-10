@@ -589,12 +589,15 @@ Per-trajectory timing in this mode includes time waiting for the other
 trajectories, so summed timings overlap; use group/step wall time for throughput.
 
 For off-instance recovery, `scripts/publish_rl_checkpoint.py` validates and
-publishes the atomic RL state (trainable projection delta, Adam, sampling RNG,
+publishes the atomic RL state (all trainable weights, Adam, sampling RNG,
 curriculum and history), bound to a dependency tar containing matching source,
 `data_split.json`, the transition receipt, original input manifest and
-versioned SFT recovery receipt. Reconstruct the frozen initial policy from
-that SFT state before applying the RL delta; the delta alone is not a full
-model. Use a fresh task-owned `--root` per publication and `--profile
+versioned SFT recovery receipt. Reconstruct the initial policy/configuration from
+that SFT state before applying the RL state. Historical projection-only states
+still require their frozen pretrained weights; neither format replaces tokenizer,
+normalization or scene dependencies. Publication accepts explicit full-model
+scope and defaults to a 16 GiB state limit (`--max-state-bytes`).
+Use a fresh task-owned `--root` per publication and `--profile
 lego-artifacts` only when publishing from the authorized operator environment;
 worker instances use their instance profile. Keep the resulting receipt,
 including both dependency and state-manifest versions, with the run.
@@ -622,7 +625,12 @@ non-finite gradients do, before corrupting the last completed state.
 Every completed step atomically saves `latest_state.pt`, containing trainable
 parameters, optimizer, curriculum/log, and sampling RNG states. Resume with
 the same arguments plus `--resume`; the atomic state is authoritative even
-if an interruption left the separate JSON/model exports incomplete.
+if an interruption left the separate JSON incomplete. By default, two
+checksummed generations are retained and `latest_state.pt` is a hard link, not
+another model/optimizer copy. Evaluation no longer writes additional optimizer
+checkpoints unless `--retain-evaluation-checkpoints` is requested. Full final
+exports are opt-in (`--save-final-checkpoint`); compact evaluation history stays
+in the log. Changing the trainable scope requires a fresh RL optimizer/run.
 On Macs, run only one model-loaded trainer or qualification process at a time.
 The live worker uses `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.65` and
 `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.5` to leave unified-memory headroom; these
@@ -636,6 +644,35 @@ receive no new supervised gradients. `training_objective_changes` records the
 objective transitions; historical supervised metrics remain intact.
 The obsolete `--sft-coefficient`, `--sft-batch-size`, and `--policy-target-kl`
 flags are removed.
+
+For automatic harder-data progression, use `--automatic-difficulty
+--target-success-curriculum --difficulty-catalog /absolute/current/catalog.json`
+with mastery mode and minimum assistance zero. Each task/obstacle slice uses
+four training groups: above 60% success reduces assistance; sustained success
+at zero assistance advances to an admitted native pile tier. Below 40% restores
+available reference assistance, or backs off a reference-free native tier.
+Windows reset on transitions; checkpointed slice state and immutable admission
+hashes survive resume. Frozen validation/development outcomes never control
+generation or advancement.
+
+Exhaustion queues one bounded TRAIN-only `so101.pile_task_worker` request at a
+time. Proposals increase piece count from 6 to 128 and vary color diversity;
+these are physical recipe tiers, not claims that a setup is solvable or harder
+for the policy. Actual learning success controls advancement. Failed requests
+retry at most three times with distinct seeds, then record an explicit blocked
+state; exhausting generator bounds is explicit too. Worker results must match
+request identity and manifest hashes, exclude held-out families, and provide
+binary-model/full-integration reset, persistent instance labels and versioned
+goals. There is no fallback to easy legacy VIEW reference data.
+
+Native tasks use dynamic object identities, COM positions, real goal markers
+and native dwell/contact graders. They do not require expert trajectories or
+gold-prefix assistance. Automatic mode uses reference-free completion and
+the frozen training-reference jerk calibration when jerk regularization is
+enabled. Stored synthetic RGB is unnecessary: observations render live. Native
+path tracing builds its visual twin from that problem's XML rather than the
+legacy fixed scene. Matching topology/cameras does not qualify CUDA throughput
+or RGB-versus-segmentation occlusion; check these on the actual training runtime.
 
 With `--jerk-regularizer-weight .02`, success/completion advantages retain
 weights **1 / 0.5**; `--smoothness-advantage-weight` must be **0** to avoid
@@ -921,13 +958,18 @@ scales the policy loss outside that ratio, keeping the established gradient
 scale. Trajectory scores still sum over decisions
 without trajectory-length normalization.
 Likelihood recomputation uses the recorded path, not fresh denoising noise.
-Only the action input/output projections are trained; observation features
-and their cached prefix remain frozen.
-The trainer computes the frozen action expert in float32: bfloat16 rounding
-otherwise makes tiny action-input updates discontinuous and undermines
-likelihood-gradient accuracy. Frozen vision/text prefix
-features can remain bfloat16. This precision choice is recorded in
-`policy_optimization` and reapplied on trainer resume.
+RL defaults to `--trainable-scope all`: all policy parameters are explicitly
+unfrozen and optimized with FP32 weights, so small AdamW updates do not round
+away in BF16 storage. The first active update verifies nonzero gradients and
+actual parameter changes through vision, language backbone, history, entities
+and the action expert/projections. Heads unused by the RL objective need not
+receive gradients. Observation prefix features are recomputed differentiably
+for each transition, using the original rollout batch and selected row; replay
+must match recorded features within absolute `1e-4`. Regularizer component
+buffers live on CPU in full-model mode to avoid several full-model GPU copies.
+The historical `--trainable-scope action-projections` remains explicit opt-in:
+its vision/text prefix is frozen and may remain BF16, while its action expert
+uses FP32. Scope, parameter count and gradient audit are recorded in the log.
 Full entity checkpoints also record and restore the expert dtype before
 loading weights; older checkpoints without that metadata keep legacy
 loading behavior.

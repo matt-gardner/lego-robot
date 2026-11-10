@@ -35,6 +35,7 @@ from so101.train_trajectory_rl import (
     policy_optimizer_step,
     restore_resume_state,
     save_resume_state,
+    trainable_parameters,
     trajectory_backward,
     trajectory_metrics,
     train,
@@ -50,7 +51,7 @@ from so101.control_model.flow_rl import (
 from lerobot.policies.common.flow_matching import euler_integrate
 from transformers.cache_utils import DynamicCache
 from so101.control_model.modeling_entity_smolvla import (
-    EntityModelConfig, EntityVLAFlowMatching, load_entity_checkpoint,
+    EntityModelConfig, EntityVLAFlowMatching, FrozenObservation, load_entity_checkpoint,
     save_entity_checkpoint,
 )
 
@@ -94,6 +95,71 @@ def test_denoising_backward_does_not_reuse_cropped_suffix_graph() -> None:
     torch.testing.assert_close(parameter.grad, expected)
     assert cache.get_seq_length() == 1
     assert not cache.layers[0].keys.requires_grad
+
+
+def test_full_model_replay_recomputes_original_batch_and_updates_prefix_parameters():
+    class Prefix(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(.7))
+
+        def forward(self, *, inputs_embeds, **kwargs):
+            keys = (inputs_embeds[0] * self.weight)[:, None]
+            cache = DynamicCache()
+            cache.update(keys, keys, 0)
+            return None, cache
+
+    class Model(torch.nn.Module):
+        _rl_velocity_function = EntityVLAFlowMatching._rl_velocity_function
+
+        def __init__(self):
+            super().__init__()
+            self.vision = torch.nn.Parameter(torch.tensor(.3))
+            self.history_motion_proj = torch.nn.Parameter(torch.tensor(.2))
+            self.action_out_proj = torch.nn.Parameter(torch.tensor(.5))
+            self.vlm_with_expert = Prefix()
+            self.config = SimpleNamespace(use_cache=True)
+            self.batch_sizes = []
+
+        def _prefix_with_entities(self, image, history, unused, mask, state):
+            self.batch_sizes.append(len(image))
+            value = (image * self.vision + history * self.history_motion_proj)[:, None, :]
+            return value, mask, torch.zeros_like(mask), None
+
+        def _denoise_step_entity(self, pad, cache, latent, timestep):
+            return (cache.layers[0].keys.sum(dim=(1, 2, 3))[:, None, None]
+                    * self.action_out_proj + latent * self.action_out_proj)
+
+    policy = torch.nn.Module()
+    policy.model = Model().bfloat16()
+    for parameter in policy.parameters():
+        parameter.requires_grad_(False)
+    parameters = trainable_parameters(SimpleNamespace(policy=policy))
+    assert all(parameter.requires_grad and parameter.dtype == torch.float32 for parameter in parameters)
+    assert {id(parameter) for parameter in parameters} == {id(parameter) for parameter in policy.parameters()}
+    batch = (torch.tensor([[1., 2.], [3., 4.]]), torch.ones(2, 2),
+             torch.zeros(2, 1), torch.ones(2, 1, dtype=torch.bool), torch.ones(2, 1))
+    captured = []
+    with torch.no_grad():
+        velocity = policy.model._rl_velocity_function(
+            batch, capture=lambda pad, cache: captured.append(FrozenObservation.from_row(pad, cache, 1, batch)),
+        )
+        sampled = velocity(torch.ones(2, 1, 1), torch.ones(2))
+    row_inputs = tuple(value[1:2] for value in batch)
+    replay = policy.model._rl_velocity_function(row_inputs, captured[0])
+    optimizer = torch.optim.AdamW(parameters, lr=1e-3)
+    before = [parameter.detach().clone() for parameter in parameters]
+    for _ in range(3):
+        value = replay(torch.ones(1, 1, 1), torch.ones(1))
+        torch.testing.assert_close(value, sampled[1:2], rtol=0., atol=1e-4)
+        value.sum().backward()
+    assert policy.model.batch_sizes == [2] * 4
+    assert all(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in parameters)
+    optimizer.step()
+    assert all(not torch.equal(old, parameter) for old, parameter in zip(before, parameters, strict=True))
+    captured[0].cache.layers[0].keys += .1
+    with pytest.raises(AssertionError):
+        replay(torch.ones(1, 1, 1), torch.ones(1))
 
 
 def args() -> Namespace:
@@ -685,8 +751,8 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
         task: {"optimal_steps": 10., "jerk_p10": 1.} for task in trainer.TASKS
     })
     monkeypatch.setattr(trainer, "EntityPolicy", lambda *args: controller)
-    monkeypatch.setattr(trainer, "trainable_parameters", lambda value: list(policy.parameters()))
-    monkeypatch.setattr(trainer, "BeamSimulation", lambda *args, **kwargs: Namespace(close=lambda: None))
+    monkeypatch.setattr(trainer, "trainable_parameters", lambda value, scope: list(policy.parameters()))
+    monkeypatch.setattr(trainer, "create_simulation", lambda *args, **kwargs: Namespace(close=lambda: None))
     monkeypatch.setattr(trainer, "validation_metrics", lambda *args: {})
     calls = []
     captures = []
@@ -753,6 +819,59 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
         g["sampling_bucket"] == "solved"
         for g in resumed["log"]["steps"][-1]["groups"]
     ) == 1
+    assert sorted(path.name for path in (config.output / "generations").glob("*.pt")) == [
+        "step_000000002.pt", "step_000000003.pt",
+    ]
+    assert not (config.output / "latest_model.pt").exists()
+    assert not (config.output / "latest_optimizer.pt").exists()
+    assert not list(config.output.glob("delta_step_*.pt"))
+
+    class Requests:
+        def __init__(self):
+            self.completed = {}
+
+        def results(self):
+            return list(self.completed.values())
+
+        def request(self, key, level, *args):
+            identity = f"{key}-{level}"
+            path = tmp_path / identity / "request.json"
+            self.completed[identity] = {
+                "request_id": identity, "status": "complete", "slice": key, "level": level,
+                "manifest_path": str(tmp_path / identity / "manifest.json"), "sha256": "a" * 64,
+            }
+            return path
+
+        def close(self):
+            pass
+
+    queue = Requests()
+    monkeypatch.setattr(trainer, "HarderDataRequests", lambda *args: queue)
+    monkeypatch.setattr(trainer, "load_native_pool", lambda *args: {
+        task: [CorpusEpisode(tmp_path / "native" / task, {"task": task, "target": "instance_0",
+                                                        "native_entry": {"root": "/unused"}})]
+        for task in trainer.TASKS
+    })
+    config.resume = False
+    config.output = tmp_path / "automatic"
+    config.groups_per_task = 4
+    config.automatic_difficulty = True
+    config.target_success_curriculum = True
+    config.difficulty_catalog = tmp_path / "catalog.json"
+    for task in trainer.TASKS:
+        setattr(config, f"{task}_curriculum_max", 0.)
+    train(config)
+    adaptive = torch.load(config.output / "latest_state.pt", weights_only=False)
+    assert all(item["level"] == 1 for item in adaptive["log"]["difficulty_curriculum"]["slices"].values())
+    assert any(group["source"].startswith(str(tmp_path / "native"))
+               for group in adaptive["log"]["steps"][-1]["groups"])
+    config.resume = True
+    config.steps = 4
+    train(config)
+    adaptive = torch.load(config.output / "latest_state.pt", weights_only=False)
+    assert all(item["level"] == 2 for item in adaptive["log"]["difficulty_curriculum"]["slices"].values())
+    assert any(item["source"].startswith(str(tmp_path / "native"))
+               for item in adaptive["log"]["solved_problems"].values())
 
 
 def test_new_scene_constraints_reject_collision_even_when_goal_is_reached(monkeypatch, tmp_path):

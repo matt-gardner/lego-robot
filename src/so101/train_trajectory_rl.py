@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import random
+import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -42,6 +43,8 @@ from so101.cloud_checkpoint import atomic_json
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
 from so101.resume_rng import plan_device_rng, restore_device_rng
 from so101.rl_renderer import create_simulation
+from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
+from so101.rl_difficulty import DifficultyController, HarderDataRequests
 from so101.simulation_corpus import CorpusEpisode, TASKS, episode_actions, expert_bounds, load_corpus
 
 
@@ -116,6 +119,8 @@ def reset_from_episode(
     sim: BeamSimulation,
     episode: CorpusEpisode,
 ) -> tuple[str, str | None, list[tuple[str, str]]]:
+    if "native_entry" in episode.metadata:
+        return sim.reset_native(episode)
     return restore_episode(sim, episode.metadata)
 
 
@@ -127,6 +132,8 @@ def replay_gold_prefix(
 ) -> tuple[int, float]:
     if fraction <= 0:
         return 0, 0.
+    if "native_entry" in episode.metadata:
+        raise ValueError("Reference-free native tasks do not support gold-prefix assistance")
     rows = [
         json.loads(line)
         for line in (episode.source / "frames.jsonl").read_text().splitlines()
@@ -239,7 +246,7 @@ def wrong_object_lift(
         name != target
         and sim.position(name)[2] - initial_positions[name][2] >= .04
         and sim.contacts(name) == {"fixed", "moving"}
-        for name in OBJECT_NAMES
+        for name in getattr(sim, "object_names", OBJECT_NAMES)
     )
 
 
@@ -286,10 +293,37 @@ def _rollout(
     record_path_noise: bool = False,
     independent_rng: bool = False,
 ) -> Generator[SamplingRequest, tuple[torch.Tensor, list[FlowTransition]], Trajectory]:
+    if "native_entry" in episode.metadata:
+        cached = getattr(sim, "_native_simulation", None)
+        root = Path(episode.metadata["native_entry"]["root"])
+        if cached is None or cached.problem["root"] != root:
+            if cached is not None:
+                cached.close()
+                sim._native_simulation = None
+            cached = NativePileSimulation(
+                episode, sim.model_root,
+                backend=getattr(sim, "pathtrace_backend", "mujoco"),
+                samples=getattr(sim, "pathtrace_samples", 16),
+                threads=getattr(sim, "pathtrace_threads", 4),
+            )
+            sim._native_simulation = cached
+        sim = cached
+    return (yield from _rollout_on_sim(
+        sim, controller, episode, rollout_seed, horizon, action_steps, bounds,
+        store_decisions, start_proximity, denoising_noise_scale, capture_path,
+        fixed_horizon, record_path_noise, independent_rng,
+    ))
+
+
+def _rollout_on_sim(
+    sim, controller, episode, rollout_seed, horizon, action_steps, bounds,
+    store_decisions, start_proximity=0., denoising_noise_scale=None, capture_path=None,
+    fixed_horizon=False, record_path_noise=False, independent_rng=False,
+):
     rollout_start = time.monotonic()
     target, destination, entities = reset_from_episode(sim, episode)
     initial_positions = {
-        name: sim.position(name).copy() for name in OBJECT_NAMES
+        name: sim.position(name).copy() for name in getattr(sim, "object_names", OBJECT_NAMES)
     }
     prefix_steps, prefix_maximum_lift = replay_gold_prefix(
         sim,
@@ -399,17 +433,14 @@ def _rollout(
             wrong_object = wrong_object or wrong_object_lift(
                 sim, target, initial_positions
             )
-            condition = successful_step(
-                sim,
-                episode.task,
-                target,
-                destination,
-                initial_positions,
-                lifted_once,
-                executed,
-            )
-            stable = stable + 1 if condition else 0
-            success = stable >= sim.fps
+            if isinstance(sim, NativePileSimulation):
+                success, stable = sim.native_success(executed, stable)
+            else:
+                condition = successful_step(
+                    sim, episode.task, target, destination, initial_positions, lifted_once, executed,
+                )
+                stable = stable + 1 if condition else 0
+                success = stable >= sim.fps
             if success and first_success_step is None:
                 first_success_step = executed
             constraint_violation = bool(avoid_obstacles and sim.obstacle_contact_events)
@@ -442,6 +473,8 @@ def _rollout(
         executed_actions,
         curriculum_bounds,
     )
+    if "native_entry" in episode.metadata:
+        smoothness = 1. / (1. + rms_jerk) if success else 0.
     result = Trajectory(
         episode.task,
         success,
@@ -575,12 +608,19 @@ def rollout_group(
                     raise ValueError("Batched trajectory lost its independent sampling RNG")
                 generators.append(request.generator)
             with torch.no_grad():
+                combined_inputs = batch_inputs([request.inputs for request in requests])
+                replay_inputs = (
+                    to_device(combined_inputs, "cpu")
+                    if getattr(controller.policy.model, "rl_train_full_model", False) else None
+                )
                 def capture(pad, cache):
                     for row, request in enumerate(requests):
-                        request.frozen_observation = FrozenObservation.from_row(pad, cache, row)
+                        request.frozen_observation = FrozenObservation.from_row(
+                            pad, cache, row, replay_inputs,
+                        )
 
                 actions, path = controller.policy.model.sample_actions_entity_sde(
-                    batch_inputs([request.inputs for request in requests]),
+                    combined_inputs,
                     noise_scale, first.active_shape, record_noise=record_path_noise,
                     generators=generators,
                     capture=capture,
@@ -845,6 +885,9 @@ def restore_resume_state(
         state, controller.device, allow_device_rng_migration, device_rng_seed,
     )
     parameters = dict(controller.policy.named_parameters())
+    expected = {name for name, parameter in parameters.items() if parameter.requires_grad}
+    if set(state["model"]) != expected:
+        raise ValueError("Resume trainable parameters differ; start a fresh RL run when changing scope")
     with torch.no_grad():
         for name, value in state["model"].items():
             parameters[name].copy_(value.to(parameters[name].device))
@@ -910,9 +953,43 @@ def trajectory_backward(
     return total
 
 
+def full_model_gradient_probes(policy):
+    probes = {}
+    for group, pattern in {
+        "vision": "vision_model.", "language_backbone": "text_model.layers.",
+        "history": "history_motion_proj.", "entity": "entity_numeric_proj.",
+        "action_expert": "lm_expert.", "action_input": "action_in_proj.",
+        "action_output": "action_out_proj.",
+    }.items():
+        for name, parameter in policy.named_parameters():
+            if pattern not in name or parameter.grad is None:
+                continue
+            gradient = parameter.grad.detach().flatten()
+            index = int(gradient.abs().argmax())
+            if gradient[index] != 0:
+                if not torch.isfinite(gradient[index]):
+                    raise ValueError(f"Nonfinite full-model gradient in {group}")
+                probes[group] = (name, parameter, index, float(parameter.detach().flatten()[index]))
+                break
+        if group not in probes:
+            raise ValueError(f"Full-model RL has no effective gradient through {group}")
+    return probes
+
+
 def trainable_parameters(
     controller: EntityPolicy,
+    scope: str = "all",
 ) -> list[torch.nn.Parameter]:
+    if scope not in ("all", "action-projections"):
+        raise ValueError(f"Unknown RL trainable scope: {scope}")
+    controller.policy.model.rl_train_full_model = scope == "all"
+    if scope == "all":
+        # AdamW needs FP32 master weights: small updates round away in BF16 parameters.
+        controller.policy.float()
+        parameters = list(controller.policy.parameters())
+        for parameter in parameters:
+            parameter.requires_grad_(True)
+        return parameters
     for parameter in controller.policy.parameters():
         parameter.requires_grad_(False)
     parameters = []
@@ -1287,7 +1364,40 @@ def sample_solved_problem(
     return eligible[int(rng.integers(len(eligible)))] if eligible else None
 
 
+def refresh_difficulty_pools(difficulty, requests, pools, excluded_families, training_by_source, log):
+    for result in requests.results():
+        identity = result["request_id"]
+        statuses = log.setdefault("harder_data_requests", {})
+        if statuses.get(identity) != result:
+            statuses[identity] = result
+            print(json.dumps({"event": "harder_data_request", **result}), flush=True)
+            if result["status"] in ("blocked", "rejected"):
+                difficulty.failed_request(result)
+        if result["status"] != "complete":
+            continue
+        key, level = result["slice"], result["level"]
+        if (key, level) not in pools:
+            path = Path(result["manifest_path"])
+            pool = load_native_pool(path, excluded_families)
+            difficulty.admit(key, level, result["sha256"])
+            pools[(key, level)] = pool
+            training_by_source.update(
+                (str(item.source), item) for episodes in pool.values() for item in episodes
+            )
+        elif difficulty.state["admissions"][f"{key}:{level}"] != result["sha256"]:
+            raise ValueError("An admitted difficulty request changed")
+
+
 def train(args: argparse.Namespace) -> None:
+    automatic_difficulty = getattr(args, "automatic_difficulty", False)
+    reference_free_completion = automatic_difficulty or getattr(args, "reference_free_completion", False)
+    reference_jerk_fallback = automatic_difficulty or getattr(args, "reference_jerk_fallback", False)
+    if automatic_difficulty and (
+        args.curriculum_mode != "mastery" or args.curriculum_min != 0
+        or not getattr(args, "target_success_curriculum", False)
+        or getattr(args, "difficulty_catalog", None) is None
+    ):
+        raise ValueError("Automatic difficulty requires target-success mastery, minimum 0 and --difficulty-catalog")
     recovery_enabled = getattr(args, "recover_zero_success_groups", False)
     if recovery_enabled and args.curriculum_mode != "mastery":
         raise ValueError("Zero-success recovery requires mastery curriculum mode")
@@ -1469,13 +1579,16 @@ def train(args: argparse.Namespace) -> None:
         ))
     if sampling_noise is not None:
         controller.policy.model.vlm_with_expert.lm_expert.float()
-    parameters = trainable_parameters(controller)
+    trainable_scope = getattr(args, "trainable_scope", "all")
+    parameters = trainable_parameters(controller, trainable_scope)
     optimizer = torch.optim.AdamW(
         parameters,
         lr=args.learning_rate,
         weight_decay=1e-6,
     )
     if args.resume and resume_state is None:
+        if trainable_scope == "all":
+            raise ValueError("Full-model RL resume requires latest_state.pt with optimizer/RNG and trainable scope")
         optimizer_path = output / "latest_optimizer.pt"
         if optimizer_path.exists():
             optimizer.load_state_dict(torch.load(
@@ -1539,6 +1652,12 @@ def train(args: argparse.Namespace) -> None:
             "denoising_noise_scale": sampling_noise,
         })
     log["rl_estimator"] = args.rl_estimator
+    log["trainable_scope"] = trainable_scope
+    log["trainable_parameter_count"] = sum(parameter.numel() for parameter in parameters)
+    if {id(parameter) for group in optimizer.param_groups for parameter in group["params"]} != {
+        id(parameter) for parameter in controller.policy.parameters() if parameter.requires_grad
+    }:
+        raise ValueError("Optimizer membership does not match trainable policy parameters")
     if sampling_noise is not None:
         optimization = {
             "version": ("normalized-fp32-task-pg-plus-action-regularizers-v5" if boundary_enabled
@@ -1602,7 +1721,7 @@ def train(args: argparse.Namespace) -> None:
             len(log["steps"]),
         )
     if jerk_references is not None:
-        if getattr(args, "reference_jerk_fallback", False):
+        if reference_jerk_fallback:
             if "frozen_jerk_calibration" not in log:
                 log["frozen_jerk_calibration"] = jerk_references.calibrate_fallback()
             atomic_json(output / "frozen_jerk_calibration.json", log["frozen_jerk_calibration"])
@@ -1613,7 +1732,7 @@ def train(args: argparse.Namespace) -> None:
             "missing_references": "disable jerk loss for that problem; retain task policy gradients",
             "gradient": "reparameterized denoising; recorded observations fixed, no simulator gradients",
         }
-        if getattr(args, "reference_jerk_fallback", False):
+        if reference_jerk_fallback:
             jerk_definition["missing_references"] = "frozen 75th-percentile successful-training-reference margin; never calibrated from RL"
             jerk_definition["fallback_calibration"] = "frozen_jerk_calibration.json"
         if log.get("jerk_regularizer") != jerk_definition:
@@ -1650,10 +1769,10 @@ def train(args: argparse.Namespace) -> None:
     reward_definition = {
         "completion": (
             "1 - steps / longest_successful_steps within the task group; successful-only normalized advantage"
-            if getattr(args, "reference_free_completion", False)
+            if reference_free_completion
             else "reference-relative completion efficiency"
         ),
-        "smoothness": "min(expert_jerk_p10 / max(rms_jerk, 1e-6), 1)",
+        "smoothness": "legacy reference ratio; native reference-free tasks use 1 / (1 + rms_jerk)",
         "smoothness_scope": "successful trajectories",
         "advantage": "independently normalized absolute-score components",
         "weights": {
@@ -1677,6 +1796,34 @@ def train(args: argparse.Namespace) -> None:
         str(item.source): item
         for episodes in training.values() for item in episodes
     }
+    difficulty = None
+    difficulty_requests = None
+    difficulty_pools = {}
+    excluded_families = {
+        item.metadata.get("scene_family_id", item.metadata.get("initial", {}).get(
+            "scene_family_id", hashlib.sha256(json.dumps([
+                item.metadata.get("initial", {}).get("seed"),
+                item.metadata.get("initial", {}).get("scene_version", 1),
+            ]).encode()).hexdigest(),
+        ))
+        for item in validation + (auxiliary_view["development"] if auxiliary_view else [])
+    }
+    if automatic_difficulty:
+        difficulty = DifficultyController(log.setdefault("difficulty_curriculum", {
+            "schema": 1, "slices": {}, "events": [], "admissions": {},
+        }))
+        excluded_families.update(difficulty.state.get("excluded_families", []))
+        difficulty.state["excluded_families"] = sorted(excluded_families)
+        difficulty_requests = HarderDataRequests(
+            output / "harder-data-requests", args.difficulty_catalog,
+            [sys.executable, "-m", "so101.pile_task_worker"],
+            getattr(args, "difficulty_request_timeout", 3600.),
+        )
+        refresh_difficulty_pools(
+            difficulty, difficulty_requests, difficulty_pools, excluded_families, training_by_source, log,
+        )
+    elif log.get("difficulty_curriculum"):
+        raise ValueError("Cannot disable an existing automatic difficulty curriculum on resume")
     if any(
         item["source"] not in training_by_source
         for item in solved_problems.values()
@@ -1786,11 +1933,19 @@ def train(args: argparse.Namespace) -> None:
             log.setdefault("auxiliary_view_validation", []).append(development)
             write_log(output, log)
         for step in range(start_step, args.steps + 1):
+            if difficulty is not None:
+                refresh_difficulty_pools(
+                    difficulty, difficulty_requests, difficulty_pools, excluded_families, training_by_source, log,
+                )
             step_start = time.monotonic()
             optimizer.zero_grad(set_to_none=True)
             accepted_groups = 0
             jerk_groups = 0
-            jerk_gradient_sum = torch.zeros_like(gradient_vector(parameters)) if regularizers_enabled else None
+            component_device = "cpu" if trainable_scope == "all" else None
+            jerk_gradient_sum = (
+                torch.zeros_like(gradient_vector(parameters, component_device))
+                if regularizers_enabled else None
+            )
             boundary_groups = 0
             boundary_gradient_sum = torch.zeros_like(jerk_gradient_sum) if boundary_enabled else None
             group_rows = []
@@ -1833,8 +1988,16 @@ def train(args: argparse.Namespace) -> None:
                     assistance_key = curriculum_key(
                         task, has_obstacles
                     )
+                    if difficulty is not None and solved_problem is None:
+                        slice_state = difficulty.slice(assistance_key, curriculum_max)
+                        if slice_state["level"] > 0:
+                            pool = difficulty_pools[(assistance_key, slice_state["level"])][task]
+                            episode = pool[int(rng.integers(len(pool)))]
+                            curriculum_max = 0.
+                        start_proximity = slice_state["assistance"]
                     if (
                         solved_problem is None
+                        and difficulty is None
                         and curriculum_max > 0
                         and step >= args.curriculum_start_step
                     ):
@@ -1868,7 +2031,7 @@ def train(args: argparse.Namespace) -> None:
                         start_proximity = solved_problem["start_proximity"]
                     jerk_profile = (jerk_references.summary(episode.source, start_proximity)
                                     if jerk_references is not None else None)
-                    if jerk_references is not None and getattr(args, "reference_jerk_fallback", False):
+                    if jerk_references is not None and reference_jerk_fallback:
                         jerk_profile = jerk_references.summary_with_fallback(
                             episode.source, start_proximity, log["frozen_jerk_calibration"],
                         )
@@ -1910,6 +2073,32 @@ def train(args: argparse.Namespace) -> None:
                     success_count = sum(
                         item.success for item in trajectories
                     )
+                    if (difficulty is not None and solved_problem is None
+                            and step >= args.curriculum_start_step):
+                        difficulty_event = difficulty.record(
+                            assistance_key, success_count, len(trajectories), curriculum_max,
+                            args.curriculum_decrement, step,
+                        )
+                        mastery_assistance(mastery_curriculum, assistance_key, curriculum_max)
+                        mastery_curriculum["managed_by"] = "difficulty_curriculum"
+                        current_slice = difficulty.slice(assistance_key, curriculum_max)
+                        mastery_curriculum["tasks"][assistance_key].update(
+                            level=current_slice["assistance"], difficulty_level=current_slice["level"],
+                            success_window=current_slice["window"],
+                        )
+                        if difficulty_event is not None:
+                            print(json.dumps({"event": "automatic_difficulty", **difficulty_event}), flush=True)
+                            if difficulty_event["action"] == "request":
+                                level = difficulty.slice(assistance_key, curriculum_max)["pending"]
+                                slice_state = difficulty.slice(assistance_key, curriculum_max)
+                                path = difficulty_requests.request(
+                                    assistance_key, level, task, args.seed + level * 1_000_000 + task_index * 10_000
+                                    + slice_state["request_attempts"][str(level)] * 1000,
+                                    sorted(excluded_families),
+                                    {"piece_count": min(128, 4 + 2 * level),
+                                     "color_mode": ("many", "few", "monochrome")[(level - 1) % 3]},
+                                )
+                                slice_state["pending_request_id"] = path.parent.name
                     record_solved_problem(
                         solved_problems, episode, start_proximity,
                         success_count, len(trajectories), step,
@@ -1919,6 +2108,7 @@ def train(args: argparse.Namespace) -> None:
                     recovery_event = None
                     if (
                         solved_problem is None
+                        and difficulty is None
                         and args.curriculum_mode == "mastery"
                         and curriculum_max > 0
                         and step >= args.curriculum_start_step
@@ -2007,18 +2197,20 @@ def train(args: argparse.Namespace) -> None:
                         args.success_advantage_weight,
                         args.completion_advantage_weight,
                         args.smoothness_advantage_weight,
-                        getattr(args, "reference_free_completion", False),
+                        reference_free_completion,
                     )
                     jerk_group_metrics = {}
                     if jerk_enabled:
-                        before_jerk = gradient_vector(parameters)
+                        before_jerk = gradient_vector(parameters, component_device)
                         jerk_losses = group_jerk_backward(
                             controller, trajectories,
                             torch.as_tensor(sim.encode(sim.limits[:, 0]), device=args.device),
                             torch.as_tensor(sim.encode(sim.limits[:, 1]), device=args.device),
                             jerk_weight, jerk_scale, jerk_margin,
                         )
-                        jerk_gradient_sum += gradient_vector(parameters) - before_jerk
+                        jerk_gradient_sum.sub_(before_jerk)
+                        del before_jerk
+                        jerk_gradient_sum.add_(gradient_vector(parameters, component_device))
                         regularized = any(cost is not None for cost in jerk_losses)
                         jerk_groups += int(regularized)
                         jerk_group_metrics = {
@@ -2037,14 +2229,16 @@ def train(args: argparse.Namespace) -> None:
                             "successes": success_count, **jerk_group_metrics,
                         }), flush=True)
                     if boundary_enabled:
-                        before_boundary = gradient_vector(parameters)
+                        before_boundary = gradient_vector(parameters, component_device)
                         boundary_losses = group_action_boundary_backward(
                             controller, trajectories,
                             torch.as_tensor(sim.encode(sim.limits[:, 0]), device=args.device),
                             torch.as_tensor(sim.encode(sim.limits[:, 1]), device=args.device),
                             boundary_weight, boundary_scale, POLICY_ARM_CORRECTION_LIMIT,
                         )
-                        boundary_gradient_sum += gradient_vector(parameters) - before_boundary
+                        boundary_gradient_sum.sub_(before_boundary)
+                        del before_boundary
+                        boundary_gradient_sum.add_(gradient_vector(parameters, component_device))
                         boundary_groups += int(any(cost is not None for cost in boundary_losses))
                         boundary_metrics = {
                             "action_boundary_losses": boundary_losses,
@@ -2094,7 +2288,7 @@ def train(args: argparse.Namespace) -> None:
                         args.success_advantage_weight,
                         args.completion_advantage_weight,
                         args.smoothness_advantage_weight,
-                        getattr(args, "reference_free_completion", False),
+                        reference_free_completion,
                     )
                     denominator = float(
                         np.abs(advantages).sum() + 1e-6
@@ -2151,7 +2345,20 @@ def train(args: argparse.Namespace) -> None:
                     boundary_sum=boundary_gradient_sum, boundary_groups=boundary_groups,
                 )
                 update_groups = int(active)
+            probes = (
+                full_model_gradient_probes(controller.policy)
+                if trainable_scope == "all" and sampling_noise is not None and update_groups
+                and "full_model_gradient_audit" not in log else {}
+            )
             update_metrics = policy_optimizer_step(optimizer, parameters, update_groups, args.gradient_clip)
+            if probes:
+                audit = {}
+                for group, (name, parameter, index, before) in probes.items():
+                    after = float(parameter.detach().flatten()[index])
+                    if before == after or not math.isfinite(after):
+                        raise ValueError(f"Full-model optimizer did not effectively update {group}")
+                    audit[group] = {"parameter": name, "index": index, "before": before, "after": after}
+                log["full_model_gradient_audit"] = {"step": step, "groups": audit}
             update_metrics.update(component_metrics)
             if regularizers_enabled and not update_groups:
                 update_metrics["optimizer_skip_reason"] = (
@@ -2221,29 +2428,19 @@ def train(args: argparse.Namespace) -> None:
                     development["step"] = step
                     development["manifest_sha256"] = auxiliary_sha
                     log.setdefault("auxiliary_view_validation", []).append(development)
-                save_delta_checkpoint(
-                    output / f"delta_step_{step:03}.pt",
-                    controller,
-                    optimizer,
-                    step,
-                )
+                if getattr(args, "retain_evaluation_checkpoints", False):
+                    save_delta_checkpoint(
+                        output / f"delta_step_{step:03}.pt", controller, optimizer, step,
+                    )
             save_resume_state(
                 output, controller, optimizer, rng, log,
-                getattr(args, "checkpoint_generations", 0),
+                getattr(args, "checkpoint_generations", 2),
             )
             if jerk_references is not None:
                 atomic_json(output / "jerk_reference_margins.json", jerk_references.snapshot())
             write_log(output, log)
             if getattr(args, "record_rollouts", False):
                 prune_evidence(output, getattr(args, "rollout_retention_steps", 20))
-            torch.save(
-                controller.policy.state_dict(),
-                output / "latest_model.pt",
-            )
-            torch.save({
-                "step": step,
-                "optimizer": optimizer.state_dict(),
-            }, output / "latest_optimizer.pt")
             print(json.dumps({
                 key: value
                 for key, value in step_row.items()
@@ -2256,7 +2453,12 @@ def train(args: argparse.Namespace) -> None:
                 }), flush=True)
                 break
     finally:
+        if difficulty_requests is not None:
+            difficulty_requests.close()
         for rollout_sim in rollout_sims:
+            native = getattr(rollout_sim, "_native_simulation", None)
+            if native is not None:
+                native.close()
             rollout_sim.close()
     if args.save_final_checkpoint:
         checkpoint_output = output / "checkpoint"
@@ -2283,6 +2485,13 @@ def train(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--trainable-scope", choices=("all", "action-projections"), default="all")
+    parser.add_argument("--automatic-difficulty", action="store_true",
+                        help="Advance training-only native pile tiers when zero-assistance success exceeds 60%%")
+    parser.add_argument("--difficulty-catalog", type=Path)
+    parser.add_argument("--difficulty-request-timeout", type=float, default=3600.)
+    parser.add_argument("--retain-evaluation-checkpoints", action="store_true",
+                        help="Also retain unbounded evaluation optimizer checkpoints; disabled by default")
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -2401,11 +2610,11 @@ def main() -> None:
     parser.add_argument(
         "--save-final-checkpoint",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
     )
     parser.add_argument("--model-root", type=Path, default=MODEL_ROOT)
     parser.add_argument("--seed", type=int, default=51_000)
-    parser.add_argument("--checkpoint-generations", type=int, default=0)
+    parser.add_argument("--checkpoint-generations", type=int, default=2)
     parser.add_argument("--allow-device-rng-migration", action="store_true")
     parser.add_argument("--device-rng-seed", type=int)
     args = parser.parse_args()
