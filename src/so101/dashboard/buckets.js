@@ -104,7 +104,7 @@ async function start() {
         const images=node("div",undefined,"images");
         for (const [i,image] of (p.initial_images || []).entries()) {
           const f=node("figure"),img=node("img");img.loading="lazy";img.alt=`Initial ${image.camera || "scene"} for ${p.id}`;
-          img.src=`api/buckets/image?problem=${encodeURIComponent(p.id)}&index=${i}`;
+          img.src=`api/buckets/image?problem=${encodeURIComponent(p.id)}&index=${i}&snapshot=${encodeURIComponent(data.manifest.snapshot_id)}`;
           img.addEventListener("error",()=>{img.replaceWith(node("p","Initial image unavailable / failed integrity check","missing"));});
           f.append(img,node("figcaption",image.camera || "Initial scene"));images.append(f);
         }
@@ -126,5 +126,8 @@ async function start() {
     render();
   } catch(error) {status.textContent=`Bucket publication unavailable: ${error.message}`;}
 }
-if (typeof document !== "undefined") start();
+if (typeof document !== "undefined") {
+  document.getElementById("refresh").addEventListener("click",()=>location.reload());
+  start();
+}
 if (typeof module !== "undefined") module.exports={wilson,aggregate};

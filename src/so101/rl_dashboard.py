@@ -510,7 +510,10 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                 try:
                     if path.endswith("/image"):
                         query = parse_qs(urlsplit(self.path).query)
-                        body, content_type = buckets.image(query["problem"][0], int(query["index"][0]))
+                        body, content_type = buckets.image(
+                            query["problem"][0], int(query["index"][0]),
+                            query.get("snapshot", [None])[0],
+                        )
                         self.send_body(200, body, content_type)
                     else:
                         self.respond(200, buckets.snapshot())

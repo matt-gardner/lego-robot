@@ -34,6 +34,8 @@ def test_snapshot_population_and_hash_pinned_initial_image(tmp_path):
     browser = BucketDashboard(tmp_path)
     assert browser.snapshot()["problems"]["problems"][0]["bucket"] == "native3"
     assert browser.image("scene:target:push", 0) == (image, "image/png")
+    with pytest.raises(ValueError, match="publication changed"):
+        browser.image("scene:target:push", 0, "old-snapshot")
     (directory / "initial.png").write_bytes(b"changed")
     with pytest.raises(ValueError, match="hash mismatch"):
         browser.image("scene:target:push", 0)
