@@ -362,9 +362,9 @@ def _run(root: Path, catalog: Path, *, seed: int, attempts: int,
             atomic_json(root / "status.json", {"status": "paused", "reason": str(error)})
             stopping.wait(5)
             continue
-        counts = (3, 5, 8, 12, 16, 24, 32, 48, 64)
-        count = counts[(sequence // 16) % len(counts)]
-        mode = ("monochrome", "few", "many")[sequence % 3]
+        counts = (3, 12, 5, 16, 8, 24, 3, 32, 5, 48, 8, 64)
+        count = counts[sequence % len(counts)]
+        mode = ("monochrome", "few", "many")[(sequence + sequence // len(counts)) % 3]
         receipt = {"sequence": sequence, "piece_count": count, "color_mode": mode}
         try:
             output = root / f"scene_{sequence:09d}"

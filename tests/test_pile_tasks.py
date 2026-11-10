@@ -16,20 +16,22 @@ from so101.lego_scene import capture_scene_state
 
 
 def test_continuous_schedule_revisits_small_piles_after_largest_range(tmp_path, monkeypatch):
-    for sequence in range(128):
+    for sequence in range(11):
         (tmp_path / f"attempt_{sequence:09d}.json").write_text("{}")
-    counts = []
+    proposals = []
 
     def generate(_catalog, _output, **kwargs):
-        counts.append(kwargs["count"])
+        proposals.append((kwargs["count"], kwargs["color_mode"]))
         raise ValueError("Settled proposal is not a table-connected contacting pile")
 
     monkeypatch.setattr(generator, "resource_check", lambda *_: None)
     monkeypatch.setattr(generator, "generate_scene", generate)
-    generator._run(tmp_path, Path("/unused"), seed=123, attempts=17,
+    generator._run(tmp_path, Path("/unused"), seed=123, attempts=36,
                    stopping=threading.Event())
-    assert counts == [64] * 16 + [3]
-    assert json.loads((tmp_path / "attempt_000000144.json").read_text())["status"] == "rejected"
+    assert [count for count, _ in proposals[:3]] == [64, 3, 12]
+    assert len(set(proposals)) == 27
+    assert sum(count <= 8 for count, _ in proposals) == 18
+    assert json.loads((tmp_path / "attempt_000000012.json").read_text())["status"] == "rejected"
 
 
 def test_sequential_drop_does_not_turn_flat_piece_width_into_drop_height(monkeypatch):
