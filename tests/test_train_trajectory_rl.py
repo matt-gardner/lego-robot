@@ -27,6 +27,7 @@ from so101.train_trajectory_rl import (
     group_advantages,
     completion_values,
     load_auxiliary_view,
+    record_auxiliary_admission,
     initialize_solved_problems,
     record_solved_problem,
     sample_solved_problem,
@@ -158,6 +159,24 @@ def test_reference_free_completion_rewards_shorter_successes_without_expert_scor
     assign_group_rewards(rows, 1., .5, 0., True)
     assert rows[0].reward > rows[1].reward > rows[2].reward
     assert np.isfinite(advantages).all()
+
+
+def test_auxiliary_transition_requires_hash_and_preserves_history():
+    old = {"manifest": "old.json", "sha256": "old"}
+    new = {"manifest": "new.json", "sha256": "new"}
+    log = {"auxiliary_view": old, "auxiliary_view_validation": [{"successes": 4}]}
+    with pytest.raises(ValueError, match="exact previous"):
+        record_auxiliary_admission(log, new, None, 253)
+    assert log["auxiliary_view"] == old
+    record_auxiliary_admission(log, new, "old", 253)
+    assert log["auxiliary_view_transitions"] == [
+        {"step": 253, "previous": old, "current": new},
+    ]
+    assert log["auxiliary_view_validation"] == [{"successes": 4}]
+    record_auxiliary_admission(log, new, "old", 254)
+    assert len(log["auxiliary_view_transitions"]) == 1
+    with pytest.raises(ValueError, match="existing admission"):
+        record_auxiliary_admission({}, new, "old", 0)
 
 
 def test_auxiliary_view_verifies_hashes_and_excludes_heldout_families(tmp_path):

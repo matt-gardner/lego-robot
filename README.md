@@ -547,6 +547,11 @@ VIEW groups sample the auxiliary training references; the original collection
 and fixed validation memberships stay unchanged. Auxiliary development success
 is logged separately before its first training update and at validation
 intervals; successful expert replay alone does not establish policy difficulty.
+To explicitly advance an admitted curriculum, provide the new manifest with
+`--auxiliary-view-previous-sha256` naming the exact previous admission hash.
+The prior manifest must remain intact, cross-stage train/development family
+leakage is rejected, and transition and validation history are retained.
+The new development set is measured before training on the new references.
 
 `--batch-rollouts` optionally batches inference across a training group's
 independent simulator instances on CUDA or CPU. Each trajectory retains its

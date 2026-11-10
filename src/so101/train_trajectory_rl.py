@@ -651,6 +651,20 @@ def load_auxiliary_view(path: Path, validation: list[CorpusEpisode]):
     return splits, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def record_auxiliary_admission(log: dict, admission: dict, previous_sha: str | None,
+                               step: int) -> None:
+    previous = log.get("auxiliary_view")
+    if previous is not None and previous != admission:
+        if previous_sha != previous["sha256"]:
+            raise ValueError("Auxiliary VIEW transition requires the exact previous manifest SHA256")
+        log.setdefault("auxiliary_view_transitions", []).append({
+            "step": step, "previous": previous, "current": admission,
+        })
+    elif previous is None and previous_sha is not None:
+        raise ValueError("Auxiliary VIEW transition requires an existing admission")
+    log["auxiliary_view"] = admission
+
+
 def assign_group_rewards(
     trajectories: list[Trajectory],
     success_weight: float = 1.,
@@ -1534,9 +1548,24 @@ def train(args: argparse.Namespace) -> None:
         admission = {"manifest": str(auxiliary_path), "sha256": auxiliary_sha,
                      "train": len(auxiliary_view["train"]),
                      "development": len(auxiliary_view["development"])}
-        if log.get("auxiliary_view", admission) != admission:
-            raise ValueError("Cannot replace the admitted auxiliary VIEW manifest on resume")
-        log["auxiliary_view"] = admission
+        previous = log.get("auxiliary_view")
+        if previous is not None and previous != admission:
+            previous_splits, previous_digest = load_auxiliary_view(
+                Path(previous["manifest"]), validation,
+            )
+            if previous_digest != previous["sha256"]:
+                raise ValueError("Previously admitted auxiliary VIEW manifest changed")
+            for old_split, new_split in (("train", "development"), ("development", "train")):
+                old_families = {
+                    item.metadata["scene_family_id"] for item in previous_splits[old_split]
+                }
+                if any(item.metadata["scene_family_id"] in old_families
+                       for item in auxiliary_view[new_split]):
+                    raise ValueError("Auxiliary VIEW transition crosses historical split families")
+        record_auxiliary_admission(
+            log, admission, getattr(args, "auxiliary_view_previous_sha256", None),
+            len(log["steps"]),
+        )
     if jerk_references is not None:
         if getattr(args, "reference_jerk_fallback", False):
             if "frozen_jerk_calibration" not in log:
@@ -1699,7 +1728,10 @@ def train(args: argparse.Namespace) -> None:
                 "start_step": start_step,
                 "target_step": args.steps,
             }), flush=True)
-        if auxiliary_view is not None and not log.get("auxiliary_view_validation"):
+        if auxiliary_view is not None and not any(
+            item.get("manifest_sha256") == auxiliary_sha
+            for item in log.get("auxiliary_view_validation", [])
+        ):
             development = validation_metrics(
                 sim, controller, auxiliary_view["development"], bounds,
                 args.seed + 1_900_000, args.horizon, args.action_steps,
@@ -1707,7 +1739,8 @@ def train(args: argparse.Namespace) -> None:
             )
             development["step"] = start_step - 1
             development["phase"] = "before_auxiliary_training"
-            log["auxiliary_view_validation"] = [development]
+            development["manifest_sha256"] = auxiliary_sha
+            log.setdefault("auxiliary_view_validation", []).append(development)
             write_log(output, log)
         for step in range(start_step, args.steps + 1):
             step_start = time.monotonic()
@@ -2143,6 +2176,7 @@ def train(args: argparse.Namespace) -> None:
                         sampling_noise,
                     )
                     development["step"] = step
+                    development["manifest_sha256"] = auxiliary_sha
                     log.setdefault("auxiliary_view_validation", []).append(development)
                 save_delta_checkpoint(
                     output / f"delta_step_{step:03}.pt",
@@ -2293,6 +2327,8 @@ def main() -> None:
                         help="Use a frozen 75th-percentile successful-reference jerk margin when a problem has no usable reference.")
     parser.add_argument("--reference-free-completion", action="store_true",
                         help="Normalize successful-rollout length within each task group instead of using expert completion efficiency.")
+    parser.add_argument("--auxiliary-view-previous-sha256",
+                        help="Explicit curriculum transition from this admitted manifest hash")
     parser.add_argument("--auxiliary-view-manifest", type=Path,
                         help="Hash-bound harder VIEW train/development references; preserves original fixed validation split.")
     parser.add_argument(
