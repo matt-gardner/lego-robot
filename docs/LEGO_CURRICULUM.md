@@ -26,6 +26,14 @@ The initializer compiles compensation support before restoring the original
 body settings: MuJoCo ignores runtime `body_gravcomp` changes when compiled
 `ngravcomp` is zero. Pending pieces must remain stationary during actual physics
 steps, not just at initial placement.
+
+`so101.coplanar_collision.merge_coplanar_triangles` is an experimental contact
+reduction helper, not an activated catalog converter. It keeps original vertices
+and only merges shared-edge planar faces whose union is convex and hole-free.
+It does not fill cavities, bridge disconnected surfaces, or substitute whole-part
+convex hulls. Converter integration still requires catalog qualification and
+multipart contact/settling comparisons; geometric reduction alone is not proof
+of improved physical throughput.
 Initial visibility is not
 measured during image-free generation; geometry-based burial tags are explicitly
 proxies, not claims about visible fraction.
