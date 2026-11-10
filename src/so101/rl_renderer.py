@@ -51,9 +51,11 @@ class PathtraceSimulation(BeamSimulation):
                 raise ValueError("CAD visual twin does not match live scene topology")
             self.rgb_data = mujoco.MjData(self.rgb_model)
             variant = "cuda_ad_rgb" if self.pathtrace_backend == "gpu-pathtrace" else "llvm_ad_rgb"
-            self.pathtracer = FrameRenderer(self.rgb_model, profile, variant=variant)
+            self.pathtracer = FrameRenderer(self.rgb_model, profile, variant=variant,
+                                           reuse_meshes=True)
             self.rgb_identity = {
                 "backend": self.pathtrace_backend, "variant": variant, "profile": profile,
+                "reuse_meshes": True,
                 "mujoco_version": mujoco.__version__,
                 "mitsuba_version": self.pathtracer.mi.__version__,
                 "profile_sha256": hashlib.sha256(DEFAULT_PROFILE.read_bytes()).hexdigest(),

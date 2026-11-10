@@ -535,7 +535,10 @@ speed/quality recommendation; historical offline renders used 1024 samples.
 CPU thread count does not control GPU rendering. This uses
 the historical wrist path-tracing pipeline and original CAD jaw visuals, not
 an image filter. All serial, validation and batched simulators use the selected
-backend. Physics, geometric labels and recorded renderer-identity checks remain
+backend. Online path tracing reuses CAD mesh buffers while updating pose,
+normals and material parameters; offline rerendering retains its existing
+default construction path. Mesh reuse is recorded in the renderer identity.
+Physics, geometric labels and recorded renderer-identity checks remain
 unchanged; incompatible recorded appearance identities fail explicitly.
 The RGB visual twin follows the recorded camera rather than claiming calibration.
 The CAD jaws can occlude RGB pixels differently from the legacy simplified jaw

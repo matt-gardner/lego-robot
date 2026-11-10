@@ -132,7 +132,8 @@ def visible_geoms(model) -> list[int]:
 
 
 class FrameRenderer:
-    def __init__(self, model, profile: dict, *, variant: str = "llvm_ad_rgb"):
+    def __init__(self, model, profile: dict, *, variant: str = "llvm_ad_rgb",
+                 reuse_meshes: bool = False):
         # Optional heavy backend, isolated from normal recorder imports.
         import drjit as dr
         import mitsuba as mi
@@ -144,6 +145,8 @@ class FrameRenderer:
             dr.set_thread_count(profile["threads"])
         self.variant = variant
         self.mi, self.model, self.profile = mi, model, profile
+        self.reuse_meshes = reuse_meshes
+        self.mesh_objects = {}
         self.visible = visible_geoms(model)
         self.meshes = {}
         for geom in self.visible:
@@ -210,15 +213,27 @@ class FrameRenderer:
             kind = model.geom_type[geom]
             if geom in self.meshes:
                 vertices, normals = self.meshes[geom]
-                props = mi.Properties()
-                props["bsdf"] = mi.load_dict(bsdf)
-                mesh = mi.Mesh(f"geom_{geom}", len(vertices), len(vertices) // 3,
-                               props, has_vertex_normals=True)
-                parameters = mi.traverse(mesh)
+                cached = self.mesh_objects.get(geom) if self.reuse_meshes else None
+                if cached is None:
+                    props = mi.Properties()
+                    props["bsdf"] = mi.load_dict(bsdf)
+                    mesh = mi.Mesh(f"geom_{geom}", len(vertices), len(vertices) // 3,
+                                   props, has_vertex_normals=True)
+                    parameters = mi.traverse(mesh)
+                    parameters["faces"] = np.arange(len(vertices), dtype="uint32")
+                else:
+                    mesh, parameters, previous_bsdf = cached
+                    if previous_bsdf != bsdf:
+                        parameters["bsdf.diffuse_reflectance.value"] = mi.Color3f(
+                            bsdf["diffuse_reflectance"]["value"],
+                        )
+                        parameters["bsdf.alpha"] = bsdf["alpha"]
+                        parameters["bsdf.eta"] = bsdf["int_ior"] / bsdf["ext_ior"]
                 parameters["vertex_positions"] = (vertices @ rotation.T + position).astype("float32").ravel()
                 parameters["vertex_normals"] = (normals @ rotation.T).astype("float32").ravel()
-                parameters["faces"] = np.arange(len(vertices), dtype="uint32")
                 parameters.update()
+                if self.reuse_meshes:
+                    self.mesh_objects[geom] = mesh, parameters, bsdf
                 scene[f"geom_{geom}"] = mesh
                 continue
             size = model.geom_size[geom]

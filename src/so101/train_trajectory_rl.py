@@ -1050,8 +1050,10 @@ def validation_metrics(
     action_steps: int,
     denoising_noise_scale: float | None = None,
 ) -> dict[str, Any]:
-    trajectories = [
-        rollout(
+    trajectories = []
+    for index, episode in enumerate(episodes):
+        started = time.monotonic()
+        trajectory = rollout(
             sim,
             controller,
             episode,
@@ -1062,8 +1064,13 @@ def validation_metrics(
             False,
             denoising_noise_scale=denoising_noise_scale,
         )
-        for index, episode in enumerate(episodes)
-    ]
+        trajectories.append(trajectory)
+        print(json.dumps({
+            "event": "validation_rollout_completed",
+            "completed": index + 1, "total": len(episodes),
+            "task": episode.task, "source": str(episode.source),
+            "seconds": time.monotonic() - started, "success": trajectory.success,
+        }), flush=True)
     successful = [item for item in trajectories if item.success]
     return {
         "sampler": "ode" if denoising_noise_scale is None else "sde",
@@ -1711,6 +1718,8 @@ def train(args: argparse.Namespace) -> None:
             getattr(args, "allow_device_rng_migration", False),
             getattr(args, "device_rng_seed", None),
         )
+        # Model and optimizer now own their tensors; release the CPU recovery copy.
+        del resume_state
     previous_estimator = log.get("rl_estimator", "flow-mse")
     if previous_estimator != args.rl_estimator:
         log.setdefault("estimator_changes", []).append({

@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
+import json
 import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
 import pytest
 
-from so101.pathtrace_recordings import cad_render_xml, eligible, restore_pose, visible_geoms
+from so101.pathtrace_pile import DEFAULT_PROFILE
+from so101.pathtrace_recordings import FrameRenderer, cad_render_xml, eligible, restore_pose, visible_geoms
 
 
 def test_date_selection_uses_pacific_midnight_not_utc_date():
@@ -60,3 +62,41 @@ def test_render_geometry_excludes_all_hidden_collision_groups():
         '</worldbody></mujoco>',
     )
     assert visible_geoms(model) == [0]
+
+
+def test_reused_mesh_render_matches_rebuild_after_motion_and_material_changes():
+    pytest.importorskip("mitsuba")
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco><asset><mesh name="piece" vertex="
+      -.08 -.08 -.08 .08 -.08 -.08 .08 .08 -.08 -.08 .08 -.08
+      -.08 -.08 .08 .08 -.08 .08 .08 .08 .08 -.08 .08 .08"/></asset>
+      <worldbody><camera name="wrist_cam" pos="0 0 1"/>
+        <geom name="table" type="plane" size="1 1 .01"/>
+        <body name="piece" pos="0 0 .12">
+          <geom name="piece" type="mesh" mesh="piece" rgba=".7 .2 .1 1"/>
+        </body></worldbody></mujoco>
+    """)
+    data = mujoco.MjData(model)
+    profile = json.loads(DEFAULT_PROFILE.read_bytes())
+    profile.update(samples=1, threads=1)
+    reference = FrameRenderer(model, profile)
+    cached = FrameRenderer(model, profile, reuse_meshes=True)
+    geom = model.geom("piece").id
+    mesh_object = None
+    previous = None
+    for frame in range(3):
+        if frame:
+            model.body("piece").pos[0] += .08
+            model.geom("piece").rgba[:3] = [.1, .7, .2]
+            profile["plastic_roughness"] = .1
+            profile["plastic_ior"] = 1.6
+        mujoco.mj_forward(model, data)
+        expected = reference.render(data, frame)
+        actual = cached.render(data, frame)
+        np.testing.assert_array_equal(actual, expected)
+        if mesh_object is not None:
+            assert cached.mesh_objects[geom][0] is mesh_object
+            assert not np.array_equal(actual, previous)
+        mesh_object = cached.mesh_objects[geom][0]
+        previous = actual
+    assert reference.mesh_objects == {}
