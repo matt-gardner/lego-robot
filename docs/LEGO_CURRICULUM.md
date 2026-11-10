@@ -15,6 +15,21 @@ compatibility or task solvability.
 
 ## Physics-first generation and downstream handoff
 
+The standalone `python -m so101.collect_harder_view --collection <existing root>
+--model-root <SO101 assets> --training-sources <frozen training paths JSON>
+--output <new root> --attempts 16` prepares compact
+VIEW references using the existing episode/reset interface. It changes initial
+base-joint poses, requires an initially unsatisfied legacy VIEW goal, regenerates
+expert actions and independently replays them with pre-action state agreement and
+the existing goal dwell. It renders transient segmentation, not image files.
+The 10GiB disk admission and 64MiB output limit remain mandatory. Its separate
+train/development manifest groups source scene seeds; it never replaces the fixed
+evaluation split. These are candidate difficulty strata, not measured policy
+difficulty or SFT qualification. No references exist until collection and replay
+succeed. Runtime launch belongs to the trainer owner while local storage is blocked.
+The required training-source allowlist is a JSON list of absolute episode paths
+from the trainer's frozen training membership, excluding heldout scene families.
+
 `python -m so101.produce_physical_catalog` runs the manipulation-only schedule
 without constructing a renderer or writing images. It records pre-action full
 qpos, qvel, actuator state/control, encoded robot state/action, phase, elapsed
