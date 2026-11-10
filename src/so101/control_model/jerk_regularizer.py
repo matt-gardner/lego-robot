@@ -1,10 +1,17 @@
 """Local command-smoothness gradients; observations and simulator feedback stay fixed."""
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import numpy as np
 import torch
 
 from .flow_rl import finish_velocity_backward, reparameterize_flow_path, to_device
+
+
+def prefix_backward_batch(controller):
+    model = getattr(getattr(controller, "policy", None), "model", None)
+    return model.replay_prefix_batch() if getattr(model, "rl_train_full_model", False) else nullcontext()
 
 
 def action_jerk_gradient(actions: np.ndarray, scale: float, margin: float = 0.):
@@ -97,22 +104,24 @@ def gradient_vector(parameters, device=None):
 def group_jerk_backward(controller, trajectories, low, high, weight, scale, margin):
     if not any(trajectory.success for trajectory in trajectories):
         return [None] * len(trajectories)
-    return [
-        pathwise_backward(controller, trajectory, low, high,
-                          weight / len(trajectories), scale, margin)
-        if margin is not None and trajectory.steps >= 4 else None
-        for trajectory in trajectories
-    ]
+    with prefix_backward_batch(controller):
+        return [
+            pathwise_backward(controller, trajectory, low, high,
+                              weight / len(trajectories), scale, margin)
+            if margin is not None and trajectory.steps >= 4 else None
+            for trajectory in trajectories
+        ]
 
 
 def group_action_boundary_backward(controller, trajectories, low, high, weight, scale, correction_limit):
     if not any(trajectory.success for trajectory in trajectories):
         return [None] * len(trajectories)
-    return [
-        action_boundary_backward(controller, trajectory, low, high,
-                                 weight / len(trajectories), scale, correction_limit)
-        for trajectory in trajectories
-    ]
+    with prefix_backward_batch(controller):
+        return [
+            action_boundary_backward(controller, trajectory, low, high,
+                                     weight / len(trajectories), scale, correction_limit)
+            for trajectory in trajectories
+        ]
 
 
 def normalize_gradient_components(parameters, jerk_sum, policy_groups: int, jerk_groups: int,

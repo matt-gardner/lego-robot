@@ -989,12 +989,16 @@ away in BF16 storage. The first active update verifies nonzero gradients and
 actual parameter changes through vision, language backbone, history, entities
 and the action expert/projections. Heads unused by the RL objective need not
 receive gradients. Replay accumulates observation-cache derivatives across
-denoising transitions, then recomputes the original rollout batch once and
-backpropagates their vector-Jacobian product through the selected row. This
-preserves full-model gradients without repeating the vision/text prefix for
-every denoising step; replay must still match recorded features within absolute
+denoising transitions. Within each training gradient component, row adjoints
+stay on CPU until all trajectories have replayed; each original rollout batch
+is then recomputed once and receives their combined vector-Jacobian product.
+This preserves full-model gradients without retaining prefix graphs between
+decisions or repeating the vision/text prefix for each row and denoising step.
+Replay must still match recorded features within absolute
 `1e-4`. Streaming likelihood losses must be backpropagated before advancing the
-iterator; pathwise replay finalizes its prefix after loss backward. A changed
+iterator; pathwise replay finalizes its prefix after loss backward. The group
+prefix context must finish before measuring component gradients or updating
+parameters. Standalone replay still finalizes its own prefix immediately. A changed
 replay implementation triggers another parameter-update audit, retaining the
 earlier audit. Each update records rollout, jerk-backward, task-backward,
 optimizer and remaining wall time in `wall_phase_seconds`. Regularizer component

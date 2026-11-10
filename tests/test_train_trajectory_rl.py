@@ -98,8 +98,8 @@ def test_denoising_backward_does_not_reuse_cropped_suffix_graph() -> None:
     assert not cache.layers[0].keys.requires_grad
 
 
-@pytest.mark.parametrize("objective", ["independent", "pathwise", "likelihood"])
-def test_full_model_replay_reuses_prefix_and_preserves_full_gradients(objective):
+@pytest.fixture
+def full_model_replay_policy():
     class Prefix(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -114,6 +114,7 @@ def test_full_model_replay_reuses_prefix_and_preserves_full_gradients(objective)
     class Model(torch.nn.Module):
         _rl_velocity_function = EntityVLAFlowMatching._rl_velocity_function
         denoising_log_probs_entity = EntityVLAFlowMatching.denoising_log_probs_entity
+        replay_prefix_batch = EntityVLAFlowMatching.replay_prefix_batch
 
         def __init__(self):
             super().__init__()
@@ -137,6 +138,12 @@ def test_full_model_replay_reuses_prefix_and_preserves_full_gradients(objective)
     policy.model = Model().bfloat16()
     for parameter in policy.parameters():
         parameter.requires_grad_(False)
+    return policy
+
+
+@pytest.mark.parametrize("objective", ["independent", "pathwise", "likelihood"])
+def test_full_model_replay_reuses_prefix_and_preserves_full_gradients(objective, full_model_replay_policy):
+    policy = full_model_replay_policy
     parameters = trainable_parameters(SimpleNamespace(policy=policy))
     assert all(parameter.requires_grad and parameter.dtype == torch.float32 for parameter in parameters)
     assert {id(parameter) for parameter in parameters} == {id(parameter) for parameter in policy.parameters()}
@@ -208,6 +215,64 @@ def test_full_model_replay_reuses_prefix_and_preserves_full_gradients(objective)
     replay(torch.ones(1, 1, 1), torch.ones(1)).sum().backward()
     with pytest.raises(AssertionError):
         finish_velocity_backward(replay)
+
+
+@pytest.mark.parametrize("objective", ["independent", "pathwise", "likelihood"])
+def test_shared_prefix_backward_combines_rows_without_mixing_original_batches(full_model_replay_policy, objective):
+    policy = full_model_replay_policy
+    trainable_parameters(SimpleNamespace(policy=policy))
+    reference = deepcopy(policy)
+    batch = (torch.tensor([[1., 2.], [3., 4.]]), torch.ones(2, 2),
+             torch.zeros(2, 1), torch.ones(2, 1, dtype=torch.bool), torch.ones(2, 1))
+    other_batch = tuple(value.clone() for value in batch)
+    captured = []
+    with torch.no_grad():
+        for original in (batch, other_batch):
+            policy.model._rl_velocity_function(
+                original, capture=lambda pad, cache: captured.extend(
+                    FrozenObservation.from_row(pad, cache, row, original) for row in (0, 1)
+                ),
+            )
+    observations = [captured[1], captured[0], captured[1], captured[3]]
+    with policy.model.replay_prefix_batch():
+        for observation, weight in zip(observations, [.7, -.2, .3, .5], strict=True):
+            inputs = tuple(value[observation.row:observation.row + 1] for value in observation.replay_inputs)
+            actual_velocity = policy.model._rl_velocity_function(inputs, observation)
+            expected_velocity = reference.model._rl_velocity_function(inputs, observation)
+            if objective != "independent":
+                with torch.no_grad():
+                    _, path = sample_flow_path(expected_velocity, torch.ones(1, 1, 1), 10, .1,
+                                               record_noise=True)
+            if objective == "likelihood":
+                for actual, expected in zip(
+                    policy.model.denoising_log_probs_entity(inputs, path, observation),
+                    reference.model.denoising_log_probs_entity(inputs, path, observation),
+                    strict=True,
+                ):
+                    (weight * actual.mean()).backward()
+                    (weight * expected.mean()).backward()
+                continue
+            if objective == "pathwise":
+                actual = reparameterize_flow_path(actual_velocity, path, torch.device("cpu"))
+                expected = reparameterize_flow_path(expected_velocity, path, torch.device("cpu"))
+            else:
+                actual = actual_velocity(torch.ones(1, 1, 1), torch.ones(1))
+                expected = expected_velocity(torch.ones(1, 1, 1), torch.ones(1))
+            (weight * actual.square().sum()).backward()
+            (weight * expected.square().sum()).backward()
+            finish_velocity_backward(actual_velocity)
+            finish_velocity_backward(expected_velocity)
+    assert policy.model.batch_sizes == [2] * 4
+    assert reference.model.batch_sizes == [2] * 4
+    for actual, expected in zip(policy.parameters(), reference.parameters(), strict=True):
+        torch.testing.assert_close(actual.grad, expected.grad)
+    assert policy.model._rl_pending_prefix is None
+    captured[1].cache.layers[0].keys += .1
+    with pytest.raises(AssertionError), policy.model.replay_prefix_batch():
+        velocity = policy.model._rl_velocity_function(batch, captured[1])
+        velocity(torch.ones(1, 1, 1), torch.ones(1)).sum().backward()
+        finish_velocity_backward(velocity)
+    assert policy.model._rl_pending_prefix is None
 
 
 def args() -> Namespace:

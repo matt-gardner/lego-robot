@@ -24,6 +24,7 @@ from so101.control_model.flow_rl import (
 )
 from so101.control_model.jerk_regularizer import (
     gradient_vector, group_action_boundary_backward, group_jerk_backward, normalize_gradient_components,
+    prefix_backward_batch,
 )
 from so101.jerk_reference import ReferenceJerkMargins
 from so101.control_model.modeling_entity_smolvla import (
@@ -2384,16 +2385,17 @@ def train(args: argparse.Namespace) -> None:
                     )
                     losses = []
                     task_started = time.monotonic()
-                    for trajectory, advantage in zip(
-                        trajectories, advantages, strict=True
-                    ):
-                        losses.append(trajectory_backward(
-                            controller,
-                            trajectory,
-                            float(advantage) / denominator,
-                            args.policy_clip,
-                        ))
-                        trajectory.decisions.clear()
+                    with prefix_backward_batch(controller):
+                        for trajectory, advantage in zip(
+                            trajectories, advantages, strict=True
+                        ):
+                            losses.append(trajectory_backward(
+                                controller,
+                                trajectory,
+                                float(advantage) / denominator,
+                                args.policy_clip,
+                            ))
+                            trajectory.decisions.clear()
                     phase_seconds["task_backward"] += time.monotonic() - task_started
                     accepted_groups += 1
                     accepted_for_task += 1

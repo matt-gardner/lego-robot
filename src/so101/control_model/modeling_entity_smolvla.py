@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 import copy
 import json
 from pathlib import Path
@@ -34,6 +35,18 @@ class FrozenObservation:
     replay_inputs: tuple | None = None
     row: int | None = None
 
+    def assert_matches(self, pad: Tensor, cache: Cache) -> None:
+        if self.row is None:
+            raise ValueError("Frozen prefix comparison requires its original batch row")
+        selection = slice(self.row, self.row + 1)
+        torch.testing.assert_close(pad[selection].detach().cpu(), self.pad)
+        for actual, expected in zip(cache.layers, self.cache.layers, strict=True):
+            for name in ("keys", "values"):
+                torch.testing.assert_close(
+                    getattr(actual, name)[selection].detach().cpu(), getattr(expected, name),
+                    rtol=0., atol=1e-4,
+                )
+
     @classmethod
     def from_row(cls, pad: Tensor, cache: Cache | None, row: int,
                  replay_inputs: tuple | None = None) -> FrozenObservation:
@@ -57,6 +70,14 @@ class FrozenObservation:
         return result
 
 
+@dataclass
+class _PrefixAdjoint:
+    observation: FrozenObservation
+    gradients: list[Tensor | None]
+    build: Callable[[tuple], tuple[Tensor, Cache]]
+    device: torch.device
+
+
 @dataclass(frozen=True)
 class EntityModelConfig:
     max_entities: int = 4
@@ -70,7 +91,48 @@ class EntityModelConfig:
 
 
 class EntityVLAFlowMatching(VLAFlowMatching):
-    rl_replay_implementation = "prefix-vjp-v1"
+    rl_replay_implementation = "batch-prefix-vjp-v2"
+
+    @contextmanager
+    def replay_prefix_batch(self) -> Iterator[None]:
+        if getattr(self, "_rl_pending_prefix", None) is not None:
+            raise ValueError("Prefix backward batches cannot be nested")
+        pending: dict[int, list[_PrefixAdjoint]] = {}
+        self._rl_pending_prefix = pending
+        try:
+            yield
+            while pending:
+                _, requests = pending.popitem()
+                first = requests[0]
+                with torch.profiler.record_function("rl.prefix_recompute"):
+                    pad, cache = first.build(to_device(
+                        first.observation.replay_inputs, first.device,
+                    ))
+                for request in requests:
+                    request.observation.assert_matches(pad, cache)
+                sources, gradients = [], []
+                for index, source in enumerate(
+                    getattr(layer, name) for layer in cache.layers for name in ("keys", "values")
+                ):
+                    combined = None
+                    for request in requests:
+                        gradient = request.gradients[index]
+                        if gradient is None:
+                            continue
+                        row = request.observation.row
+                        if row is None:
+                            raise ValueError("Shared prefix derivatives require original batch rows")
+                        if combined is None:
+                            combined = torch.zeros_like(source)
+                        combined[row:row + 1].add_(gradient.to(source.device))
+                    if combined is not None:
+                        sources.append(source)
+                        gradients.append(combined)
+                with torch.profiler.record_function("rl.prefix_backward"):
+                    torch.autograd.backward(sources, gradients)
+                del pad, cache, sources, gradients
+        finally:
+            self._rl_pending_prefix = None
 
     def init_entity_modules(self, entity_config: EntityModelConfig) -> None:
         self.entity_config = entity_config
@@ -251,12 +313,7 @@ class EntityVLAFlowMatching(VLAFlowMatching):
         capture: Callable[[Tensor, Cache | None], None] | None = None,
     ) -> Callable[[Tensor, Tensor], Tensor]:
         full_gradients = getattr(self, "rl_train_full_model", False) and torch.is_grad_enabled()
-        def prefix_features():
-            prefix_inputs = inputs
-            if frozen_observation is not None:
-                if frozen_observation.replay_inputs is None or frozen_observation.row is None:
-                    raise ValueError("Full-model replay requires the original observation batch")
-                prefix_inputs = to_device(frozen_observation.replay_inputs, inputs[4].device)
+        def prefix_features(prefix_inputs):
             prefix, prefix_pad, attention, _ = self._prefix_with_entities(*prefix_inputs)
             _, prefix_cache = self.vlm_with_expert.forward(
                 attention_mask=make_att_2d_masks(prefix_pad, attention),
@@ -264,27 +321,12 @@ class EntityVLAFlowMatching(VLAFlowMatching):
                 past_key_values=None, inputs_embeds=[prefix, None],
                 use_cache=self.config.use_cache,
             )
-            if frozen_observation is not None:
-                row = frozen_observation.row
-                prefix_pad = prefix_pad[row:row + 1]
-                prefix_cache = FrozenObservation.copy_cache(
-                    prefix_cache, inputs[4].device, row, detach=False,
-                )
-                torch.testing.assert_close(prefix_pad.detach().cpu(), frozen_observation.pad)
-                for actual, expected in zip(
-                    prefix_cache.layers, frozen_observation.cache.layers, strict=True,
-                ):
-                    for name in ("keys", "values"):
-                        torch.testing.assert_close(
-                            getattr(actual, name).detach().cpu(), getattr(expected, name),
-                            rtol=0., atol=1e-4,
-                        )
             return prefix_pad, prefix_cache
 
         if full_gradients:
             if frozen_observation is None:
                 with torch.no_grad():
-                    pad, cache = prefix_features()
+                    pad, cache = prefix_features(inputs)
             else:
                 if frozen_observation.replay_inputs is None or frozen_observation.row is None:
                     raise ValueError("Full-model replay requires the original observation batch")
@@ -309,8 +351,27 @@ class EntityVLAFlowMatching(VLAFlowMatching):
                 gradients = [value.grad for value in tensors]
                 if not any(value is not None for value in gradients):
                     raise ValueError("Full-model replay must backpropagate its losses before finalizing the prefix")
+                pending = getattr(self, "_rl_pending_prefix", None)
+                if pending is not None and frozen_observation is not None:
+                    # Keep adjoints, not prefix graphs or per-decision images, off the GPU.
+                    pending.setdefault(id(frozen_observation.replay_inputs), []).append(_PrefixAdjoint(
+                        frozen_observation,
+                        [value.detach().to("cpu", copy=True) if value is not None else None
+                         for value in gradients],
+                        prefix_features, inputs[4].device,
+                    ))
+                    for value in tensors:
+                        value.grad = None
+                    return
                 with torch.profiler.record_function("rl.prefix_recompute"):
-                    _, original = prefix_features()
+                    prefix_inputs = (inputs if frozen_observation is None else
+                                     to_device(frozen_observation.replay_inputs, inputs[4].device))
+                    original_pad, original = prefix_features(prefix_inputs)
+                    if frozen_observation is not None:
+                        frozen_observation.assert_matches(original_pad, original)
+                        original = FrozenObservation.copy_cache(
+                            original, inputs[4].device, frozen_observation.row, detach=False,
+                        )
                 sources = [
                     getattr(layer, name) for layer in original.layers for name in ("keys", "values")
                 ]
