@@ -1364,7 +1364,38 @@ def sample_solved_problem(
     return eligible[int(rng.integers(len(eligible)))] if eligible else None
 
 
-def refresh_difficulty_pools(difficulty, requests, pools, excluded_families, training_by_source, log):
+def admit_difficulty_pool(difficulty, pools, excluded_families, training_by_source,
+                          key, level, path, digest):
+    identity = f"{key}:{level}"
+    admitted = difficulty.state.setdefault("pool_manifests", {})
+    previous = admitted.get(identity)
+    if previous is not None and previous["sha256"] != digest:
+        return False
+    if (key, level) not in pools:
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"Admitted native pool changed: {path}")
+        pool = next((
+            pool for (known_key, known_level), pool in pools.items()
+            if admitted[f"{known_key}:{known_level}"]["sha256"] == digest
+        ), None)
+        if pool is None:
+            pool = load_native_pool(path, excluded_families)
+        difficulty.admit(key, level, digest)
+        admitted[identity] = {"slice": key, "level": level, "path": str(path), "sha256": digest}
+        pools[(key, level)] = pool
+        training_by_source.update(
+            (str(item.source), item) for episodes in pool.values() for item in episodes
+        )
+    return True
+
+
+def refresh_difficulty_pools(difficulty, requests, pools, excluded_families, training_by_source, log,
+                             continuous_manifest=None, output=None):
+    for previous in list(difficulty.state.get("pool_manifests", {}).values()):
+        admit_difficulty_pool(
+            difficulty, pools, excluded_families, training_by_source, previous["slice"],
+            previous["level"], Path(previous["path"]), previous["sha256"],
+        )
     for result in requests.results():
         identity = result["request_id"]
         statuses = log.setdefault("harder_data_requests", {})
@@ -1375,17 +1406,54 @@ def refresh_difficulty_pools(difficulty, requests, pools, excluded_families, tra
                 difficulty.failed_request(result)
         if result["status"] != "complete":
             continue
-        key, level = result["slice"], result["level"]
-        if (key, level) not in pools:
-            path = Path(result["manifest_path"])
-            pool = load_native_pool(path, excluded_families)
-            difficulty.admit(key, level, result["sha256"])
-            pools[(key, level)] = pool
-            training_by_source.update(
-                (str(item.source), item) for episodes in pool.values() for item in episodes
+        selected = admit_difficulty_pool(
+            difficulty, pools, excluded_families, training_by_source, result["slice"],
+            result["level"], Path(result["manifest_path"]), result["sha256"],
+        )
+        if not selected:
+            statuses[identity]["admission"] = "not-selected-existing-immutable-tier"
+    if continuous_manifest is None:
+        return
+    content = continuous_manifest.read_bytes()
+    source_sha = hashlib.sha256(content).hexdigest()
+    if source_sha == difficulty.state.get("continuous_source_sha256"):
+        return
+    manifest = json.loads(content)
+    if (manifest.get("schema_version") != 1 or manifest.get("kind") != "lego-pile-task-pool"
+            or manifest.get("status") != "complete" or manifest.get("expert_references") is not False):
+        raise ValueError("Continuous native source is not an admitted problem pool")
+    tiers = defaultdict(list)
+    for scene in manifest["scenes"]:
+        count = scene["tags"]["piece_count"]
+        if type(count) is not int or not 2 <= count <= 128:
+            raise ValueError("Continuous pool piece counts exceed supported generator bounds")
+        tiers[max(1, (count - 3) // 2)].append(scene)
+    directory = output / "difficulty-pools"
+    directory.mkdir(exist_ok=True)
+    for level, scenes in sorted(tiers.items()):
+        keys = (*TASKS, *(f"obstacle_{task}" for task in TASKS))
+        if all(f"{key}:{level}" in difficulty.state.get("pool_manifests", {}) for key in keys):
+            continue
+        snapshot = {
+            "schema_version": 1, "kind": "lego-pile-task-pool", "status": "complete",
+            "expert_references": False, "source_sha256": source_sha,
+            "scenes": sorted(scenes, key=lambda scene: scene["scene_id"])[:32],
+        }
+        name = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
+        path = directory / f"{name}.json"
+        if not path.exists():
+            atomic_json(path, snapshot)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        for key in keys:
+            admit_difficulty_pool(
+                difficulty, pools, excluded_families, training_by_source, key, level, path, digest,
             )
-        elif difficulty.state["admissions"][f"{key}:{level}"] != result["sha256"]:
-            raise ValueError("An admitted difficulty request changed")
+    difficulty.state["continuous_source_sha256"] = source_sha
+    log.setdefault("continuous_pool_admissions", []).append({
+        "source": str(continuous_manifest), "sha256": source_sha,
+        "scenes": len(manifest["scenes"]), "available_tiers": sorted(tiers),
+        "qualification": "hash-bound native reset/goal capability, not expert or policy solvability",
+    })
 
 
 def train(args: argparse.Namespace) -> None:
@@ -1821,6 +1889,7 @@ def train(args: argparse.Namespace) -> None:
         )
         refresh_difficulty_pools(
             difficulty, difficulty_requests, difficulty_pools, excluded_families, training_by_source, log,
+            getattr(args, "native_pool_manifest", None), output,
         )
     elif log.get("difficulty_curriculum"):
         raise ValueError("Cannot disable an existing automatic difficulty curriculum on resume")
@@ -1936,6 +2005,7 @@ def train(args: argparse.Namespace) -> None:
             if difficulty is not None:
                 refresh_difficulty_pools(
                     difficulty, difficulty_requests, difficulty_pools, excluded_families, training_by_source, log,
+                    getattr(args, "native_pool_manifest", None), output,
                 )
             step_start = time.monotonic()
             optimizer.zero_grad(set_to_none=True)
@@ -2489,6 +2559,8 @@ def main() -> None:
     parser.add_argument("--automatic-difficulty", action="store_true",
                         help="Advance training-only native pile tiers when zero-assistance success exceeds 60%%")
     parser.add_argument("--difficulty-catalog", type=Path)
+    parser.add_argument("--native-pool-manifest", type=Path,
+                        help="Atomic continuous TRAIN pool; per-tier admissions are frozen in this run")
     parser.add_argument("--difficulty-request-timeout", type=float, default=3600.)
     parser.add_argument("--retain-evaluation-checkpoints", action="store_true",
                         help="Also retain unbounded evaluation optimizer checkpoints; disabled by default")

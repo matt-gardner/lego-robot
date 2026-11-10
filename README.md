@@ -654,6 +654,11 @@ available reference assistance, or backs off a reference-free native tier.
 Windows reset on transitions; checkpointed slice state and immutable admission
 hashes survive resume. Frozen validation/development outcomes never control
 generation or advancement.
+`--native-pool-manifest /absolute/current-pool.json` also consumes the continuous
+producer's admitted snapshots: piece counts define physical tiers, at most
+32 scenes are frozen per admitted tier, and later pointer updates can supply
+new tiers without replacing already-used data. The run preserves its own
+immutable manifests and historical training lookup for recovery/solved sampling.
 
 Exhaustion queues one bounded TRAIN-only `so101.pile_task_worker` request at a
 time. Proposals increase piece count from 6 to 128 and vary color diversity;

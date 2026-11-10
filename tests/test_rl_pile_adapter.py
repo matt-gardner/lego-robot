@@ -15,6 +15,8 @@ from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
 from so101.robot_sim import BeamSimulation, MODEL_ROOT, scene_xml
 from so101.simulation_corpus import TASKS
 from so101.train_trajectory_rl import rollout
+from so101.train_trajectory_rl import refresh_difficulty_pools
+from so101.rl_difficulty import DifficultyController
 
 
 @pytest.fixture
@@ -160,3 +162,31 @@ def test_native_gpu_pathtrace_uses_native_visual_topology_without_changing_physi
         ).hexdigest()
     finally:
         sim.close()
+
+
+def test_continuous_snapshot_is_admitted_by_physical_tier_and_recoverable_without_mutable_pointer(native_pool, tmp_path):
+    manifest, _ = native_pool
+    content = json.loads(manifest.read_text())
+    content["scenes"][0]["tags"] = {"piece_count": 3}
+    manifest.write_text(json.dumps(content))
+    controller = DifficultyController()
+    requests = SimpleNamespace(results=lambda: [])
+    output = tmp_path / "run"
+    output.mkdir()
+    pools, sources, log = {}, {}, {}
+    refresh_difficulty_pools(controller, requests, pools, set(), sources, log, manifest, output)
+    assert len(pools) == 8
+    assert len(sources) == 4
+    assert ("view", 1) in pools and ("obstacle_view", 1) in pools
+    frozen = dict(controller.state["pool_manifests"])
+    content["scenes"][0]["scene_id"] = "unadmitted-new-version"
+    manifest.write_text(json.dumps(content))
+    # Once admitted, a tier is not silently replaced by the producer's mutable pointer.
+    refresh_difficulty_pools(controller, requests, pools, set(), sources, log, manifest, output)
+    assert controller.state["pool_manifests"] == frozen
+    resumed_sources = {}
+    refresh_difficulty_pools(
+        DifficultyController(json.loads(json.dumps(controller.state))),
+        requests, {}, set(), resumed_sources, {},
+    )
+    assert set(resumed_sources) == set(sources)

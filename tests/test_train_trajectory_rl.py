@@ -836,9 +836,12 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
         def request(self, key, level, *args):
             identity = f"{key}-{level}"
             path = tmp_path / identity / "request.json"
+            path.parent.mkdir(exist_ok=True)
+            manifest = path.parent / "manifest.json"
+            manifest.write_text("{}")
             self.completed[identity] = {
                 "request_id": identity, "status": "complete", "slice": key, "level": level,
-                "manifest_path": str(tmp_path / identity / "manifest.json"), "sha256": "a" * 64,
+                "manifest_path": str(manifest), "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
             }
             return path
 
