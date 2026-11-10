@@ -78,6 +78,12 @@ class PathtraceSimulation(BeamSimulation):
             self.close()
             raise
 
+    def close(self) -> None:
+        # MuJoCo frees GL names in the current context, not necessarily this rollout's.
+        if self.renderer is not None and self.renderer._gl_context is not None:
+            self.renderer._gl_context.make_current()
+        super().close()
+
     def _render_wrist_rgb(self) -> np.ndarray:
         if self.renderer is None:
             raise RuntimeError("Rendering was not enabled")

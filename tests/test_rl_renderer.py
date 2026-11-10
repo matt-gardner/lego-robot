@@ -4,7 +4,7 @@ import os
 import random
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import mujoco
 import numpy as np
@@ -14,6 +14,16 @@ from so101.robot_sim import restore_episode
 
 
 class RendererSelectionTest(unittest.TestCase):
+    def test_close_activates_its_own_gl_context_before_freeing_resources(self):
+        sim = PathtraceSimulation.__new__(PathtraceSimulation)
+        sim.renderer = Mock()
+        sim.close()
+        self.assertEqual(sim.renderer.mock_calls, [call._gl_context.make_current(), call.close()])
+        sim.renderer._gl_context = None
+        sim.renderer.reset_mock()
+        sim.close()
+        sim.renderer.close.assert_called_once_with()
+
     def test_default_and_invalid_backend(self):
         with patch("so101.rl_renderer.BeamSimulation") as simulation:
             create_simulation(Path("model"))
