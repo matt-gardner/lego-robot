@@ -508,6 +508,28 @@ chunk. Earlier frames would be evicted before the next policy decision;
 physics, per-frame success/constraint checks, and optional rollout evidence
 remain unchanged. With 16-action chunks and four-frame history this avoids
 12 unused RGB renders per complete chunk.
+RL defaults to `--rgb-renderer mujoco`. Select the actual Mitsuba CUDA/OptiX
+path tracer with `--rgb-renderer gpu-pathtrace --pathtrace-samples 16`, or
+the LLVM CPU backend with `--rgb-renderer cpu-pathtrace --pathtrace-threads 4`.
+These require the optional Mitsuba/Dr.Jit runtime; GPU mode additionally needs
+a compatible NVIDIA driver and CUDA/OptiX runtime and never falls back to CPU.
+The default 16 samples is an experimental online budget, not a validated
+speed/quality recommendation; historical offline renders used 1024 samples.
+CPU thread count does not control GPU rendering. This uses
+the historical wrist path-tracing pipeline and original CAD jaw visuals, not
+an image filter. All serial, validation and batched simulators use the selected
+backend. Physics, geometric labels and recorded renderer-identity checks remain
+unchanged; incompatible recorded appearance identities fail explicitly.
+The RGB visual twin follows the recorded camera rather than claiming calibration.
+The CAD jaws can occlude RGB pixels differently from the legacy simplified jaw
+geometry used for segmentation, visibility and rewards. Scoring is deliberately
+unchanged for experiment parity; photo RGB is not pixel-aligned occlusion
+ground truth and must not be used to claim improved visibility qualification.
+`observation_renderer` records the effective profile and implementation hashes.
+CPU path tracing can be much slower; compare actual rollout/group wall time,
+not offline rendering benchmarks, before using it for training. GPU spare
+memory does not establish spare compute: measure rendering contention with
+full-model training before claiming an end-to-end speed improvement.
 Serialized rollouts include wall-clock `timings` for reset/gold-prefix,
 observation construction/rendering, inference through action readback, physics
 stepping, and total rollout time before final evidence export. In-loop goal

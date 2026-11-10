@@ -505,7 +505,7 @@ class BeamSimulation:
             raise ValueError(f"Policy target exceeds a joint boundary by {arm_correction:.3f} units")
         return self.decode(bounded), correction
 
-    def image(self) -> np.ndarray:
+    def _render_wrist_rgb(self) -> np.ndarray:
         if self.renderer is None:
             raise RuntimeError("Rendering was not enabled")
         self.renderer.update_scene(self.data, camera="wrist_cam")
@@ -516,6 +516,10 @@ class BeamSimulation:
                 image, seed=int(self.initial.get("seed", 0)),
                 frame=round(self.data.time / self.model.opt.timestep),
             )
+        return image
+
+    def image(self) -> np.ndarray:
+        image = self._render_wrist_rgb()
         if self.visual_cue_target:
             if self.active_target is None:
                 raise RuntimeError("Visual target cue requested without an active target")

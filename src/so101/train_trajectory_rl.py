@@ -41,6 +41,7 @@ from so101.cloud_checkpoint import publish as publish_resume_checkpoint
 from so101.cloud_checkpoint import atomic_json
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
 from so101.resume_rng import plan_device_rng, restore_device_rng
+from so101.rl_renderer import create_simulation
 from so101.simulation_corpus import CorpusEpisode, TASKS, episode_actions, expert_bounds, load_corpus
 
 
@@ -1492,7 +1493,12 @@ def train(args: argparse.Namespace) -> None:
                 )["optimizer"])
         for group in optimizer.param_groups:
             group["lr"] = args.learning_rate
-    sim = BeamSimulation(args.model_root, render=True)
+    renderer_options = {
+        "backend": getattr(args, "rgb_renderer", "mujoco"),
+        "samples": getattr(args, "pathtrace_samples", 16),
+        "threads": getattr(args, "pathtrace_threads", 4),
+    }
+    sim = create_simulation(args.model_root, **renderer_options)
     rollout_sims = [sim]
     log: dict[str, Any] = (
         resume_state["log"]
@@ -1706,11 +1712,19 @@ def train(args: argparse.Namespace) -> None:
         mastery_curriculum["target_success"] = target_success
     if jerk_references is not None:
         atomic_json(output / "jerk_reference_margins.json", jerk_references.snapshot())
+    renderer_identity = getattr(sim, "rgb_identity", {"backend": "mujoco"})
+    if log.get("observation_renderer") != renderer_identity:
+        log.setdefault("observation_renderer_history", []).append({
+            "start_step": start_step,
+            "previous": log.get("observation_renderer", {"backend": "mujoco"}),
+            "selected": renderer_identity,
+        })
+    log["observation_renderer"] = renderer_identity
     write_log(output, log)
     try:
         if batch_rollouts:
             for _ in range(1, args.group_size):
-                rollout_sims.append(BeamSimulation(args.model_root, render=True))
+                rollout_sims.append(create_simulation(args.model_root, **renderer_options))
         if not args.resume:
             baseline_start = time.monotonic()
             baseline = validation_metrics(
@@ -2290,6 +2304,12 @@ def main() -> None:
     )
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--group-size", type=int, default=8)
+    parser.add_argument("--rgb-renderer", choices=("mujoco", "cpu-pathtrace", "gpu-pathtrace"),
+                        default="mujoco",
+                        help="Policy RGB backend; GPU path tracing requires CUDA/OptiX, with no CPU fallback.")
+    parser.add_argument("--pathtrace-samples", type=int, default=16,
+                        help="Experimental online budget; historical offline renders used 1024 samples.")
+    parser.add_argument("--pathtrace-threads", type=int, default=4)
     parser.add_argument("--batch-rollouts", action=argparse.BooleanOptionalAction, default=False,
                         help="Batch group inference with independent simulator histories and trajectory RNGs.")
     parser.add_argument("--groups-per-task", type=int, default=2)

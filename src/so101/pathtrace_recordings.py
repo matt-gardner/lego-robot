@@ -132,13 +132,17 @@ def visible_geoms(model) -> list[int]:
 
 
 class FrameRenderer:
-    def __init__(self, model, profile: dict):
+    def __init__(self, model, profile: dict, *, variant: str = "llvm_ad_rgb"):
         # Optional heavy backend, isolated from normal recorder imports.
         import drjit as dr
         import mitsuba as mi
 
-        mi.set_variant("llvm_ad_rgb")
-        dr.set_thread_count(profile["threads"])
+        if variant not in ("llvm_ad_rgb", "cuda_ad_rgb"):
+            raise ValueError(f"Unsupported pathtrace variant: {variant}")
+        mi.set_variant(variant)
+        if variant == "llvm_ad_rgb":
+            dr.set_thread_count(profile["threads"])
+        self.variant = variant
         self.mi, self.model, self.profile = mi, model, profile
         self.visible = visible_geoms(model)
         self.meshes = {}
@@ -158,6 +162,8 @@ class FrameRenderer:
 
     def render(self, data, frame: int) -> np.ndarray:
         mi, model, profile = self.mi, self.model, self.profile
+        if mi.variant() != self.variant:
+            raise RuntimeError("Pathtrace backend changed while a renderer was live")
         camera = model.camera("wrist_cam").id
         rotation = data.cam_xmat[camera].reshape(3, 3)
         origin = data.cam_xpos[camera]
