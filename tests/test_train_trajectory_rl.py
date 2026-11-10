@@ -28,6 +28,7 @@ from so101.train_trajectory_rl import (
     completion_values,
     load_auxiliary_view,
     record_auxiliary_admission,
+    historical_auxiliary_training,
     initialize_solved_problems,
     record_solved_problem,
     sample_solved_problem,
@@ -177,6 +178,24 @@ def test_auxiliary_transition_requires_hash_and_preserves_history():
     assert len(log["auxiliary_view_transitions"]) == 1
     with pytest.raises(ValueError, match="existing admission"):
         record_auxiliary_admission({}, new, "old", 0)
+
+
+def test_historical_auxiliary_preserves_solved_sources_and_split_guards(monkeypatch, tmp_path):
+    old_train = CorpusEpisode(tmp_path / "old_train", {"scene_family_id": "train"})
+    old_dev = CorpusEpisode(tmp_path / "old_dev", {"scene_family_id": "dev"})
+    splits = {"train": [old_train], "development": [old_dev]}
+    monkeypatch.setattr("so101.train_trajectory_rl.load_auxiliary_view",
+                        lambda path, validation: (splits, "bound"))
+    admission = {"manifest": "old.json", "sha256": "bound"}
+    log = {"auxiliary_view": admission,
+           "auxiliary_view_transitions": [{"previous": admission}]}
+    current = {"train": [], "development": []}
+    assert historical_auxiliary_training(log, [], current) == [old_train]
+    with pytest.raises(ValueError, match="historical split"):
+        historical_auxiliary_training(log, [], {"train": [old_dev], "development": []})
+    admission["sha256"] = "changed"
+    with pytest.raises(ValueError, match="manifest changed"):
+        historical_auxiliary_training(log, [], current)
 
 
 def test_auxiliary_view_verifies_hashes_and_excludes_heldout_families(tmp_path):

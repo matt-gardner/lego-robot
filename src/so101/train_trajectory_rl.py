@@ -651,6 +651,24 @@ def load_auxiliary_view(path: Path, validation: list[CorpusEpisode]):
     return splits, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def historical_auxiliary_training(log: dict, validation: list[CorpusEpisode],
+                                  current: dict) -> list[CorpusEpisode]:
+    admissions = [event["previous"] for event in log.get("auxiliary_view_transitions", [])]
+    if log.get("auxiliary_view"):
+        admissions.append(log["auxiliary_view"])
+    references = {}
+    for previous in admissions:
+        splits, digest = load_auxiliary_view(Path(previous["manifest"]), validation)
+        if digest != previous["sha256"]:
+            raise ValueError("Previously admitted auxiliary VIEW manifest changed")
+        for old_split, new_split in (("train", "development"), ("development", "train")):
+            families = {item.metadata["scene_family_id"] for item in splits[old_split]}
+            if any(item.metadata["scene_family_id"] in families for item in current[new_split]):
+                raise ValueError("Auxiliary VIEW transition crosses historical split families")
+        references.update((str(item.source), item) for item in splits["train"])
+    return list(references.values())
+
+
 def record_auxiliary_admission(log: dict, admission: dict, previous_sha: str | None,
                                step: int) -> None:
     previous = log.get("auxiliary_view")
@@ -1422,7 +1440,18 @@ def train(args: argparse.Namespace) -> None:
     auxiliary_path = getattr(args, "auxiliary_view_manifest", None)
     if auxiliary_path is not None:
         auxiliary_view, auxiliary_sha = load_auxiliary_view(auxiliary_path, validation)
-        training["view"] = [*training["view"], *auxiliary_view["train"]]
+        if resume_state is not None:
+            previous_training = historical_auxiliary_training(
+                resume_state["log"], validation, auxiliary_view,
+            )
+            existing = {str(item.source) for item in training["view"]}
+            training["view"].extend(
+                item for item in previous_training if str(item.source) not in existing
+            )
+        existing = {str(item.source) for item in training["view"]}
+        training["view"].extend(
+            item for item in auxiliary_view["train"] if str(item.source) not in existing
+        )
     jerk_references = (ReferenceJerkMargins(
         {task: [str(item.source) for item in episodes] for task, episodes in training.items()},
         args.horizon, 10, hold_final=False,
