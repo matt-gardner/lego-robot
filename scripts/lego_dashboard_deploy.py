@@ -15,14 +15,9 @@ import sys
 import tempfile
 import time
 from urllib.error import URLError
-from urllib.parse import urlencode
-from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
+from urllib.request import ProxyHandler, build_opener
 
 CONFIG = Path("/etc/lego-robot-control/dashboard-deploy.json")
-CATALOG_URL = "http://127.0.0.1:8765/lego-robot/api/lego"
-EVIDENCE_VERSION = "ldraw-2026-10-023083918da2-zup-v17-mj3"
-API_LIMIT = 2 * 1024 * 1024
-STATUS_LIMIT = 16 * 1024 - 1
 SSH = (
     "ssh -i /mnt/dockyard/service-home/.ssh/dockyard-repo/id_ed25519 "
     "-o IdentitiesOnly=yes "
@@ -121,176 +116,6 @@ def health(url: str, timeout: int = 60) -> dict:
     raise RuntimeError(f"Live dashboard health failed: {last}")
 
 
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ValueError(f"Live catalog redirect refused: HTTP {code}")
-
-
-def catalog_api(query: dict[str, str] | None = None) -> dict:
-    url = CATALOG_URL + ("?" + urlencode(query) if query else "")
-    result = json.loads(live_bytes(url))
-    if not isinstance(result, dict) or "error" in result:
-        raise ValueError("Live catalog did not return a successful JSON object")
-    return result
-
-
-def live_bytes(url: str) -> bytes:
-    opener = build_opener(ProxyHandler({}), NoRedirect())
-    started = time.monotonic()
-    try:
-        with opener.open(url, timeout=4) as response:
-            if response.status != 200:
-                raise ValueError(f"Live catalog HTTP {response.status}")
-            body = response.read(API_LIMIT + 1)
-    except (URLError, TimeoutError, ConnectionError) as error:
-        raise RuntimeError(
-            f"Live dashboard request failed: {url} after {time.monotonic() - started:.3f}s: {error}"
-        ) from error
-    if len(body) > API_LIMIT:
-        raise ValueError("Live catalog response exceeds 2 MiB")
-    return body
-
-
-def data_evidence(publication: dict) -> dict:
-    base = "http://127.0.0.1:8765/lego-robot"
-    pages = {}
-    for name, query in (("all", "limit=1"), ("grasp", "task=grasp&limit=1")):
-        value = json.loads(live_bytes(f"{base}/api/data/all?{query}"))
-        if (not isinstance(value, dict) or "error" in value or value.get("limit") != 1
-                or type(value.get("total")) is not int or value["total"] < 0
-                or not isinstance(value.get("items"), list) or len(value["items"]) > 1):
-            raise ValueError("Invalid live data listing evidence")
-        if name == "grasp" and any(row.get("task") != "grasp" for row in value["items"]):
-            raise ValueError("Live data task filter did not match")
-        pages[name] = {
-            "total": value["total"], "unavailable_source_count": value.get("unavailable_source_count"),
-            "curriculum_example_count": value.get("curriculum_example_count"),
-            "sample": [{key: row.get(key) for key in
-                        ("id", "task", "source", "difficulty_level", "object_count", "expert_outcome",
-                         "origin", "generated_at", "split")}
-                       for row in value["items"]],
-        }
-    if pages["grasp"]["total"] > pages["all"]["total"]:
-        raise ValueError("Filtered data population exceeds full population")
-    html = live_bytes(f"{base}/data")
-    page = html.decode()
-    expected = ('aria-label="Dashboard navigation"', 'id="object_count"',
-                'id="expert_outcome"', 'id="expert_acceptance"')
-    if any(marker not in page for marker in expected):
-        raise ValueError("Live data page is missing data-feature navigation")
-    if any(f'id="{field}"' in page for field in ("usage", "bucket", "outcome", "view", "data-search")):
-        raise ValueError("Live data page still exposes run-oriented top-level filters")
-    if not page.index('<dialog id="detail">') < page.index('id="data-run"') < page.index("</dialog>"):
-        raise ValueError("Training context must be inside item details")
-    hashes = {"data.html_served": hashlib.sha256(html).hexdigest()}
-    for asset in ("data.js", "data.css"):
-        digest = hashlib.sha256(live_bytes(f"{base}/{asset}")).hexdigest()
-        if digest != publication["sha256"].get(f"src/so101/dashboard/{asset}"):
-            raise ValueError(f"Live data asset differs from deployed source: {asset}")
-        hashes[asset] = digest
-    runs = json.loads(live_bytes(f"{base}/api/runs"))
-    if not isinstance(runs, dict) or not isinstance(runs.get("runs"), list):
-        raise ValueError("Invalid live training run inventory")
-    summaries = []
-    for row in runs["runs"][:8]:
-        if not isinstance(row, dict):
-            raise ValueError("Invalid live run entry")
-        summaries.append({
-            "id": row.get("id"), "path": row.get("path"), "kind": row.get("kind"),
-            "active": row.get("active"), "error": row.get("error"),
-            "latest_step": (row.get("latest_train") or {}).get("step"),
-            "samples_seen": (row.get("latest_train") or {}).get("samples_seen"),
-            "frozen_loss_samples_seen": (row.get("latest_eval") or {}).get("samples_seen"),
-            "remote_state": (row.get("remote") or {}).get("state"),
-        })
-    return {"listings": pages, "page": {"data_features_verified": True,
-                                      "training_context_in_details": True, "sha256": hashes},
-            "runs": summaries, "run_count": len(runs["runs"]),
-            "omitted_runs": max(0, len(runs["runs"]) - len(summaries))}
-
-
-def status() -> dict:
-    run("/usr/bin/systemctl", "is-active", "so101-web.service", timeout=4)
-    pid = run("/usr/bin/systemctl", "show", "so101-web.service",
-              "--property=MainPID", "--value", timeout=4).decode().strip()
-    if not pid.isdecimal() or int(pid) == 0:
-        raise ValueError("Dashboard has no live process")
-    environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-    sources = [item.removeprefix(b"PYTHONPATH=").decode() for item in environment
-               if item.startswith(b"PYTHONPATH=")]
-    if len(sources) != 1:
-        raise ValueError("Dashboard live source is not uniquely identified")
-    source = Path(sources[0])
-    if source.parent.parent != Path("/opt/lego-dashboard/releases") or source.name != "src":
-        raise ValueError("Dashboard is not running a managed published release")
-    manifest = source.parent / "manifest.json"
-    trusted(manifest)
-    publication = json.loads(manifest.read_text())
-    for name, expected in publication["sha256"].items():
-        relative = Path(name)
-        if relative.is_absolute() or ".." in relative.parts or relative.parts[:2] != ("src", "so101"):
-            raise ValueError("Invalid managed manifest source path")
-        path = source.parent / relative
-        trusted(path)
-        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-            raise ValueError(f"Managed source hash mismatch: {name}")
-    releases = catalog_api({"inventory": "parts"}).get("releases")
-    if not isinstance(releases, list) or not 1 <= len(releases) <= 256:
-        raise ValueError("Live catalog must contain 1..256 releases")
-    fields = ("id", "kind", "version", "path", "catalog_sha256", "artifact_sha256",
-              "generated_at", "validated_parts", "publication_mtime_ns",
-              "qualification_notices", "qualification")
-    summaries = []
-    for release in releases:
-        if not isinstance(release, dict):
-            raise ValueError("Invalid live catalog release")
-        if release.get("kind") != "parts":
-            raise ValueError("Live parts inventory contains a non-parts release")
-        for field in ("id", "catalog_sha256", "artifact_sha256"):
-            if not re.fullmatch(r"[0-9a-f]{64}", str(release.get(field, ""))):
-                raise ValueError(f"Invalid live catalog {field}")
-        summaries.append({key: release[key] for key in fields if key in release})
-    selected = [release for release in summaries
-                if release.get("kind") == "parts" and release.get("version") == EVIDENCE_VERSION]
-    if len(selected) != 1:
-        raise ValueError("Required live v17 catalog is missing or ambiguous")
-    release = selected[0]
-    parts = [row for row in summaries if row.get("kind") == "parts"]
-    if any(type(row.get("publication_mtime_ns")) is not int for row in parts):
-        raise ValueError("Live parts catalogs lack publication ordering evidence")
-    recent = sorted(parts, key=lambda row: (row["publication_mtime_ns"], row["id"]),
-                    reverse=True)[:8]
-    if release not in recent:
-        recent.append(release)
-    counts = {}
-    for stored_status in ("verified", "unavailable", "imported", "prepared"):
-        result = catalog_api({"release": release["id"], "status": stored_status, "limit": "1"})
-        if result.get("release") != next(row for row in releases if row["id"] == release["id"]):
-            raise ValueError("Live catalog publication changed during status inspection")
-        count = result.get("total")
-        if type(count) is not int or count < 0 or result.get("limit") != 1:
-            raise ValueError("Invalid live catalog filtered count")
-        counts[stored_status] = count
-    if counts["verified"] != release.get("validated_parts"):
-        raise ValueError("Live catalog verified count disagrees with release summary")
-    result = {"active": True, "healthy": True, "pid": pid, "source": str(source),
-              "publication": publication, "catalog_api": CATALOG_URL,
-              "inventory_scope": "parts",
-              "release_count": len(releases), "parts_release_count": len(parts),
-              "omitted_parts_releases": len(parts) - len(recent),
-              "release_selection": "newest eight parts publications plus required v17",
-              "releases": recent, "catalog_evidence": {
-                  "release": release, "stored_status_counts": counts,
-                  "total_parts": sum(counts.values()),
-                  "verification_attempts": counts["verified"] + counts["unavailable"],
-                  "verification_attempts_definition": "verified + unavailable",
-              }}
-    result["data_evidence"] = data_evidence(publication)
-    if len(json.dumps(result).encode()) > STATUS_LIMIT:
-        raise ValueError("Managed status response exceeds native 16 KiB receipt limit")
-    return result
-
-
 def activate(override: Path, release: Path, url: str) -> str:
     previous = override.read_bytes() if override.exists() else None
     try:
@@ -372,16 +197,9 @@ def deploy(config: Path = CONFIG) -> dict:
 
 
 def main() -> int:
-    if sys.argv[1:] not in ([], ["--status"]) or os.geteuid() != 0:
-        print("Requires root and no arguments or fixed --status", file=sys.stderr)
+    if sys.argv[1:] or os.geteuid() != 0:
+        print("Requires root and no arguments", file=sys.stderr)
         return 2
-    if sys.argv[1:] == ["--status"]:
-        try:
-            print(json.dumps(status(), sort_keys=True))
-        except Exception as error:
-            print(f"Live dashboard status failed: {error}", file=sys.stderr)
-            return 1
-        return 0
     with open("/run/lock/lego-dashboard-deploy.lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:

@@ -116,40 +116,6 @@ the previous override and restart it, explicitly reporting rollback failures.
 The native tool's sender-owned durable receipt prevents uncertain-call replay;
 inspect `server_tool_status` instead of repeating the request. Successful
 releases retain `manifest.json`; `last-success.json` records the PID/source hashes.
-The separate `lego_dashboard_status` tool remains read-only.
-
-That existing opt-in status registration invokes the same root-installed helper
-with the fixed `--status` argument; its empty caller schema and original
-session/runtime restrictions remain unchanged. No broker or dashboard restart
-is needed to install this inspection-only helper update. Status verifies the
-running PID's managed source manifest and hashes, then reads only the fixed
-loopback `/lego-robot/api/lego` API, with proxies disabled, redirects refused,
-four-second request timeouts, 2 MiB response limits and at most 256 releases.
-Output fits the existing native tool's 16 KiB receipt limit (including newline),
-or fails explicitly rather than allowing truncated JSON. No caller URL, shell,
-credentials or source path is accepted.
-
-The receipt includes live release IDs/versions, catalog and artifact hashes,
-validated counts and qualification notices. `catalog_evidence` specifically
-inspects `ldraw-2026-10-023083918da2-zup-v17-mj3` through four fixed stored-status
-filters with `limit=1`: counts come from each live API `total`, not an artifact
-loader or returned item count. `verification_attempts` is explicitly defined as
-verified plus unavailable; it is distinct from the complete catalog population.
-Each response must retain the same release metadata. Missing v17, publication
-changes, invalid counts, source mismatches, HTTP/JSON errors and limit violations
-fail the command with stderr and nonzero exit, never a healthy fallback. Other
-new publications appear automatically without restarting. The bounded release
-list retains the eight newest parts publications plus required v17; complete
-release/parts counts, the selection rule and omitted-parts count are explicit.
-This inspection does not modify or remove any catalog history.
-
-Managed dashboard status also inspects fixed read-only `/api/data/all` and
-`task=grasp` listings, verifies served data navigation and data asset hashes
-against the deployed manifest, and reports up to eight run summaries with
-explicit omitted counts. Training-context controls must be inside item details.
-Failures are explicit; none of these checks accept URLs, credentials or perform
-training actions.
-
 ## Immutable GPU jobs
 
 The AWS CLI adapter is implemented, but **GPU provisioning is disabled until
