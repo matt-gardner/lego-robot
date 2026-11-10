@@ -175,6 +175,31 @@ def test_native_position_uses_catalog_center_of_mass():
     np.testing.assert_array_equal(sim.position("piece"), [.02, 0, 0])
 
 
+def test_generated_target_positions_match_post_integration_reset():
+    model = mujoco.MjModel.from_xml_string("""
+      <mujoco><worldbody>
+        <body name="piece" pos="0 0 .1"><freejoint/><geom size=".01"/></body>
+        <body name="goal_left" pos="0 -.14 0"/>
+        <body name="goal_right" pos="0 .14 0"/>
+      </worldbody></mujoco>""")
+    data = mujoco.MjData(model)
+    mujoco.mj_step(model, data)
+    body = model.body("piece").id
+    assert data.xipos[body, 2] != data.qpos[2]
+    sim = SimpleNamespace(
+        model=model, data=data,
+        catalog=SimpleNamespace(parts=[
+            SimpleNamespace(part_id="part", dimensions_m=(.02, .02, .02))
+        ]),
+        position=lambda name: data.body(name).xipos.copy(),
+    )
+    plan = {"scene_id": "scene", "color_mode": "monochrome", "objects": [
+        {"instance_id": "piece", "part_id": "part", "color": "red"}
+    ]}
+    _, tasks, _ = generator.describe_scene(sim, plan)
+    assert tasks[0]["initial_target_position"][2] == data.qpos[2]
+
+
 def test_worker_excludes_families_and_reuses_completed_result(tmp_path, monkeypatch):
     value = request(tmp_path)
     value["excluded_scene_families"] = [

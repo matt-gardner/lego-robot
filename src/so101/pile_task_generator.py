@@ -75,6 +75,8 @@ def propose_pile(catalog, seed: int, sequence: int, count: int, color_mode: str)
 
 
 def describe_scene(sim, plan: dict) -> tuple[list[dict], list[dict], dict]:
+    # mj_step leaves derived poses at the pre-integration state.
+    mujoco.mj_forward(sim.model, sim.data)
     parts = {part.part_id: part for part in sim.catalog.parts}
     sizes = [parts[obj["part_id"]].dimensions_m for obj in plan["objects"]]
     instances, tasks = [], []
