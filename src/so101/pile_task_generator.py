@@ -359,7 +359,7 @@ def _run(root: Path, catalog: Path, *, seed: int, attempts: int,
             stopping.wait(5)
             continue
         counts = (3, 5, 8, 12, 16, 24, 32, 48, 64)
-        count = counts[min(sequence // 16, len(counts) - 1)]
+        count = counts[(sequence // 16) % len(counts)]
         mode = ("monochrome", "few", "many")[sequence % 3]
         receipt = {"sequence": sequence, "piece_count": count, "color_mode": mode}
         try:

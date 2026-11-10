@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import mujoco
@@ -12,6 +13,23 @@ from so101 import pile_task_runtime as runtime
 from so101 import pile_task_worker as worker
 from so101.lego_curriculum import Catalog, Part
 from so101.lego_scene import capture_scene_state
+
+
+def test_continuous_schedule_revisits_small_piles_after_largest_range(tmp_path, monkeypatch):
+    for sequence in range(128):
+        (tmp_path / f"attempt_{sequence:09d}.json").write_text("{}")
+    counts = []
+
+    def generate(_catalog, _output, **kwargs):
+        counts.append(kwargs["count"])
+        raise ValueError("Settled proposal is not a table-connected contacting pile")
+
+    monkeypatch.setattr(generator, "resource_check", lambda *_: None)
+    monkeypatch.setattr(generator, "generate_scene", generate)
+    generator._run(tmp_path, Path("/unused"), seed=123, attempts=17,
+                   stopping=threading.Event())
+    assert counts == [64] * 16 + [3]
+    assert json.loads((tmp_path / "attempt_000000144.json").read_text())["status"] == "rejected"
 
 
 def test_random_catalog_sampling_and_monochrome_are_reproducible():

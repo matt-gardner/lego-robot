@@ -5,7 +5,8 @@
 Matt's current scope is continuous random-catalog pile generation, not more
 demonstration trajectories or stored RGB. `so101.pile_task_generator` samples
 verified parts from the single current catalog, cycles monochrome/few/many-color
-distributions, and increases piece counts across successive proposals. Every
+distributions, and cycles through increasing piece-count ranges across successive
+proposals, returning to small piles rather than remaining at 64 pieces. Every
 accepted pile supplies VIEW/GRASP/PUSH/PLACE tasks for every piece, including
 occluded pieces, without policy screening or assumed solvability. Two opaque
 physical panels provide additional VIEW obstructions. They are placed outside the
