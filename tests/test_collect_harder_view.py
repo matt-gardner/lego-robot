@@ -1,9 +1,43 @@
 from types import SimpleNamespace
+import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from so101 import collect_harder_view as collector
+
+
+def test_balanced_recipe_cross_product_is_order_independent_and_family_disjoint():
+    sources = [
+        (Path(f"/episodes/{seed}"), {"initial": {"seed": seed, "scene_version": 3}})
+        for seed in range(100)
+    ]
+    schedule = collector.balanced_schedule(sources, [8, 20, 28], 4)
+    assert schedule == collector.balanced_schedule(list(reversed(sources)), [8, 20, 28], 4)
+    assert len(schedule) == 24
+    counts = {}
+    splits = {True: set(), False: set()}
+    for _, metadata, recipe in schedule:
+        family = collector.scene_family(metadata)
+        counts.setdefault(family, []).append(recipe)
+        splits[int(family[:8], 16) % 5 == 0].add(family)
+    assert all(recipes == [8, 20, 28] for recipes in counts.values())
+    assert len(splits[True]) == len(splits[False]) == 4
+    assert not splits[True] & splits[False]
+    with pytest.raises(ValueError, match="Insufficient"):
+        collector.balanced_schedule(sources[:1], [8, 20, 28], 4)
+    with pytest.raises(ValueError, match="unique"):
+        collector.balanced_schedule(sources, [8, 8], 4)
+
+
+def test_exclusion_manifests_union_all_prior_admitted_families(tmp_path):
+    paths = [tmp_path / "first.json", tmp_path / "second.json"]
+    for path, families in zip(paths, (["a", "b"], ["b", "c"])):
+        path.write_text(json.dumps({"episodes": [
+            {"scene_family_id": family} for family in families
+        ]}))
+    assert collector.excluded_families(paths) == {"a", "b", "c"}
 
 
 def test_spatial_strata_vary_target_and_camera_pose_without_outcome_inputs():

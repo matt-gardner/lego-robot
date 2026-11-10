@@ -44,6 +44,35 @@ def spatial_recipe(index: int) -> dict:
     }
 
 
+def balanced_schedule(sources: list, recipe_indices: list[int],
+                      families_per_split: int) -> list:
+    if (not recipe_indices or len(set(recipe_indices)) != len(recipe_indices)
+            or any(index < 0 or index >= 64 for index in recipe_indices)
+            or families_per_split < 1):
+        raise ValueError("Require unique recipe indices in 0..63 and positive family count")
+    families = {}
+    for source, metadata in sorted(sources, key=lambda item: str(item[0])):
+        families.setdefault(scene_family(metadata), (source, metadata))
+    selected = []
+    for development in (False, True):
+        eligible = [
+            families[family] for family in sorted(families)
+            if (int(family[:8], 16) % 5 == 0) == development
+        ]
+        if len(eligible) < families_per_split:
+            raise ValueError("Insufficient fresh families for the predeclared balanced experiment")
+        selected.extend(eligible[:families_per_split])
+    return [(source, metadata, recipe) for source, metadata in selected
+            for recipe in recipe_indices]
+
+
+def excluded_families(manifests: list[Path]) -> set[str]:
+    return {
+        entry["scene_family_id"] for path in manifests
+        for entry in json.loads(path.read_text())["episodes"]
+    }
+
+
 class ReferenceSimulation(BeamSimulation):
     """Keep the legacy image writer disabled while capturing numeric actions."""
 
@@ -118,7 +147,8 @@ def replay_reference(sim: BeamSimulation, metadata: dict, rows: list[dict]) -> d
 
 def collect(collection: Path, model_root: Path, output: Path, *,
             training_sources: Path | None = None, attempts: int = 16,
-            profile: str = "base-v1", exclude_manifest: Path | None = None) -> dict:
+            profile: str = "base-v1", exclude_manifests: list[Path] | None = None,
+            recipe_indices: list[int] | None = None, families_per_split: int = 4) -> dict:
     if not 2 <= attempts <= 64:
         raise ValueError("Require 2..64 bounded attempts")
     check_storage(output.parent)
@@ -132,12 +162,9 @@ def collect(collection: Path, model_root: Path, output: Path, *,
     allowed = {Path(name).resolve() for name in allowed}
     if profile not in ("base-v1", "spatial-v2"):
         raise ValueError("Unknown VIEW candidate profile")
-    if profile == "spatial-v2" and exclude_manifest is None:
+    if profile == "spatial-v2" and not exclude_manifests:
         raise ValueError("Spatial candidates require the previous manifest for family exclusion")
-    excluded = set()
-    if exclude_manifest is not None:
-        previous = json.loads(exclude_manifest.read_text())
-        excluded = {entry["scene_family_id"] for entry in previous["episodes"]}
+    excluded = excluded_families(exclude_manifests or [])
     report = load_catalog(collection)
     sources = []
     for name in report["successful_episodes"]:
@@ -150,13 +177,27 @@ def collect(collection: Path, model_root: Path, output: Path, *,
         raise ValueError("Source collection has no successful VIEW episodes")
     if any(metadata["initial"].get("renderer") is not None for _, metadata in sources):
         raise ValueError("Collector currently requires the existing default renderer identity")
+    if recipe_indices is not None:
+        if profile != "spatial-v2":
+            raise ValueError("Explicit recipes require spatial-v2")
+        schedule = balanced_schedule(sources, recipe_indices, families_per_split)
+        if len(schedule) != attempts:
+            raise ValueError("Attempts must equal recipes times families-per-split times two")
+    else:
+        schedule = [(*sources[index % len(sources)], index) for index in range(attempts)]
     output.mkdir(exist_ok=False)
     manifest = {
         "schema_version": 1, "kind": "harder-view-references",
         "status": "building", "task": "view", "policy_difficulty_measured": False,
         "sft_qualified": False, "episodes": [], "attempts": [],
         "candidate_profile": profile, "excluded_families": sorted(excluded),
+        "schedule": [
+            {"source_episode": str(source.resolve()), "scene_family_id": scene_family(metadata),
+             "recipe_index": recipe}
+            for source, metadata, recipe in schedule
+        ],
     }
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, allow_nan=False))
     sim = ReferenceSimulation(model_root, render=True)
     replay = None
     try:
@@ -166,11 +207,11 @@ def collect(collection: Path, model_root: Path, output: Path, *,
         replay.record_images = False
         for index in range(attempts):
             check_storage(output)
-            source, original = sources[index % len(sources)]
+            source, original, recipe_index = schedule[index]
             metadata = copy.deepcopy(original)
             activate_render_context(sim)
             target, _, _ = restore_episode(sim, metadata)
-            recipe = spatial_recipe(index) if profile == "spatial-v2" else {
+            recipe = spatial_recipe(recipe_index) if profile == "spatial-v2" else {
                 "joint_offsets": [
                     (-1 if index % 2 else 1) * (.35 + .15 * (index // 2 % 4)),
                     0., 0., 0., 0., 0.,
@@ -242,6 +283,7 @@ def collect(collection: Path, model_root: Path, output: Path, *,
                 source_episode=str(source.resolve()), scene_family_id=family, split=split,
                 sft_qualified=False,
                 candidate_profile=profile, candidate_recipe=recipe,
+                candidate_recipe_index=recipe_index,
             )
             frame_bytes = "".join(json.dumps(row, allow_nan=False) + "\n"
                                   for row in sim.rows).encode()
@@ -278,11 +320,14 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--attempts", type=int, default=16)
     parser.add_argument("--profile", choices=("base-v1", "spatial-v2"), default="base-v1")
-    parser.add_argument("--exclude-manifest", type=Path)
+    parser.add_argument("--exclude-manifest", type=Path, action="append", default=[])
+    parser.add_argument("--recipe-indices", type=int, nargs="+")
+    parser.add_argument("--families-per-split", type=int, default=4)
     args = parser.parse_args()
     collect(args.collection, args.model_root, args.output,
             training_sources=args.training_sources, attempts=args.attempts,
-            profile=args.profile, exclude_manifest=args.exclude_manifest)
+            profile=args.profile, exclude_manifests=args.exclude_manifest,
+            recipe_indices=args.recipe_indices, families_per_split=args.families_per_split)
 
 
 if __name__ == "__main__":

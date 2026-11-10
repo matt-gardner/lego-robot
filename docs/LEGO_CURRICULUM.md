@@ -37,6 +37,14 @@ or silent goal changes are introduced. Initial collisions, unreachable expert
 vantages, and finite replay mismatches are rejected explicitly. These strata are
 not proven harder: screen policy success on train families only, select the
 recipe without development feedback, and evaluate untouched development families.
+The bounded follow-up uses `--recipe-indices 8 20 28 --families-per-split 4
+--attempts 24`, with repeated `--exclude-manifest` arguments for the union of
+previous releases. The source allowlist still excludes frozen evaluation families.
+Before simulation, the collector selects the first four fresh families per split
+by sorted family hash (one source per family, sorted path), freezes the full
+24-attempt cross-product in the building manifest, and fails if either split
+lacks coverage. Selection uses no policy outcomes. These three recipes are
+predeclared equally; do not select only the single previously failing example.
 
 `python -m so101.produce_physical_catalog` runs the manipulation-only schedule
 without constructing a renderer or writing images. It records pre-action full
