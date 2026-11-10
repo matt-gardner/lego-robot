@@ -146,6 +146,9 @@ def test_worker_records_explicit_resource_block_and_detects_reused_identity(tmp_
 def test_operational_errors_are_not_classified_as_bad_piles():
     assert generator.candidate_rejection(ValueError("Catalog scene did not settle before physics timeout"))
     assert not generator.candidate_rejection(ValueError("Part asset changed after catalog validation"))
+    assert generator.candidate_rejection(ValueError(
+        "Pile constraint arena exhausted: mj_stackAlloc: out of memory"
+    ))
 
 
 def test_resource_admission_uses_available_memory_not_nonzero_psi(tmp_path, monkeypatch):

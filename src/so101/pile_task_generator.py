@@ -171,10 +171,15 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
             robot.write(robot_root / "so101.xml")
             for name in ("revision.json", "assets"):
                 (robot_root / name).symlink_to((model_root / name).resolve())
-            sim = CatalogSimulation(
-                catalog, plan, model_root=robot_root, render=False, record_images=False,
-                contact_solver="pyramidal-v1", stationarity_metric="surface-speed-v2",
-            )
+            try:
+                sim = CatalogSimulation(
+                    catalog, plan, model_root=robot_root, render=False, record_images=False,
+                    contact_solver="pyramidal-v1", stationarity_metric="surface-speed-v2",
+                )
+            except mujoco.FatalError as error:
+                if "mj_stackAlloc: out of memory" not in str(error):
+                    raise
+                raise ValueError(f"Pile constraint arena exhausted: {error}") from error
     try:
         instances, tasks, tags = describe_scene(sim, plan)
         support = support_graph(sim.model, sim.data, list(sim.object_metadata))
@@ -249,6 +254,7 @@ def candidate_rejection(error: ValueError) -> bool:
         "MuJoCo emitted a warning while settling catalog scene",
         "Catalog scene did not settle before physics timeout",
         "Settled proposal is not a table-connected contacting pile",
+        "Pile constraint arena exhausted:",
     ))
 
 
