@@ -67,6 +67,14 @@ files by hash. No expert reference or saved image is required. Existing results
 are idempotent and changed requests cannot reuse an identity.
 The output directory is bound to the request hash for recovery after interruption.
 
+Continuous learner intake uses `python -m so101.pile_pool --root <pile pool>`.
+It verifies every admitted task and referenced XML asset, writes an immutable
+hash-named pool snapshot, then atomically replaces `current-pool.json` with the
+same schema-1 `lego-pile-task-pool` envelope. The generation monitor refreshes it
+every five minutes, including the full TRAIN population without policy filtering.
+`xml_asset_files_sha256` lists the external asset closure; preserve these absolute
+paths during transfer rather than rewriting the hash-bound scene XML.
+
 ## Historical trajectory pipeline (suspended)
 
 Approved by Matt November 8, 2026. This dedicated session owned scene preparation,
