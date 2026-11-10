@@ -999,6 +999,17 @@ generation and optimization on the GPU; there are no background rollout workers,
 queued stale policies, or extra model copies. All gradients within an update use
 the policy that sampled those groups, preserving strict cache/action replay
 checks. The per-task EMA and normal training RNG are saved in full checkpoints.
+Before selecting training buckets, `python -m so101.calibrate_trajectory_rl`
+performs inference only on the final SFT checkpoint, with no optimizer.
+Supply `--checkpoint`, `--collection`, the existing frozen `--split`,
+`--native-pool`, `--model-root`, `--source-commit`, and a fresh `--output` JSON.
+It reuses five distinct TRAIN problems per bucket/task across assistance levels
+0, 0.5, 0.95, then 0.25/0.75 only if needed. Cells stop after a majority of
+problems yield mixed four-rollout groups, or all five pass at zero assistance.
+Native scenes are measured separately by piece count at zero assistance only.
+Scarce buckets report their actual population instead of duplicating problems.
+The JSON and adjacent Markdown table update after every inference group;
+the final parameter digest must match the initial digest.
 Discard reasons and the sampled success histogram remain in the training log.
 `--no-mixed-success-only` explicitly restores historical all-pass regularization
 for controlled comparisons; all-fail groups remain discarded.
