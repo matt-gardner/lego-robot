@@ -27,6 +27,7 @@ from so101.control_model.jerk_regularizer import (
     prefix_backward_batch,
 )
 from so101.jerk_reference import ReferenceJerkMargins
+from so101.rl_calibration import AssistanceCalibration
 from so101.control_model.modeling_entity_smolvla import (
     FrozenObservation,
     save_entity_checkpoint,
@@ -1947,6 +1948,17 @@ def train(args: argparse.Namespace) -> None:
         })
     log["observation_renderer"] = renderer_identity
     write_log(output, log)
+    calibration = None
+    if getattr(args, "calibrate_assistance", False):
+        if args.group_size != 4:
+            raise ValueError("Assistance calibration requires four rollouts per group")
+        if not getattr(args, "mixed_success_only", True):
+            raise ValueError("Assistance calibration requires mixed-success-only learning")
+        calibration = AssistanceCalibration(
+            log.setdefault("assistance_calibration", {}),
+            alpha=getattr(args, "assistance_ema_alpha", .2),
+            increment=args.curriculum_decrement,
+        )
     try:
         if batch_rollouts:
             for _ in range(1, args.group_size):
@@ -2038,12 +2050,13 @@ def train(args: argparse.Namespace) -> None:
             problems: list[tuple[str, dict[str, Any] | None]] = [
                 (task, None) for task in TASKS
             ]
-            solved_problem = sample_solved_problem(solved_problems, rng, step)
+            solved_problem = sample_solved_problem(solved_problems, rng, step) if calibration is None else None
             if solved_problem is not None:
                 problems.append((solved_problem["task"], solved_problem))
             for task_index, (task, solved_problem) in enumerate(problems):
                 accepted_for_task = 0
                 attempts = 0
+                pending_problem = None
                 while (
                     accepted_for_task < (
                         1 if solved_problem is not None else args.groups_per_task
@@ -2115,6 +2128,16 @@ def train(args: argparse.Namespace) -> None:
                             )
                     if solved_problem is not None:
                         start_proximity = solved_problem["start_proximity"]
+                    if calibration is not None:
+                        if pending_problem is not None:
+                            episode, start_proximity = pending_problem
+                            has_obstacles = bool(episode.metadata.get("obstacles"))
+                            assistance_key = curriculum_key(task, has_obstacles)
+                            curriculum_max = curriculum_maximum(task, has_obstacles, args)
+                        if "native_entry" in episode.metadata:
+                            curriculum_max = 0.
+                        if pending_problem is None:
+                            start_proximity = calibration.start(task, curriculum_max / 2, curriculum_max)
                     jerk_profile = (jerk_references.summary(episode.source, start_proximity)
                                     if jerk_references is not None else None)
                     if jerk_references is not None and reference_jerk_fallback:
@@ -2161,6 +2184,22 @@ def train(args: argparse.Namespace) -> None:
                     success_count = sum(
                         item.success for item in trajectories
                     )
+                    if calibration is not None:
+                        following, outcome = calibration.record(
+                            task, start_proximity, success_count, len(trajectories), curriculum_max,
+                        )
+                        pending_problem = (
+                            (episode, following)
+                            if outcome != "mixed" and following != start_proximity else None
+                        )
+                        print(json.dumps({
+                            "event": "assistance_calibration", "task": task, "source": str(episode.source),
+                            "step": step, "attempt": attempts, "assistance": start_proximity,
+                            "next_assistance": following, "outcome": outcome,
+                            "successes": success_count, "total": len(trajectories),
+                            "task_assistance_ema": calibration.state["tasks"][task]["ema"],
+                            "retry_same_problem": pending_problem is not None,
+                        }), flush=True)
                     if (difficulty is not None and solved_problem is None
                             and step >= args.curriculum_start_step):
                         difficulty_event = difficulty.record(
@@ -2197,6 +2236,7 @@ def train(args: argparse.Namespace) -> None:
                     if (
                         solved_problem is None
                         and difficulty is None
+                        and calibration is None
                         and args.curriculum_mode == "mastery"
                         and curriculum_max > 0
                         and step >= args.curriculum_start_step
@@ -2280,6 +2320,44 @@ def train(args: argparse.Namespace) -> None:
                                 step,
                                 args.group_size,
                             )
+                    log["groups"] += 1
+                    log["success_count_histogram"][str(success_count)] += 1
+                    discard_reason = (
+                        "all_failed" if success_count == 0 else
+                        "all_passed" if (
+                            getattr(args, "mixed_success_only", True)
+                            and success_count == len(trajectories)
+                        ) else None
+                    )
+                    if discard_reason is not None:
+                        if success_count == 0:
+                            log["zero_success_groups"] += 1
+                            log["zero_success_by_task"][task] += 1
+                        else:
+                            log["all_success_groups"] = log.get("all_success_groups", 0) + 1
+                        group_rows.append({
+                            "task": task,
+                            "sampling_bucket": "solved" if solved_problem is not None else "main",
+                            "source": str(episode.source),
+                            "target": episode.metadata["target"],
+                            "destination": episode.metadata.get("destination"),
+                            "assistance_key": assistance_key,
+                            "successes": success_count,
+                            "discarded": True,
+                            "discard_reason": discard_reason,
+                            "start_proximity": start_proximity,
+                            "mastery_event": mastery_event,
+                            "mastery_check": mastery_check,
+                            "curriculum_recovery": recovery_event,
+                            "trajectories": [serialized_trajectory(item) for item in trajectories],
+                        })
+                        print(json.dumps({
+                            "event": "training_group_discarded", "step": step, "task": task,
+                            "successes": success_count, "total": len(trajectories),
+                            "reason": discard_reason,
+                        }), flush=True)
+                        del trajectories
+                        continue
                     assign_group_rewards(
                         trajectories,
                         args.success_advantage_weight,
@@ -2344,32 +2422,6 @@ def train(args: argparse.Namespace) -> None:
                             "command": task, "source": str(episode.source),
                             "successes": success_count, **boundary_metrics,
                         }), flush=True)
-                    log["groups"] += 1
-                    log["success_count_histogram"][str(success_count)] += 1
-                    if success_count == 0:
-                        log["zero_success_groups"] += 1
-                        log["zero_success_by_task"][task] += 1
-                        group_rows.append({
-                            "task": task,
-                            "sampling_bucket": "solved" if solved_problem is not None else "main",
-                            "source": str(episode.source),
-                            "target": episode.metadata["target"],
-                            "destination": episode.metadata.get("destination"),
-                            "assistance_key": assistance_key,
-                            "successes": 0,
-                            "discarded": True,
-                            "start_proximity": start_proximity,
-                            "mastery_event": mastery_event,
-                            "mastery_check": mastery_check,
-                            "curriculum_recovery": recovery_event,
-                            **jerk_group_metrics,
-                            "trajectories": [
-                                serialized_trajectory(item)
-                                for item in trajectories
-                            ],
-                        })
-                        del trajectories
-                        continue
                     rewards = np.asarray([
                         item.reward for item in trajectories
                     ], dtype=np.float32)
@@ -2619,6 +2671,12 @@ def main() -> None:
     )
     parser.add_argument("--steps", type=int, default=25)
     parser.add_argument("--group-size", type=int, default=8)
+    parser.add_argument("--mixed-success-only", action=argparse.BooleanOptionalAction, default=True,
+                        help="Discard all-pass/all-fail groups before every learning gradient; "
+                             "--no-mixed-success-only restores historical all-pass regularization")
+    parser.add_argument("--calibrate-assistance", action=argparse.BooleanOptionalAction, default=False,
+                        help="Calibrate four-rollout groups synchronously with a per-task assistance EMA.")
+    parser.add_argument("--assistance-ema-alpha", type=float, default=.2)
     parser.add_argument("--rgb-renderer", choices=("mujoco", "cpu-pathtrace", "gpu-pathtrace"),
                         default="mujoco",
                         help="Policy RGB backend; GPU path tracing requires CUDA/OptiX, with no CPU fallback.")

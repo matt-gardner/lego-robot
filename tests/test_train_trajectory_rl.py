@@ -850,7 +850,11 @@ def test_historical_solved_bucket_excludes_validation_and_partial_success(tmp_pa
 
 
 @pytest.mark.parametrize("initial_validation", [True, False])
-def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monkeypatch, initial_validation):
+@pytest.mark.parametrize("mixed_success_only", [True, False])
+@pytest.mark.parametrize("calibrated", [True, False])
+def test_training_adds_one_fresh_solved_group_and_persists_bucket(
+    tmp_path, monkeypatch, initial_validation, mixed_success_only, calibrated,
+):
     import so101.train_trajectory_rl as trainer
 
     training = {
@@ -858,6 +862,13 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
         for task in trainer.TASKS
     }
     policy = torch.nn.Linear(1, 1)
+    if calibrated:
+        if not mixed_success_only:
+            pytest.skip("Calibration requires the mixed-success objective")
+        policy.model = Namespace(vlm_with_expert=Namespace(lm_expert=torch.nn.Linear(1, 1)))
+        policy.config = Namespace(num_steps=1, chunk_size=1, max_action_dim=1)
+        monkeypatch.setattr(trainer, "full_model_gradient_probes", lambda policy: {})
+    original_parameters = [parameter.detach().clone() for parameter in policy.parameters()]
     controller = Namespace(policy=policy, device="cpu")
     monkeypatch.setattr(trainer, "load_corpus", lambda collection: training)
     monkeypatch.setattr(trainer, "split_corpus", lambda *args: (training, []))
@@ -887,6 +898,20 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
 
     monkeypatch.setattr(trainer, "rollout", rollout)
     monkeypatch.setattr(trainer, "trajectory_backward", backward)
+    calibration_calls = {}
+    def grouped(sims, controller, episode, seeds, horizon, action_steps, bounds, assistance, *rest):
+        attempts = calibration_calls.setdefault(episode.task, [])
+        attempts.append(assistance)
+        successes = 4 if len(attempts) == 1 else 0 if len(attempts) == 2 else 2
+        trajectories = [
+            rollout(sim, controller, episode, seed, horizon, action_steps, bounds,
+                    True, assistance, .1)
+            for sim, seed in zip(sims, seeds, strict=True)
+        ]
+        for index, trajectory in enumerate(trajectories):
+            trajectory.success = index < successes
+        return trajectories
+    monkeypatch.setattr(trainer, "rollout_group", grouped)
     config = Namespace(
         checkpoint=tmp_path / "base", collection=tmp_path / "corpus",
         output=tmp_path / "run", resume=False, refresh_corpus=False,
@@ -902,13 +927,66 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
         curriculum_min=0., push_curriculum_max=.95, place_curriculum_max=.95,
         grasp_curriculum_max=.95, view_curriculum_max=.95, obstacle_curriculum_max=.95,
         record_rollouts=True, rollout_retention_steps=20,
+        mixed_success_only=mixed_success_only,
     )
+    if calibrated:
+        config.group_size = 4
+        config.groups_per_task = 1
+        config.calibrate_assistance = config.batch_rollouts = True
+        config.rl_estimator = "denoising-grpo"
+        config.jerk_penalty_weight = 0.
     train(config)
     state = torch.load(config.output / "latest_state.pt", weights_only=False)
     assert [row["step"] for row in state["log"]["validation"]] == (
         [0, 2] if initial_validation else [2]
     )
     first, second = state["log"]["steps"]
+    if calibrated:
+        assert first["accepted_groups"] == second["accepted_groups"] == 4
+        calibration = state["log"]["assistance_calibration"]
+        assert all(row["optimizer_update_applied"] for row in (first, second))
+        assert sum(task["all_passed"] + task["all_failed"]
+                   for task in calibration["tasks"].values()) == 8
+        for attempts in calibration_calls.values():
+            assert attempts[0:3] == pytest.approx([.475, .425, .475])
+            assert attempts[3] == pytest.approx(.4686)
+        assert all(
+            group["successes"] == 2
+            for step in (first, second) for group in step["groups"]
+            if not group["discarded"]
+        )
+        config.resume = True
+        config.steps = 3
+        train(config)
+        resumed = torch.load(config.output / "latest_state.pt", weights_only=False)
+        assert resumed["log"]["steps"][-1]["optimizer_update_applied"]
+        assert all(
+            resumed["log"]["assistance_calibration"]["tasks"][task]["groups"] == record["groups"] + 1
+            for task, record in calibration["tasks"].items()
+        )
+        return
+    if mixed_success_only:
+        assert first["accepted_groups"] == second["accepted_groups"] == 0
+        assert len(first["groups"]) == 4 * config.max_group_attempts_per_task
+        assert len(second["groups"]) == 4 * config.max_group_attempts_per_task + 1
+        assert all(
+            group["discarded"] and group["discard_reason"] == "all_passed"
+            for step in (first, second) for group in step["groups"]
+        )
+        assert not first["optimizer_update_applied"] and not second["optimizer_update_applied"]
+        for before, after in zip(original_parameters, policy.parameters(), strict=True):
+            torch.testing.assert_close(before, after)
+        assert state["optimizer"]["state"] == {}
+        assert len(state["log"]["solved_problems"]) == 4
+        config.resume = True
+        config.steps = 3
+        train(config)
+        resumed = torch.load(config.output / "latest_state.pt", weights_only=False)
+        assert resumed["step"] == 3 and resumed["optimizer"]["state"] == {}
+        assert not resumed["log"]["steps"][-1]["optimizer_update_applied"]
+        for before, after in zip(original_parameters, policy.parameters(), strict=True):
+            torch.testing.assert_close(before, after)
+        return
     assert first["accepted_groups"] == 8
     assert not any(g["sampling_bucket"] == "solved" for g in first["groups"])
     assert second["accepted_groups"] == 9

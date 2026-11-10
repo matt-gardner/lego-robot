@@ -64,7 +64,16 @@ def validate_state(state: dict, *, allow_untrained: bool = False) -> None:
                 or state["step"] != history[-1].get("step")):
             raise ValueError("Resume model and log steps do not match")
         if not state["optimizer"].get("state"):
-            raise ValueError("Missing trained model or Adam state")
+            groups = state["optimizer"].get("param_groups")
+            if (state["optimizer"].get("state") != {}
+                    or not isinstance(groups, list) or not groups
+                    or any(not isinstance(group, dict)
+                           or not isinstance(group.get("params"), list)
+                           or not group["params"] for group in groups)
+                    or not all(isinstance(row, dict)
+                               and row.get("optimizer_update_applied") is False
+                               for row in history)):
+                raise ValueError("Missing trained model or Adam state")
 
     def finite(value: Any) -> None:
         if isinstance(value, torch.Tensor):

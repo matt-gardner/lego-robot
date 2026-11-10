@@ -983,6 +983,25 @@ scales the policy loss outside that ratio, keeping the established gradient
 scale. Trajectory scores still sum over decisions
 without trajectory-length normalization.
 Likelihood recomputation uses the recorded path, not fresh denoising noise.
+Training defaults to `--mixed-success-only`: groups with no successes or all
+successes still inform difficulty calibration, but are discarded before task,
+jerk, or action-boundary backward. They do not consume the accepted-group
+quota; another problem is sampled within the configured attempt limit.
+With `--calibrate-assistance --batch-rollouts --group-size 4`, synchronous
+calibration retries the **same problem**: four passes reduce assistance; four
+failures increase it; only mixed groups contribute training gradients.
+Each attempt updates a task-type assistance EMA (`--assistance-ema-alpha 0.2`);
+new problems start from that EMA. Native reference-free problems do not support
+gold-prefix assistance: reaching an assistance bound triggers problem
+replacement. `--max-group-attempts-per-task` bounds total sampling attempts per
+task/update, including calibration retries. A single policy alternates rollout
+generation and optimization on the GPU; there are no background rollout workers,
+queued stale policies, or extra model copies. All gradients within an update use
+the policy that sampled those groups, preserving strict cache/action replay
+checks. The per-task EMA and normal training RNG are saved in full checkpoints.
+Discard reasons and the sampled success histogram remain in the training log.
+`--no-mixed-success-only` explicitly restores historical all-pass regularization
+for controlled comparisons; all-fail groups remain discarded.
 RL defaults to `--trainable-scope all`: all policy parameters are explicitly
 unfrozen and optimized with FP32 weights, so small AdamW updates do not round
 away in BF16 storage. The first active update verifies nonzero gradients and
