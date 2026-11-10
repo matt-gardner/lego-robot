@@ -508,6 +508,10 @@ chunk. Earlier frames would be evicted before the next policy decision;
 physics, per-frame success/constraint checks, and optional rollout evidence
 remain unchanged. With 16-action chunks and four-frame history this avoids
 12 unused RGB renders per complete chunk.
+Use `--no-initial-validation` to begin optimizer updates without a preliminary
+baseline. Frozen evaluation still runs at `--validation-interval`; early
+recoveries record that evaluation has not happened yet, not a synthetic score.
+
 RL defaults to `--rgb-renderer mujoco`. Select the actual Mitsuba CUDA/OptiX
 path tracer with `--rgb-renderer gpu-pathtrace --pathtrace-samples 16`, or
 the LLVM CPU backend with `--rgb-renderer cpu-pathtrace --pathtrace-threads 4`.

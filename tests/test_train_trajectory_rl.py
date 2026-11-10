@@ -736,7 +736,8 @@ def test_historical_solved_bucket_excludes_validation_and_partial_success(tmp_pa
     assert initialize_solved_problems(log, {"grasp": [episode]}) is bucket
 
 
-def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monkeypatch):
+@pytest.mark.parametrize("initial_validation", [True, False])
+def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monkeypatch, initial_validation):
     import so101.train_trajectory_rl as trainer
 
     training = {
@@ -777,7 +778,8 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
         checkpoint=tmp_path / "base", collection=tmp_path / "corpus",
         output=tmp_path / "run", resume=False, refresh_corpus=False,
         steps=2, group_size=8, groups_per_task=2, max_group_attempts_per_task=8,
-        horizon=300, action_steps=16, validation_per_task=1, validation_interval=10,
+        horizon=300, action_steps=16, validation_per_task=1, validation_interval=2,
+        initial_validation=initial_validation,
         rl_estimator="flow-mse", denoising_noise_scale=.1, policy_clip=.2,
         success_advantage_weight=1., completion_advantage_weight=.5,
         smoothness_advantage_weight=1., learning_rate=1e-4, gradient_clip=1.,
@@ -790,6 +792,9 @@ def test_training_adds_one_fresh_solved_group_and_persists_bucket(tmp_path, monk
     )
     train(config)
     state = torch.load(config.output / "latest_state.pt", weights_only=False)
+    assert [row["step"] for row in state["log"]["validation"]] == (
+        [0, 2] if initial_validation else [2]
+    )
     first, second = state["log"]["steps"]
     assert first["accepted_groups"] == 8
     assert not any(g["sampling_bucket"] == "solved" for g in first["groups"])

@@ -1941,7 +1941,7 @@ def train(args: argparse.Namespace) -> None:
         if batch_rollouts:
             for _ in range(1, args.group_size):
                 rollout_sims.append(create_simulation(args.model_root, **renderer_options))
-        if not args.resume:
+        if not args.resume and getattr(args, "initial_validation", True):
             baseline_start = time.monotonic()
             baseline = validation_metrics(
                 sim,
@@ -1962,6 +1962,11 @@ def train(args: argparse.Namespace) -> None:
             print(json.dumps({
                 "event": "baseline_validation",
                 **baseline,
+            }), flush=True)
+        elif not args.resume:
+            print(json.dumps({
+                "event": "initial_validation_skipped",
+                "validation_interval": args.validation_interval,
             }), flush=True)
         else:
             log["advantage_weights"] = {
@@ -2606,6 +2611,8 @@ def main() -> None:
     parser.add_argument("--rollout-retention-steps", type=int, default=20)
     parser.add_argument("--validation-per-task", type=int, default=10)
     parser.add_argument("--validation-interval", type=int, default=5)
+    parser.add_argument("--initial-validation", action=argparse.BooleanOptionalAction, default=True,
+                        help="Evaluate before the first update; disabling retains periodic frozen evaluation.")
     parser.add_argument(
         "--rl-estimator", choices=("flow-mse", "denoising-grpo"),
         default="flow-mse",

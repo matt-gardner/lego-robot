@@ -34,6 +34,21 @@ def test_recovery_rejects_mismatched_training_contract(tmp_path, monkeypatch, mu
     path = tmp_path / "state.pt"
     torch.save(state, path)
     assert publisher.check(path)["step"] == 1
+    state["log"]["validation"] = []
+    torch.save(state, path)
+    with pytest.raises(ValueError, match="history"):
+        publisher.check(path)
+    state["log"]["run_config"].update(initial_validation=False, validation_interval=5)
+    torch.save(state, path)
+    assert publisher.check(path)["step"] == 1
+    state["step"] = 5
+    state["log"]["steps"] = [{"step": step} for step in range(1, 6)]
+    torch.save(state, path)
+    with pytest.raises(ValueError, match="history"):
+        publisher.check(path)
+    state["step"] = 1
+    state["log"]["steps"] = [{"step": 1}]
+    state["log"]["validation"] = [{"step": 0}]
     if mutation == "objective":
         state["log"]["training_objective"] = "reward-only"
     else:

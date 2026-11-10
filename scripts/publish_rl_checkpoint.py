@@ -18,12 +18,18 @@ def check(path: Path) -> dict:
     state = torch.load(path, map_location="cpu", weights_only=False)
     validate_state(state)
     log = state["log"]
+    config = log["run_config"]
+    validation_required = (
+        config.get("initial_validation") is not False
+        or state["step"] >= config.get("validation_interval", 1)
+    )
     if (log["rl_estimator"] != "denoising-grpo"
             or log["training_objective"] != "task-reward-plus-reference-jerk"
             or log["jerk_regularizer"]["weight"] != .02
             or log["jerk_regularizer"]["scale"] != 6
             or [row["step"] for row in log["steps"]] != list(range(1, state["step"] + 1))
-            or not log["validation"] or not log["assistance_curriculum"]):
+            or (validation_required and not log["validation"])
+            or not log["assistance_curriculum"]):
         raise ValueError("RL snapshot lost its authorized objective, history, or curriculum")
     scope = log.get("trainable_scope", "action-projections")
     if scope == "all":
