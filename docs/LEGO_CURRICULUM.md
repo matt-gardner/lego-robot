@@ -17,8 +17,9 @@ Run the new generator separately from the suspended historical producer:
 so101.pile_task_generator --catalog <catalog root>/current/catalog.json
 --root <new pile pool>`. `--attempts N` bounds attempts; the default continuously
 generates until STOP, termination, or resource backpressure. One writer holds the
-pool lock; admission retains 10GiB disk/2GiB available memory, rejects memory
-pressure, and pauses at a 4GiB pool budget with a 512MiB per-scene reserve. It does
+pool lock; admission retains 10GiB disk/2GiB available memory and pauses at a
+4GiB pool budget with a 512MiB per-scene reserve. Nonzero host memory-stall
+readings alone do not pause generation. It does
 not delete consumed data or assert that a byte budget represents multiple days of
 RL supply. Throughput and the learner's consumption rate still need measurement.
 Both CLIs run at nice 19; this is low scheduling priority, not a measured guarantee

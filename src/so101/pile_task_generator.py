@@ -39,7 +39,7 @@ def resource_check(root: Path, maximum_pool_bytes: int = MAXIMUM_POOL_BYTES) -> 
     if stats.f_bavail * stats.f_frsize < MINIMUM_FREE_BYTES:
         raise BlockingIOError("Pile generation requires 10GiB available")
     memory = memory_state()
-    if memory["pressure"] or memory["available_bytes"] < 2 * 1024**3:
+    if memory["available_bytes"] < 2 * 1024**3:
         raise BlockingIOError(f"Pile generation memory admission paused: {memory}")
     used = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
     if used + 512 * 1024**2 > maximum_pool_bytes:

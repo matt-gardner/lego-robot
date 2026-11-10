@@ -148,6 +148,18 @@ def test_operational_errors_are_not_classified_as_bad_piles():
     assert not generator.candidate_rejection(ValueError("Part asset changed after catalog validation"))
 
 
+def test_resource_admission_uses_available_memory_not_nonzero_psi(tmp_path, monkeypatch):
+    monkeypatch.setattr(generator.os, "statvfs", lambda _: SimpleNamespace(
+        f_bavail=20 * 1024**3, f_frsize=1,
+    ))
+    state = {"pressure": True, "available_bytes": 3 * 1024**3}
+    monkeypatch.setattr(generator, "memory_state", lambda: state)
+    generator.resource_check(tmp_path)
+    state["available_bytes"] = 2 * 1024**3 - 1
+    with pytest.raises(BlockingIOError, match="memory admission"):
+        generator.resource_check(tmp_path)
+
+
 def test_native_grader_sustained_view_and_hidden_target_reset_stability():
     goal = {"minimum_pixels": 64, "center_radius": .2, "dwell_steps": 2}
     problem = {"task": {"task_type": "view", "target_instance_id": "buried",
