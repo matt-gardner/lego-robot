@@ -14,7 +14,7 @@ settled pile bounds only after pile creation, never in the falling pieces' path.
 Native generation parks the gripper beside the pile at `(0.14, -0.12, 0.09)` m,
 not directly above the drop column. The legacy catalog recorder's default
 initial arm position is unchanged.
-Pieces are introduced one at a time just above the current pile bounds and
+Pieces are introduced one at a time with 0.1 mm clearance above the current pile bounds and
 settled before the next drop. Drop height uses the rotated geometry's vertical
 bounding-box extent, not its bounding-sphere radius, so wide flat pieces do not
 cause unnecessarily high drops. Future pieces wait outside the workspace without

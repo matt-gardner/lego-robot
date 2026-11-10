@@ -108,7 +108,7 @@ def drop_pieces_sequentially(sim) -> None:
             relative = obj.get("pile_drop_xy_relative_m", obj["position_relative_to_scene_m"])
             sim.data.qpos[qadr:qadr + 3] = [
                 sim.scene_origin[0] + relative[0],
-                sim.scene_origin[1] + relative[1], top - lower + .003,
+                sim.scene_origin[1] + relative[1], top - lower + .0001,
             ]
             sim.data.qvel[dadr:dadr + 6] = 0.
             sim.model.body_gravcomp[body] = gravity

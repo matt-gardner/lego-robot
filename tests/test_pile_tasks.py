@@ -55,7 +55,7 @@ def test_sequential_drop_does_not_turn_flat_piece_width_into_drop_height(monkeyp
 
     monkeypatch.setattr(generator, "settle_data", settle)
     generator.drop_pieces_sequentially(sim)
-    np.testing.assert_allclose(drops, [generator.TABLE_Z + .004, generator.TABLE_Z + .006])
+    np.testing.assert_allclose(drops, [generator.TABLE_Z + .0011, generator.TABLE_Z + .0031])
 
 
 def test_random_catalog_sampling_and_monochrome_are_reproducible():
