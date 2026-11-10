@@ -541,6 +541,9 @@ default construction path. Mesh reuse is recorded in the renderer identity.
 Physics, geometric labels and recorded renderer-identity checks remain
 unchanged; incompatible recorded appearance identities fail explicitly.
 The RGB visual twin follows the recorded camera rather than claiming calibration.
+Online visual meshes use in-memory OBJ triangle assets instead of inline XML
+vertex/face arrays, avoiding native-scene XML parsing failures without changing
+the saved scene, mesh coordinates, triangle indices, or physics model.
 The CAD jaws can occlude RGB pixels differently from the legacy simplified jaw
 geometry used for segmentation, visibility and rewards. Scoring is deliberately
 unchanged for experiment parity; photo RGB is not pixel-aligned occlusion

@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from time import perf_counter
+import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -11,6 +12,31 @@ import numpy as np
 from so101.pathtrace_pile import DEFAULT_PROFILE
 from so101.pathtrace_recordings import FrameRenderer, cad_render_xml, visible_geoms
 from so101.robot_sim import BeamSimulation, scene_xml
+
+
+def compile_visual_model(xml: str) -> mujoco.MjModel:
+    """Compile inline triangle assets through MuJoCo's in-memory OBJ reader."""
+    root = ET.fromstring(xml)
+    assets = {}
+    for mesh in root.findall("./asset/mesh"):
+        if "vertex" not in mesh.attrib or "face" not in mesh.attrib:
+            continue
+        vertices = mesh.attrib.pop("vertex").split()
+        faces = mesh.attrib.pop("face").split()
+        if len(vertices) % 3 or len(faces) % 3:
+            raise ValueError("Visual mesh vertices and triangle faces must be triples")
+        filename = f"so101_inline_{len(assets)}.obj"
+        lines = [
+            "v " + " ".join(vertices[index:index + 3])
+            for index in range(0, len(vertices), 3)
+        ]
+        lines.extend(
+            "f " + " ".join(str(int(value) + 1) for value in faces[index:index + 3])
+            for index in range(0, len(faces), 3)
+        )
+        assets[filename] = ("\n".join(lines) + "\n").encode()
+        mesh.set("file", filename)
+    return mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"), assets)
 
 
 class PathtraceSimulation(BeamSimulation):
@@ -44,7 +70,7 @@ class PathtraceSimulation(BeamSimulation):
                 visual_xml if visual_xml is not None else scene_xml(self.model_root, self.scene_version),
                 (self.model_root / "so101.xml").read_text(),
             )
-            self.rgb_model = mujoco.MjModel.from_xml_string(xml)
+            self.rgb_model = compile_visual_model(xml)
             if (self.rgb_model.nq != self.model.nq or self.rgb_model.ngeom != self.model.ngeom
                     or any(self.rgb_model.geom(i).name != self.model.geom(i).name
                            for i in range(self.model.ngeom))):

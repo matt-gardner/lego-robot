@@ -9,11 +9,24 @@ from unittest.mock import Mock, call, patch
 import mujoco
 import numpy as np
 
-from so101.rl_renderer import PathtraceSimulation, create_simulation
+from so101.rl_renderer import PathtraceSimulation, compile_visual_model, create_simulation
 from so101.robot_sim import restore_episode
 
 
 class RendererSelectionTest(unittest.TestCase):
+    def test_external_visual_mesh_preserves_compiled_geometry(self):
+        xml = """<mujoco><asset><mesh name="part" scale="2 3 4"
+          vertex="0 0 0 1 0 0 0 1 0 0 0 1"
+          face="0 2 1 0 1 3 0 3 2 1 2 3"/></asset>
+          <worldbody><geom name="part_geom" type="mesh" mesh="part"/></worldbody></mujoco>"""
+        expected = mujoco.MjModel.from_xml_string(xml)
+        actual = compile_visual_model(xml)
+        self.assertEqual(actual.ngeom, expected.ngeom)
+        self.assertEqual(actual.geom(0).name, expected.geom(0).name)
+        np.testing.assert_array_equal(actual.mesh_face, expected.mesh_face)
+        for field in ("mesh_vert", "mesh_pos", "mesh_quat", "geom_pos", "geom_quat"):
+            np.testing.assert_allclose(getattr(actual, field), getattr(expected, field), atol=1e-7)
+
     def test_close_activates_its_own_gl_context_before_freeing_resources(self):
         sim = PathtraceSimulation.__new__(PathtraceSimulation)
         sim.renderer = Mock()
