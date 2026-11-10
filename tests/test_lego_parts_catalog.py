@@ -76,11 +76,15 @@ def test_current_catalog_replaces_without_retaining_history(tmp_path):
         bundle.writestr("ldraw/parts/1.dat", "0 Official test\n")
     output = tmp_path / "catalogs"
     path = publish(archive, output, "current", ())
+    source = path.parent / "source/ldraw/parts/1.dat"
+    original_inode = source.stat().st_ino
     with pytest.raises(ValueError, match="requires"):
         publish(archive, output, "current", ())
     assert publish(archive, output, "current", (), previous=path) == path
     validate(path.parent)
-    assert sorted(p.name for p in output.iterdir()) == [".catalog.lock", "current"]
+    assert source.stat().st_ino == original_inode
+    assert sorted(p.name for p in output.iterdir()) == [
+        ".catalog-publish.lock", ".catalog.lock", "current"]
 
 
 def test_current_catalog_restores_previous_on_install_failure(tmp_path, monkeypatch):
@@ -90,19 +94,50 @@ def test_current_catalog_restores_previous_on_install_failure(tmp_path, monkeypa
     output = tmp_path / "catalogs"
     path = publish(archive, output, "current", ())
     original = path.read_bytes()
-    rename = catalog_module.os.rename
+    replace = catalog_module.os.replace
 
     def fail_install(source, target):
-        if Path(target) == path.parent and not str(source).endswith("-previous"):
+        if Path(target) == path:
             raise OSError("installation failed")
-        return rename(source, target)
+        return replace(source, target)
 
-    monkeypatch.setattr(catalog_module.os, "rename", fail_install)
+    monkeypatch.setattr(catalog_module.os, "replace", fail_install)
     with pytest.raises(OSError, match="installation failed"):
         publish(archive, output, "current", (), previous=path)
     assert path.read_bytes() == original
     validate(path.parent)
-    assert sorted(p.name for p in output.iterdir()) == [".catalog.lock", "current"]
+    assert sorted(p.name for p in output.iterdir()) == [
+        ".catalog-publish.lock", ".catalog.lock", "current"]
+
+
+def test_publication_allows_readers_during_staging_but_excludes_at_install(tmp_path, monkeypatch):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ldraw/parts/1.dat", "0 Official test\n")
+    output = tmp_path / "catalogs"
+    path = publish(archive, output, "current", ())
+    original_validate = catalog_module.validate
+    original_replace = catalog_module.os.replace
+    observed = []
+
+    def check_staging(release):
+        if release.name.startswith(".catalog-staging-"):
+            with (output / ".catalog.lock").open("a+b") as reader:
+                fcntl.flock(reader.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                observed.append("staging")
+        return original_validate(release)
+
+    def check_install(source, target):
+        with (output / ".catalog.lock").open("a+b") as reader:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(reader.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        observed.append("install")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(catalog_module, "validate", check_staging)
+    monkeypatch.setattr(catalog_module.os, "replace", check_install)
+    publish(archive, output, "current", (), previous=path)
+    assert observed == ["staging", "install"]
 
 
 def test_catalog_reader_holds_shared_lock_until_assets_are_consumed(tmp_path):
@@ -115,6 +150,40 @@ def test_catalog_reader_holds_shared_lock_until_assets_are_consumed(tmp_path):
     with (tmp_path / ".catalog.lock").open("a+b") as competitor:
         fcntl.flock(competitor.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(competitor.fileno(), fcntl.LOCK_UN)
+
+
+def test_current_requalification_retires_only_replaced_asset(tmp_path, monkeypatch):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ldraw/parts/1.dat",
+                        "0 Tetrahedron\n0 BFC CERTIFY CCW\n"
+                        "3 16 0 0 0 0 20 0 10 0 0\n"
+                        "3 16 0 0 0 10 0 0 0 0 10\n"
+                        "3 16 0 0 0 0 0 10 0 20 0\n"
+                        "3 16 10 0 0 0 20 0 0 0 10\n")
+    monkeypatch.setattr(catalog_module, "qualify", lambda *args: {"fixture": True})
+    output = tmp_path / "catalog"
+    path = publish(archive, output, "current", ("1",))
+    old = json.loads(path.read_text())["parts"][0]
+    source = path.parent / old["source"]["path"]
+    inode = source.stat().st_ino
+    original_prepare = catalog_module.prepare
+
+    def changed_prepare(library, staging, part_id):
+        entry = original_prepare(library, staging, part_id)
+        asset = staging / entry["mjcf"]
+        asset.write_text(asset.read_text() + "\n<!-- Updated geometry fixture -->\n")
+        entry["assets"][0]["sha256"] = catalog_module.sha256(asset)
+        return entry
+
+    monkeypatch.setattr(catalog_module, "prepare", changed_prepare)
+    publish(archive, output, "current", ("1",), previous=path, requalify_previous=True)
+    new = json.loads(path.read_text())["parts"][0]
+    assert new["mjcf"] != old["mjcf"]
+    assert not (path.parent / old["mjcf"]).exists()
+    assert (path.parent / new["mjcf"]).exists()
+    assert source.stat().st_ino == inode
+    validate(path.parent)
 
 
 def test_surface_prisms_preserve_cavity_and_convert_y_height_to_z(tmp_path):
@@ -280,7 +349,7 @@ def test_retry_unlinks_shared_assets_and_clears_failure_metadata(
         raise error_type("Fixture contact failure")
     monkeypatch.setattr(catalog_module, "qualify", fail_qualification)
     second = publish(archive, output, "failed", (), first, requalify_previous=True)
-    old_asset = second.parent / "parts/1/part.xml"
+    old_asset = second.parent / json.loads(second.read_text())["parts"][0]["mjcf"]
     old_hash = catalog_module.sha256(old_asset)
     failed = json.loads(second.read_text())["parts"][0]
     assert failed["status"] == "unavailable"
@@ -291,7 +360,7 @@ def test_retry_unlinks_shared_assets_and_clears_failure_metadata(
     retried = json.loads(third.read_text())["parts"][0]
     assert retried["status"] == "verified"
     assert "failure" not in retried
-    assert (third.parent / "parts/1/part.xml").stat().st_ino != old_asset.stat().st_ino
+    assert (third.parent / retried["mjcf"]).stat().st_ino != old_asset.stat().st_ino
     assert catalog_module.sha256(old_asset) == old_hash
     validate(first.parent)
     validate(second.parent)

@@ -407,12 +407,12 @@ def catalog_read_lock(manifest: Path):
 
 
 @contextmanager
-def _catalog_lock(output: Path, *, exclusive: bool):
+def _catalog_lock(output: Path, *, exclusive: bool, name: str = ".catalog.lock"):
     output.mkdir(parents=True, exist_ok=True)
-    with (output / ".catalog.lock").open("a+b") as lock:
+    with (output / name).open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         try:
-            yield
+            yield lock.fileno()
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -422,16 +422,18 @@ def publish(archive: Path, output: Path, catalog_id: str,
             previous: Path | None = None,
             next_undecorated: int | None = None,
             requalify_previous: bool = False) -> Path:
-    with _catalog_lock(output, exclusive=True):
-        return _publish(archive, output, catalog_id, part_ids, previous,
-                        next_undecorated, requalify_previous)
+    with _catalog_lock(output, exclusive=True, name=".catalog-publish.lock"):
+        with _catalog_lock(output, exclusive=False) as asset_lock:
+            return _publish(archive, output, catalog_id, part_ids, previous,
+                            next_undecorated, requalify_previous, asset_lock)
 
 
 def _publish(archive: Path, output: Path, catalog_id: str,
             part_ids: tuple[str, ...] = DEFAULT_PARTS,
             previous: Path | None = None,
             next_undecorated: int | None = None,
-            requalify_previous: bool = False) -> Path:
+            requalify_previous: bool = False,
+            asset_lock: int | None = None) -> Path:
     if str(safe_path(catalog_id)) != catalog_id or "/" in catalog_id:
         raise ValueError("catalog_id must be a single directory name")
     output.mkdir(parents=True, exist_ok=True)
@@ -558,6 +560,13 @@ def _publish(archive: Path, output: Path, catalog_id: str,
                 entry["failure"] = {"stage": "qualification" if "mjcf" in entry else "preparation",
                                     "reason": str(error), "exception": type(error).__name__}
                 print(f"Unavailable {entry['part_id']}: {error}", flush=True)
+            for asset in entry.get("assets", []):
+                old_path = staging / asset["path"]
+                new_path = old_path.with_name(asset["sha256"] + old_path.suffix)
+                old_path.rename(new_path)
+                if entry.get("mjcf") == asset["path"]:
+                    entry["mjcf"] = new_path.relative_to(staging).as_posix()
+                asset["path"] = new_path.relative_to(staging).as_posix()
         license_files = [{"path": "source/ldraw/" + path.relative_to(library.root).as_posix(),
                           "sha256": sha256(path)}
                          for key, path in library.files.items()
@@ -580,19 +589,52 @@ def _publish(archive: Path, output: Path, catalog_id: str,
             path.chmod(0o555 if path.is_dir() else 0o444)
         staging.chmod(0o555)
         if destination.exists():
-            retired = staging.with_name(staging.name + "-previous")
-            os.rename(destination, retired)
+            additions = []
+            for path in staging.rglob("*"):
+                if not path.is_file() or path == staging / "catalog.json":
+                    continue
+                target = destination / path.relative_to(staging)
+                if target.exists():
+                    if target.is_symlink() or sha256(target) != sha256(path):
+                        raise ValueError(f"Existing catalog asset differs: {target}")
+                else:
+                    additions.append((path, target))
+            destination.chmod(0o755)
+            writable = {destination}
             try:
-                os.rename(staging, destination)
-            except BaseException:
-                os.rename(retired, destination)
-                raise
-            retired.chmod(0o755)
-            for path in retired.rglob("*"):
+                for path, target in additions:
+                    parent = target.parent
+                    while parent != destination:
+                        if parent.exists():
+                            parent.chmod(0o755)
+                            writable.add(parent)
+                        parent = parent.parent
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    writable.update(target.parents[:len(target.relative_to(destination).parts) - 1])
+                    immutable_copy(path, target)
+                if asset_lock is not None:
+                    fcntl.flock(asset_lock, fcntl.LOCK_EX)
+                staging.chmod(0o755)
+                os.replace(staging / "catalog.json", destination / "catalog.json")
+                retained_assets = {a["path"] for e in entries for a in e.get("assets", [])}
+                for old_entry in (prior or {}).get("parts", []):
+                    for asset in old_entry.get("assets", []):
+                        if asset["path"] not in retained_assets:
+                            old_asset = destination / asset["path"]
+                            old_asset.parent.chmod(0o755)
+                            writable.add(old_asset.parent)
+                            old_asset.unlink()
+            finally:
+                for path in writable:
+                    path.chmod(0o555)
+            for path in staging.rglob("*"):
                 if path.is_dir():
                     path.chmod(0o755)
-            shutil.rmtree(retired)
+            staging.chmod(0o755)
+            shutil.rmtree(staging)
         else:
+            if asset_lock is not None:
+                fcntl.flock(asset_lock, fcntl.LOCK_EX)
             os.rename(staging, destination)
         return destination / "catalog.json"
     except BaseException:
