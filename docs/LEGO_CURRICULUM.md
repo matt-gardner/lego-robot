@@ -1,6 +1,75 @@
 # Workstream 4: Continuous LEGO data curriculum
 
-Approved by Matt November 8, 2026. This dedicated session owns scene preparation,
+## Current direction: reference-free pile problems
+
+Matt's current scope is continuous random-catalog pile generation, not more
+demonstration trajectories or stored RGB. `so101.pile_task_generator` samples
+verified parts from the single current catalog, cycles monochrome/few/many-color
+distributions, and increases piece counts across successive proposals. Every
+accepted pile supplies VIEW/GRASP/PUSH/PLACE tasks for every piece, including
+occluded pieces, without policy screening or assumed solvability. Two opaque
+physical panels provide additional VIEW obstructions. Initial visibility is not
+measured during image-free generation; geometry-based burial tags are explicitly
+proxies, not claims about visible fraction.
+
+Run the new generator separately from the suspended historical producer:
+`PYTHONPATH=src OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m
+so101.pile_task_generator --catalog <catalog root>/current/catalog.json
+--root <new pile pool>`. `--attempts N` bounds attempts; the default continuously
+generates until STOP, termination, or resource backpressure. One writer holds the
+pool lock; admission retains 10GiB disk/2GiB available memory, rejects memory
+pressure, and pauses at a 4GiB pool budget with a 512MiB per-scene reserve. It does
+not delete consumed data or assert that a byte budget represents multiple days of
+RL supply. Throughput and the learner's consumption rate still need measurement.
+Both CLIs run at nice 19; this is low scheduling priority, not a measured guarantee
+of idle CPU capacity. Launch from an immutable source checkout for truthful source
+fingerprints. No replacement service has been activated; the historical producer
+remains suspended and its deleted monitoring cron must not be recreated.
+
+Each scene stores a self-contained `model.mjb`, full MuJoCo integration state,
+XML/proposal/provenance, persistent instance/body/geometry identities, tasks and
+descriptive tags. Catalog locking covers loading and compilation; binary reset
+does not depend on retaining superseded catalog directories. Exact binary reset
+round-trip is checked before admission. Failed settling/contact proposals produce
+explicit rejection receipts; operational/configuration failures are not hidden
+as difficult scenes.
+`admission.json` is written only after verification. Restart revalidates admitted
+scenes; an interrupted scene lacking admission is retained and explicitly blocks
+recovery rather than being silently accepted or overwritten.
+
+`so101.pile_task_runtime` exposes `load_problem(entry, task_id)`,
+`create_simulation(problem, renderbackend="none"|"mujoco")`,
+`reset_problem(sim, problem)` and
+`task_success(sim, problem, executed, stable) -> {"success", "stable"}`.
+The simulation exposes its native model/data, instance positions and live
+instance-specific segmentation boxes. Hidden targets have an invalid/null box;
+unburying never changes the target identity. This is not a drop-in
+`BeamSimulation` episode adapter. Learner action/observation integration and the
+photorealistic dynamic-model backend remain separate qualifications.
+Positions and lift thresholds use the piece's center of mass, matching the catalog
+simulator. PUSH/PLACE goal coordinates bind the actual visible goal entity.
+
+The versioned `native-pile-goals-v1` graders require sustained useful VIEW pixels
+and centering, a stable bilateral lift for GRASP, and released, table-supported,
+slow target placement at a destination for PUSH/PLACE (PLACE additionally requires
+a prior lift). These are explicit simulated task contracts, not success-reference,
+material-calibration, or real-world transfer claims.
+
+Learner overrides use `python -m so101.pile_task_worker --request <absolute JSON>`.
+Schema 1, kind `pile-task-generation`, requires `request_id`, `split: "train"`,
+absolute `catalog`/`output_root`, `seed`, `max_scenes` (1..24),
+`task_types: ["view", "grasp", "push", "place"]`,
+`excluded_scene_families`, and `tag_constraints` containing `piece_count` (2..128)
+and `color_mode` (`monochrome`, `few`, `many`). Unknown constraints fail explicitly.
+The atomic `<request_id>.result.json` binds the request hash and reports
+`complete`, `blocked`, or `rejected`; admitted scene entries bind all reset/task
+files by hash. No expert reference or saved image is required. Existing results
+are idempotent and changed requests cannot reuse an identity.
+The output directory is bound to the request hash for recovery after interruption.
+
+## Historical trajectory pipeline (suspended)
+
+Approved by Matt November 8, 2026. This dedicated session owned scene preparation,
 physics-only trajectories, clean paired physical validation, stage timings and
 the accepted-pair handoff. Rendering, image-dependent qualification and browser
 publication are downstream responsibilities. Catalog and host integration have
