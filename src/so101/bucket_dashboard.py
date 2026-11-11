@@ -234,9 +234,17 @@ class BucketDashboard:
         pool = publication["manifest"].get("provenance", {}).get("native_pool_sha256")
         if not isinstance(pool, str) or len(pool) != 64 or any(c not in "0123456789abcdef" for c in pool):
             return
-        directory = Path("initial-photo-external-v1") / pool
-        paths = {path.name: path for path in (self.root / directory).glob("*.json")}
-        paths.update({path.name: path for path in (self.root / directory / "_roles-v1").glob("*.json")})
+        versions = []
+        for directory in self.root.glob("initial-photo-external-v*"):
+            version = directory.name.removeprefix("initial-photo-external-v")
+            if version.isascii() and version.isdecimal() and int(version) > 0:
+                versions.append((int(version), directory))
+        if len(versions) > 100:
+            raise ValueError("Too many live renderer versions")
+        paths = {}
+        for _, directory in sorted(versions):
+            paths.update({path.name: path for path in (directory / pool).glob("*.json")})
+            paths.update({path.name: path for path in (directory / pool / "_roles-v1").glob("*.json")})
         if len(paths) > 20000:
             raise ValueError("Too many live renderer receipts")
         problems = {p["id"]: p for p in publication["problems"]["problems"]}

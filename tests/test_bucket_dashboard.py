@@ -118,8 +118,24 @@ def test_live_renderer_files_survive_base_publication_replacement(tmp_path):
     second = browser.snapshot()["manifest"]["snapshot_id"]
     assert first != second
     assert browser.image(identity, 0, second) == (image, "image/png")
+    newer = tmp_path / "initial-photo-external-v2" / pool
+    newer.mkdir(parents=True)
+    newer_image = b"\x89PNG\r\n\x1a\nv2"
+    (newer / "image.png").write_bytes(newer_image)
+    newer_row = {**row, "sha256": hashlib.sha256(newer_image).hexdigest()}
+    newer_receipt = newer / receipt.name
+    newer_receipt.write_text(json.dumps(newer_row))
+    assert browser.image(identity, 0) == (newer_image, "image/png")
+    # A higher-numbered empty batch must not hide an older completed task.
+    (tmp_path / "initial-photo-external-v10" / pool).mkdir(parents=True)
+    assert browser.image(identity, 0) == (newer_image, "image/png")
+    latest = tmp_path / "initial-photo-external-v10" / pool
+    (latest / "image.png").write_bytes(image)
+    latest_receipt = latest / receipt.name
+    latest_receipt.write_text(json.dumps(row))
+    assert browser.image(identity, 0) == (image, "image/png")
     row["scene_files_sha256"]["problem.json"] = "wrong-state"
-    receipt.write_text(json.dumps(row))
+    latest_receipt.write_text(json.dumps(row))
     with pytest.raises(ValueError, match="selected initial task"):
         browser.snapshot()
 

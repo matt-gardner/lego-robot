@@ -9,8 +9,11 @@ in the shared data workspace (writable by the producer without permissions chang
 The dashboard composes ordinary producer files on every API/image read.
 No renderer or generator session needs to run a dashboard publisher.
 The renderer writes atomic completed per-task receipts and assets under
-`initial-photo-external-v1/<pool SHA>/`; `_roles-v1/<task>.json` takes precedence
-over that task's original receipt. The reader validates pool, canonical source,
+`initial-photo-external-v<N>/<pool SHA>/`; higher positive numeric versions take
+precedence per completed task, not per entire batch. Within a version,
+`_roles-v1/<task>.json` takes precedence over that task's original receipt.
+Invalid selected receipts fail explicitly rather than hiding behind older data.
+The reader validates pool, canonical source,
 scene hash, target, reset invariants, annotations and image hashes, then serves
 the original asset without copying it. A metrics callback replacing a legacy
 snapshot cannot erase these images.
