@@ -143,11 +143,46 @@ class BucketDashboard:
                 for bucket, tasks in sorted(buckets.items())]},
             "calibration": {"groups": [], "protocol": {}, "qualification_status": "unmeasured", "complete": False},
         }
+        self.shared_metrics(publication)
         self.live_metrics(publication)
         self.live_images(publication)
         return publication
 
-    def publication(self, pointer_path: str) -> dict:
+    def shared_metrics(self, publication: dict) -> None:
+        pool = publication["manifest"]["provenance"]["native_pool_sha256"]
+        pointers = sorted(self.root.glob("publications/*/current.json"))
+        if len(pointers) > 100:
+            raise ValueError("Too many bucket publications")
+        matches = []
+        for pointer in pointers:
+            candidate = self.publication(str(pointer.relative_to(self.root)), compose=False)
+            if candidate["manifest"].get("provenance", {}).get("native_pool_sha256") == pool:
+                matches.append(candidate)
+        if len(matches) > 1:
+            raise ValueError("Multiple shared measurement publications for selected pool")
+        if not matches:
+            return
+        candidate = matches[0]
+        selected = {p["id"]: p for p in publication["problems"]["problems"]}
+        measured = {p["id"]: p for p in candidate["problems"]["problems"]}
+        for group in candidate["calibration"]["groups"]:
+            identity = group["problem_id"]
+            if identity not in selected or identity not in measured:
+                raise ValueError("Shared measurement crosses selected task population")
+            current, original = selected[identity], measured[identity]
+            if (current["task"] != original["task"]
+                    or current["source"]["episode_source"] != original["source"]["episode_source"]
+                    or current["source"]["sha256"] != original["source"]["sha256"]):
+                raise ValueError("Shared measurement source differs from selected task")
+        publication["calibration"] = candidate["calibration"]
+        manifest = publication["manifest"]
+        for key in ("protocol", "progress", "measurement_status", "measurement_scopes", "complete"):
+            if key in candidate["manifest"]:
+                manifest[key] = candidate["manifest"][key]
+        manifest["snapshot_id"] = hashlib.sha256(
+            (manifest["snapshot_id"] + candidate["manifest"]["snapshot_id"]).encode()).hexdigest()
+
+    def publication(self, pointer_path: str, compose: bool = True) -> dict:
         pointer = json.loads(self.read(pointer_path, limit=1024 * 1024))
         relative = pointer["path"]
         manifest = json.loads(self.read(relative, pointer["sha256"]))
@@ -174,8 +209,9 @@ class BucketDashboard:
                             "qualification_status": manifest.get("measurement_status", "unknown")},
             "snapshot_directory": str(Path(relative).parent),
         }
-        self.live_metrics(publication)
-        self.live_images(publication)
+        if compose:
+            self.live_metrics(publication)
+            self.live_images(publication)
         return publication
 
     def live_metrics(self, publication: dict) -> None:

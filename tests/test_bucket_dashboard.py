@@ -194,6 +194,32 @@ def test_current_generator_selection_is_read_live_without_bucket_publication(tmp
     assert len(snapshot["problems"]["problems"]) == 1
     assert snapshot["problems"]["problems"][0]["source"]["task_id"] == "push"
     assert snapshot["calibration"]["groups"] == []
+    identity = snapshot["problems"]["problems"][0]["id"]
+    shared = {
+        "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "measurements",
+        "provenance": {"native_pool_sha256": descriptor["pools"][0]["sha256"]},
+        "problems": snapshot["problems"]["problems"],
+        "groups": [{"problem_id": identity, "assistance": .95, "attempts": 16, "successes": 8}],
+        "protocol": {"horizon": 50, "measurement_scope": "short-horizon-screening"},
+        "complete": True, "measurement_status": "screening",
+    }
+    dashboard = tmp_path / "dashboard"
+    publish(dashboard, shared)
+    channel = dashboard / "publications" / "current-pool"
+    channel.mkdir(parents=True)
+    (channel / "current.json").write_bytes((dashboard / "current.json").read_bytes())
+    matched = browser.snapshot()
+    assert matched["calibration"]["groups"][0]["successes"] == 8
+    assert matched["manifest"]["datasets"][0]["protocol"]["horizon"] == 50
+    assert matched["calibration"]["complete"] is True
+    # A different pool must not inherit measurements even with matching task IDs.
+    shared["provenance"]["native_pool_sha256"] = "old-pool"
+    body = json.dumps(shared).encode()
+    (dashboard / "snapshots/one/manifest.json").write_bytes(body)
+    (channel / "current.json").write_text(json.dumps({
+        "path": "snapshots/one/manifest.json", "sha256": hashlib.sha256(body).hexdigest(),
+    }))
+    assert browser.snapshot()["calibration"]["groups"] == []
     descriptor["pools"][0]["sha256"] = "wrong"
     current.write_text(json.dumps(descriptor))
     with pytest.raises(ValueError, match="hash mismatch"):

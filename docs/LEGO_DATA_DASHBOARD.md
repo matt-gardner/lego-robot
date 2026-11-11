@@ -24,6 +24,11 @@ are explicit. Its groups replace the legacy current metrics rather than mixing
 50-step screening with archived 300-step outcomes. Multiple current result
 files for the same pool fail explicitly instead of combining protocols.
 Actual transport of remote result bytes is separate from dashboard publishing.
+Current selector inventories also join existing shared
+`publications/*/current.json` measurements by exact pool SHA and validate each
+measured problem's task, canonical source and scene hash. The shared protocol,
+progress and groups are preserved; unmeasured pools remain unmeasured. Rates
+describe only the sampled problems, not the entire enumerated pool.
 
 `--bucket-curriculum-root` defaults to the existing read-only
 `/mnt/data/lego-curriculum` mount. The generator's atomic
