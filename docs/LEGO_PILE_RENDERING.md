@@ -60,15 +60,22 @@ PYTHONPATH=src OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
 ```
 
 Only 20..90 pieces are supported. Each proposal samples fresh XY/yaw positions
-within the original 70 mm footprint and inserts the pieces using low-height
+within the original 70 mm-radius footprint and inserts the pieces using low-height
 gravity drops. Pending pieces are parked and reset until their insertion.
 Inserted bodies are never frozen or restored from an old scene. Original
 gravity, visual-hull collisions and solver settings remain unchanged.
-Every insertion and the final full scene must meet the photo-demo
-surface-speed limit of 0.5 mm/s continuously for 0.5 seconds and the original
-5 mm penetration cap; actual maximum insertion and final-settle penetration
-are recorded separately. Each insertion has a 10-second simulated timeout;
-the insertion sequence also has a 120-second wall-time budget.
+The `collective-low-drop-v1` recipe adds a piece every 0.15 simulated seconds
+while the existing pile keeps moving. It does not demand stationarity after
+each insertion. The final full scene must still meet the unchanged photo-demo
+surface-speed limit of 0.5 mm/s continuously for 0.5 seconds.
+The original 5 mm penetration cap applies throughout insertion and final
+settling; actual maxima are recorded separately. Final settling allows
+0.5 simulated seconds per piece. Total simulation work is bounded by 6 CPU
+seconds per piece, with a separate 24 wall-seconds per piece safety deadline.
+Thus larger piles receive proportionate budgets, and idle-priority scheduling
+does not consume their CPU allowance while another process runs. STOP/resource
+checks remain active during final settling. Receipts record the recipe,
+drop cadence, budgets, and actual CPU/wall time; historical receipts are unchanged.
 
 The producer runs at idle CPU priority, admits work only with 2 GiB available
 memory and 10 GiB free disk, and pauses before exhausting a 4 GiB output budget.

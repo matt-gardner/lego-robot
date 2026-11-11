@@ -48,7 +48,10 @@ def test_fresh_twenty_settles_without_source_saved_state(photo_source, tmp_path)
         photo_source, output, count=20, seed=20261111, progress=stages.append, color_mode="single")
     verified = generator.verify_scene(output)
     assert receipt == verified
-    assert [stage["inserted"] for stage in stages] == list(range(1, 21))
+    additions = [stage for stage in stages if stage["phase"] == "adding"]
+    assert [stage["inserted"] for stage in additions] == list(range(1, 21))
+    assert additions[-1]["simulated_seconds"] < 20 * .16
+    assert stages[-1]["phase"] == "final_settling"
     assert receipt["restored_original_integration_state"] is False
     assert receipt["stationarity"]["maximum_final_speed"] <= .0005
     assert receipt["maximum_insertion_penetration_m"] <= .005
@@ -59,6 +62,39 @@ def test_fresh_twenty_settles_without_source_saved_state(photo_source, tmp_path)
     assert np.array_equal(model.opt.gravity, [0., 0., -9.81])
     assert len({tuple(model.geom_rgba[g]) for g in range(model.ngeom)
                 if model.geom_bodyid[g] != 0}) == 1
+
+
+def test_collective_forty_uses_scaled_cpu_budget_and_strict_final_checks(
+    photo_source, tmp_path, monkeypatch,
+):
+    clock = iter([0.])
+    monkeypatch.setattr(generator.time, "process_time", lambda: next(clock, 150.))
+    receipt = generator.generate_scene(
+        photo_source, tmp_path / "forty", count=40, seed=20261111)
+    assert receipt["stationarity"]["maximum_final_speed"] <= .0005
+    assert receipt["maximum_penetration_m"] <= .005
+    assert receipt["maximum_insertion_penetration_m"] <= .005
+    clock = iter([0.])
+    with pytest.raises(generator.RejectedPile, match="120-second CPU budget"):
+        generator.generate_scene(photo_source, tmp_path / "twenty", count=20, seed=20261111)
+
+
+def test_collective_final_settling_honors_stop(photo_source, tmp_path):
+    settling = False
+
+    def progress(value):
+        nonlocal settling
+        settling = value["phase"] == "final_settling"
+
+    def stop():
+        if settling:
+            raise InterruptedError("stop during final settling")
+
+    output = tmp_path / "stopped"
+    with pytest.raises(InterruptedError, match="final settling"):
+        generator.generate_scene(photo_source, output, count=20, seed=20261111,
+                                 progress=progress, check_stop=stop)
+    assert not output.exists()
 
 
 def test_minimum_count_and_source_hash_protection(photo_source):

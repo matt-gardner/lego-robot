@@ -222,6 +222,7 @@ def settle_data(
     velocity_tolerance: float = .005, contact_limit_m: float = .001,
     stationarity_metric: str = "legacy-component-v1",
     contact_solver: str = "model-default",
+    check_stop=lambda: None,
 ) -> tuple[mujoco.MjModel, mujoco.MjData, dict]:
     """Settle initialized robot controls and catalog objects without resetting."""
     limits = (maximum_seconds, stationary_seconds, velocity_tolerance, contact_limit_m)
@@ -244,7 +245,11 @@ def settle_data(
         addresses.append((obj, int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])))
     maximum_penetration = 0.
     stationary_since = None
+    steps = 0
     while data.time < deadline:
+        if steps % 100 == 0:
+            check_stop()
+        steps += 1
         penetration = max((max(0., -float(contact.dist)) for contact in data.contact), default=0.)
         maximum_penetration = max(maximum_penetration, penetration)
         if penetration > contact_limit_m:

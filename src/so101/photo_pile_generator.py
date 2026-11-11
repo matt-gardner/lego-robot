@@ -20,7 +20,7 @@ import mujoco
 import numpy as np
 
 from so101.cloud_checkpoint import atomic_json
-from so101.lego_scene import body_surface_speed_bound, restore_scene, settle_data
+from so101.lego_scene import restore_scene, settle_data
 from so101.pile_task_generator import resource_check
 
 
@@ -143,9 +143,22 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
         data.qpos[index * 7:index * 7 + 3] = [3. + index, 0., 1.]
     parked = data.qpos.copy()
     started = time.monotonic()
+    cpu_started = time.process_time()
+    cpu_budget = 6. * count
+    wall_budget = 24. * count
+    drop_interval = .15
+    settling_seconds = .5 * count
+
+    def check_budget():
+        check_stop()
+        if time.process_time() - cpu_started > cpu_budget:
+            raise RejectedPile(f"{cpu_budget:g}-second CPU budget reached")
+        if time.monotonic() - started > wall_budget:
+            raise RejectedPile(f"{wall_budget:g}-second wall budget reached")
+
     maximum_penetration = 0.
     for index, placement in enumerate(placements):
-        check_stop()
+        check_budget()
         data.qpos[index * 7:index * 7 + 3] = placement["position"]
         data.qpos[index * 7 + 2] = 0.
         mujoco.mj_forward(model, data)
@@ -164,14 +177,11 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
             raise ValueError("Photo piece has no collision geometry")
         data.qpos[index * 7 + 2] = active_top - own_bottom + .0001
         placement["insertion_position"] = data.qpos[index * 7:index * 7 + 3].tolist()
-        stationary_since = None
-        deadline = data.time + 10.
+        deadline = data.time + drop_interval
         steps = 0
         while data.time < deadline:
             if steps % 100 == 0:
-                check_stop()
-                if time.monotonic() - started > 120:
-                    raise RejectedPile(f"Insertion {index + 1}: 120-second wall budget reached")
+                check_budget()
             mujoco.mj_forward(model, data)
             penetration = max((max(0., -float(c.dist)) for c in data.contact), default=0.)
             maximum_penetration = max(maximum_penetration, penetration)
@@ -181,29 +191,24 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
                 raise RejectedPile("Nonfinite insertion physics")
             if any(warning.number for warning in data.warning):
                 raise RejectedPile("MuJoCo warning during insertion")
-            speed = max(body_surface_speed_bound(model, data, body)
-                        for body in range(1, index + 2))
-            stationary_since = None if speed > .0005 else (
-                data.time if stationary_since is None else stationary_since)
-            if stationary_since is not None and data.time - stationary_since >= .5:
-                break
             mujoco.mj_step(model, data)
             # Pending pieces are not inserted yet; reset only those bodies after each step.
             data.qpos[(index + 1) * 7:] = parked[(index + 1) * 7:]
             data.qvel[(index + 1) * 6:] = 0.
             steps += 1
-        else:
-            raise RejectedPile(f"Insertion {index + 1}: 10-second simulated settling timeout")
         progress({"inserted": index + 1, "piece_count": count,
-                  "simulated_seconds": data.time, "contacts": data.ncon})
+                  "phase": "adding", "simulated_seconds": data.time, "contacts": data.ncon})
     objects = [{"instance_id": p["instance_id"], "part_id": p["part_id"]} for p in placements]
     plan = {"scene_id": output.name, "catalog_sha256": original["catalog_sha256"],
             "objects": objects}
     try:
+        progress({"inserted": count, "piece_count": count, "phase": "final_settling",
+                  "simulated_seconds": data.time, "contacts": data.ncon})
         _, _, receipt = settle_data(
-            model, data, xml, plan, maximum_seconds=10., stationary_seconds=.5,
+            model, data, xml, plan, maximum_seconds=settling_seconds, stationary_seconds=.5,
             velocity_tolerance=.0005, contact_limit_m=.005,
             stationarity_metric="surface-speed-v2", contact_solver="model-default",
+            check_stop=check_budget,
         )
     except ValueError as error:
         if not str(error).startswith(("Scene contact penetration", "Non-finite catalog",
@@ -219,7 +224,12 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
         "sampling": sampling,
         "color_mode": color_mode,
         "replayed_from_initial_xml": False, "restored_original_integration_state": False,
-        "initialization": "Fresh sequential low-height drops; pending pieces parked/reset until insertion",
+        "initialization": "Collective low-height drops; only pending pieces parked/reset until insertion",
+        "generation_recipe": "collective-low-drop-v1",
+        "drop_interval_simulated_seconds": drop_interval,
+        "final_settling_budget_simulated_seconds": settling_seconds,
+        "cpu_budget_seconds": cpu_budget, "wall_budget_seconds": wall_budget,
+        "cpu_seconds": time.process_time() - cpu_started,
         "qualification": "Photo-demo convex visual hulls; not native cavity, clutch, RL or SFT qualification",
         "maximum_insertion_penetration_m": maximum_penetration,
         "wall_seconds": time.monotonic() - started,
