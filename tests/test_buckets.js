@@ -103,18 +103,23 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.ok(all.some(e=>e.textContent==="Initial scene images not published."));
   assert.ok(all.some(e=>e.textContent==="Unmeasured: no valid rollout counts published."));
   const overview=elements.get("populations").children[0];
-  assert.equal(overview.children.length,3);
+  assert.equal(overview.children.length,2);
   assert.equal(elements.get("bucket").children.length,1);
   assert.equal(elements.get("task").children.length,2);
   assert.ok(!all.some(e=>e.textContent.includes("corpus:old")));
-  const measured=overview.children.find(row=>row.children[1]?.textContent==="push");
-  const unmeasured=overview.children.find(row=>row.children[1]?.textContent==="place");
-  assert.equal(measured.children[3].textContent,"0");
-  assert.equal(measured.children[4].textContent,"100.0% (4/4)");
-  assert.equal(unmeasured.children[3].textContent,"Unmeasured");
+  const measured=overview.children[1];
+  assert.equal(measured.children[1].textContent,"2");
+  assert.ok(measured.children[3].children.some(e=>e.textContent==="push: 1/1 problems · 4 rollouts"));
+  assert.ok(measured.children[3].children.some(e=>e.textContent==="place: 0/1 problems · 0 rollouts"));
+  const plotted=[];
+  function plotNodes(e){plotted.push(e);for(const child of e.children || [])plotNodes(child);}
+  plotNodes(measured.children[2]);
+  assert.ok(plotted.some(e=>e.cx===45 && e.cy===35));
+  assert.ok(plotted.some(e=>e.textContent==="Assistance"));
+  assert.ok(plotted.some(e=>e.textContent==="Success rate"));
   measured.listeners.click();
   assert.equal(elements.get("bucket").value,"b");
-  assert.match(elements.get("count").textContent,/1 matching problems/);
+  assert.match(elements.get("count").textContent,/2 matching problems/);
   payload.manifest.progress={phase:"expert_reference_qualification",reference_attempts:35,
     reference_accepted:17,policy_calibration_status:"pending",policy_rollouts:0};
   payload.calibration.groups=[];

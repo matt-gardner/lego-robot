@@ -104,6 +104,43 @@ function curve(parent, cells) {
   }
   parent.append(svg);
 }
+function bucketChart(parent, series) {
+  if(!series.some(s=>s.cells.length)) {
+    parent.append(node("p","Unmeasured: no policy success rates yet.","missing"));return;
+  }
+  const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");
+  svg.setAttribute("viewBox","0 0 360 220");svg.setAttribute("class","bucket-chart");
+  svg.setAttribute("role","img");svg.setAttribute("aria-label","Success rate versus assistance percent, by task");
+  function shape(tag,attributes,text) {
+    const e=document.createElementNS(ns,tag);
+    for(const [key,value] of Object.entries(attributes)) e.setAttribute(key,value);
+    if(text!==undefined)e.textContent=text;
+    svg.append(e);return e;
+  }
+  for(const percent of [0,50,100]) {
+    const x=45+percent*2.85,y=175-percent*1.4;
+    shape("line",{x1:45,x2:330,y1:y,y2:y,stroke:"#8885"});
+    shape("text",{x:38,y:y+4,"text-anchor":"end",fill:"currentColor","font-size":11},`${percent}%`);
+    shape("text",{x,y:192,"text-anchor":"middle",fill:"currentColor","font-size":11},`${percent}%`);
+  }
+  shape("text",{x:185,y:215,"text-anchor":"middle",fill:"currentColor","font-size":12},"Assistance");
+  shape("text",{x:45,y:18,fill:"currentColor","font-size":12},"Success rate");
+  const colors=["#54b5ff","#ffbd59","#71db99","#e296ef"];
+  series.forEach((s,index)=>{
+    const color=colors[index%colors.length];
+    for(const c of s.cells) {
+      const ci=wilson(c.successes,c.n),x=45+c.assistance*285,y=175-c.successes/c.n*140;
+      shape("line",{x1:x,x2:x,y1:175-ci[0]*140,y2:175-ci[1]*140,stroke:color,"stroke-width":1});
+      const point=shape("circle",{cx:x,cy:y,r:4,fill:color});
+      const title=document.createElementNS(ns,"title");
+      title.textContent=`${s.task}: ${(c.assistance*100).toFixed(2)}% assistance, ${c.successes}/${c.n} successes (${(100*c.successes/c.n).toFixed(1)}%), ${c.groups} groups`;
+      point.append(title);
+    }
+    const legend=node("span",`${s.task}${s.cells.length ? "" : " (unmeasured)"}`,"chart-legend");
+    legend.style=`color:${color}`;parent.append(legend);
+  });
+  parent.append(svg,node("small","Points: sampled problems only; bars: descriptive Wilson 95% intervals. No interpolation."));
+}
 function stats(parent, groups) {
   const cells = aggregate(groups);
   if (!cells.length) { parent.append(node("p", "Unmeasured: no valid rollout counts published.", "missing")); return; }
@@ -182,35 +219,26 @@ async function start() {
     const groupFor=p=>groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index);
     const bucketIds=[...new Set([...buckets.map(b=>b.id),...problems.map(p=>p.bucket)])].sort();
     const overview=node("table"), heading=node("tr");
-    for (const label of ["Bucket", "Task", "Problems", "Assistance tested", "Success", "95% CI", "Rollouts / groups", "Measured problems", "Mixed groups", "Per-problem success range", "Initial images"]) heading.append(node("th",label));
+    for (const label of ["Bucket", "Problems", "Success vs assistance", "Measured coverage by task", "Initial images"]) heading.append(node("th",label));
     overview.append(heading);
     for (const id of bucketIds) {
       const b=buckets.find(x=>x.id===id), ps=problems.filter(p=>p.bucket===id);
       const tasks=[...new Set([...(b?.tasks || []).map(t=>t.task),...ps.map(p=>p.task)])].sort();
-      for (const task of tasks) {
-        const tp=ps.filter(p=>p.task===task), declared=b?.tasks?.find(t=>t.task===task)?.population_total;
-        const cells=aggregate(tp.flatMap(groupFor));
-        for (const c of cells.length ? cells : [null]) {
-          const rates=c ? tp.flatMap(p=>aggregate(groupFor(p)).filter(x=>x.assistance===c.assistance).map(x=>x.successes/x.n)) : [];
-          const row=node("tr"), ci=c ? wilson(c.successes,c.n) : null;
-          const values=[b?.label || id,task,declared ?? `${tp.length} enumerated`,
-            c ? c.assistance : "Unmeasured",
-            c ? `${(100*c.successes/c.n).toFixed(1)}% (${c.successes}/${c.n})` : "—",
-            ci ? ci.map(x=>(100*x).toFixed(1)+"%").join("–") : "—",
-            c ? `${c.n} / ${c.groups}` : "0 / 0",
-            `${rates.length}/${tp.length}`,
-            c ? `${c.mixed}/${c.groups}` : "—",
-            rates.length ? `${(Math.min(...rates)*100).toFixed(0)}–${(Math.max(...rates)*100).toFixed(0)}%` : "—",
-            `${tp.filter(p=>p.initial_images?.length).length}/${tp.length}`];
-          for (const value of values) row.append(node("td",String(value)));
+      const row=node("tr"),chart=node("td"),coverage=node("td");
+      bucketChart(chart,tasks.map(task=>({task,cells:aggregate(ps.filter(p=>p.task===task).flatMap(groupFor))})));
+      for(const task of tasks) {
+        const tp=ps.filter(p=>p.task===task), measured=tp.filter(p=>aggregate(groupFor(p)).length);
+        const rollouts=aggregate(tp.flatMap(groupFor)).reduce((n,c)=>n+c.n,0);
+        coverage.append(node("p",`${task}: ${measured.length}/${tp.length} problems · ${rollouts} rollouts`));
+      }
+      row.append(node("td",b?.label || id),node("td",String(ps.length)),chart,coverage,
+        node("td",`${ps.filter(p=>p.initial_images?.length).length}/${ps.length}`));
           row.addEventListener("click",()=>{
             document.getElementById("bucket").value=id;
-            document.getElementById("task").value=task;
+            document.getElementById("task").value="";
             shown=24;saveFilters();render();
           });
           overview.append(row);
-        }
-      }
       const opt=node("option",id);opt.value=id;document.getElementById("bucket").append(opt);
     }
     document.getElementById("populations").append(overview);

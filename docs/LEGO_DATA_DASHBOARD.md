@@ -79,10 +79,13 @@ for group/seed correlation), actual within-group mixed yield, per-problem curves
 and within-bucket observed spread. Piece count/proxy tags are not difficulty,
 and pooled 50% success does not imply per-problem learnability. No GPU queries,
 model loads, old deleted renders or temporary paths are used.
-The primary overview is a compact bucket/task/assistance table with population,
-success/counts/intervals, measured-problem coverage, mixed-group yield, per-problem
-success range and initial-image coverage. Unmeasured task populations retain a
-visible row; clicking a measured or unmeasured row filters the problem inspector.
+The primary overview has one row per bucket, with a small chart in a table cell:
+assistance percent on the x axis and success rate on the y axis, both 0–100%.
+Task types have distinct colors; points show measured rates with descriptive
+Wilson intervals and exact numerator/denominator tooltips, without interpolation.
+Per-task sampled-problem coverage and rollout counts sit beside the chart.
+Unmeasured buckets retain an explicit missing state instead of zero-valued points.
+Clicking a row filters the pile inspector to its bucket.
 The dashboard excludes historical `source.kind=legacy` problems and `corpus:`
 bucket summaries from the overview, selectors and problem inspector. This is a
 display-only retirement; producer snapshots, calibration and underlying data are
