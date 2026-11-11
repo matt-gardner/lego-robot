@@ -141,6 +141,41 @@ Pending previews must not reuse images from superseded task/reset identities.
 
 ### Parent-linked distance assistance
 
+#### Original-pose GRASP assistance
+
+New GRASP assistance uses `python -m so101.pile_grasp_assistance --admission
+<original-admission.json> --output <new-scene-directory> --parents 1
+[--task-id <original-grasp-task-id>]`. Install the `simulation` extra, including
+SciPy for static pose fitting, and use the exact MuJoCo version recorded in the
+original snapshot. This constructs independent states, not executions or
+reference trajectories. Output is immutable and separate from ordinary piles,
+legacy assistance, frozen evaluation pools and training intake.
+
+The approved `original-pose-grasp-v1` scalar is `assistance.value`: 0.00 is the
+original robot pose; 0.00--0.80 uses 0.05-spaced joint-pose interpolation toward
+a fully open robot aligned around the piece; 0.85 is halfway jaw closure; 0.90
+is bilateral loaded contact **with the piece exactly where it originally lay**.
+0.95 holds the same piece halfway toward its original lift requirement. All
+nontarget piece poses remain unchanged, and the target pose is unchanged through
+0.90. No 1.00 reset is admitted. Goals, task-family identity and split remain
+unchanged. This is the agreed GRASP assistance convention, not a measured
+policy-difficulty percentage or a definition for VIEW/PUSH/PLACE.
+
+Choose only parents for which the entire twenty-state family is valid. Every
+state, including every retreat interpolation point, checks all robot collision
+geometry **and visual meshes** against the actual table plane; table intersection
+is rejected (only 1 nm numerical roundoff is tolerated). This is separate from
+the 1 mm limit for other robot contacts. Bilateral grasp preload is capped at
+1 N per jaw. The runtime repeats the table and contact checks on reset, and
+publication verifies exact full-state replay. Static contacts are not proof of
+stable dynamic grasping or task success. Unavailable parents and unmet parent
+quotas are recorded explicitly; existing inputs are never overwritten.
+
+#### Historical stage-distance construction
+
+The older construction below is retained for reproducing historical results,
+not the approved whole-task GRASP scalar.
+
 `python -m so101.pile_task_assistance --admission <original-admission.json>
 --output <new-scene-directory> [--task-id <parent-task-id>]` constructs
 nearer resets directly, without demonstrations, setup trajectories or stepping

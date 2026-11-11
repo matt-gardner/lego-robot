@@ -10,6 +10,7 @@ import mujoco
 import numpy as np
 
 from so101.lego_scene import body_surface_speed_bound, restore_scene
+from so101.robot_table_clearance import require_robot_above_table
 
 
 GRADER_VERSION = "native-pile-goals-v1"
@@ -160,13 +161,24 @@ def reset_problem(sim: PileSimulation, problem: dict) -> None:
         if (not isinstance(progress, dict) or set(progress) != {"lifted_once"}
                 or type(progress["lifted_once"]) is not bool
                 or not isinstance(assistance, dict) or not task.get("parent_task_id")
-                or assistance.get("kind") not in ("direct-task-distance-v1", "direct-task-distance-v2")
+                or assistance.get("kind") not in (
+                    "direct-task-distance-v1", "direct-task-distance-v2", "original-pose-grasp-v1")
                 or assistance.get("parent_task_id") != task.get("parent_task_id")):
             raise ValueError("Invalid assistance initial task-progress state")
         measured = target_contact_state(sim, task["target_instance_id"])
-        if (assistance["kind"] == "direct-task-distance-v2"
+        if (assistance["kind"] in ("direct-task-distance-v2", "original-pose-grasp-v1")
                 and max(measured["jaw_normal_forces_n"].values(), default=0.) > MAXIMUM_ASSISTANCE_PRELOAD_N):
             raise ValueError("Assistance reset exceeds the per-jaw construction preload cap")
+        if assistance["kind"] == "original-pose-grasp-v1":
+            value = assistance.get("value")
+            if (task["task_type"] != "grasp" or type(value) not in (int, float)
+                    or not np.isfinite(value) or value not in tuple(i / 20 for i in range(20))):
+                raise ValueError("Invalid original-pose GRASP assistance value")
+            require_robot_above_table(sim.model, sim.data)
+            if value >= .9 and not measured["bilateral_grip"]:
+                raise ValueError("In-place GRASP reset lacks bilateral loaded contact")
+            if value in (.8, .85) and measured["bilateral_grip"]:
+                raise ValueError("Open/partial in-place GRASP reset is already grasped")
         if progress["lifted_once"]:
             if (task["task_type"] != "place" or not measured["bilateral_grip"]
                     or measured["table_supported"]):

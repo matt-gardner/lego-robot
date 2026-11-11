@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-simulation = ["mujoco>=3.3,<4"]
+simulation = ["mujoco>=3.3,<4", "scipy>=1.15,<2"]
 training = ["lerobot[smolvla]==0.6.1"]
 
 [dependency-groups]
