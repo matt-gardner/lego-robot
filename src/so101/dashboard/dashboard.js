@@ -69,6 +69,25 @@ const sftSections = [
 const runKinds = ["rl", "sft", "recognition"];
 const supervised = kind => kind === "sft" || kind === "recognition";
 const recognitionSections = [
+  {id: "recognition-training-accuracy", title: "Training minibatch accuracy", open: true,
+    note: "Query-weighted over the logged optimizer microbatches. Missing measurements stay absent; loss is not accuracy.",
+    metrics: ["top1", "top3", "top5"].map(key => ({
+      key: `train_${key}`, title: `Training minibatch ${key}`, phase: "train", task: "all", unit: "%", percent: true,
+    }))},
+  {id: "recognition-dev", title: "Recognition dev evaluation", open: true,
+    note: "Visible box-view observations, not independent pieces. Raw synthetic recognition, not action success or real-transfer qualification.",
+    metrics: [
+      ...["top1", "top3", "top5", "macro_top1"].map(key => ({
+        key, title: `Dev ${key.replace("_", " ")}`, phase: "eval", task: "all", unit: "%", percent: true,
+        note: key === "macro_top1" ? "Unweighted mean across part IDs." : "Retrieval accuracy on the dev split.",
+      })),
+      ...["family", "kind"].map(name => ({
+        key: `category_${name}_accuracy`, title: `Dev ${name} category accuracy`, phase: "eval", task: "all", unit: "%", percent: true,
+      })),
+      ...["seen_id", "unseen_id"].flatMap(name => ["top1", "top3", "top5"].map(key => ({
+        key: `${name}_${key}`, title: `Dev ${name.replace("_", " ")} ${key}`, phase: "eval", task: "all", unit: "%", percent: true,
+      }))),
+    ]},
   {id: "recognition-loss", title: "Recognition-only training loss", note: "No action SFT or RL · training samples", open: true,
     metrics: [{key: "loss", title: "Recognition loss", phase: "train", task: "all", unit: "", logLog: true,
       note: "Recognition embedding and category objective. Not comparable to action SFT loss."}]},
@@ -227,7 +246,7 @@ function renderRuns() {
     const swatch = text("span", "", "swatch");
     const latest = run.latest_train?.step ?? "—";
     meta.append(swatch, document.createTextNode(
-      `step ${latest}${supervised(state.kind) ? ` · loss ${num(run.latest_train?.loss)}` : ""} · eval ${pct(run.latest_eval?.success_rate)}`));
+      `step ${latest}${supervised(state.kind) ? ` · loss ${num(run.latest_train?.loss)}` : ""} · ${state.kind === "recognition" ? "dev top1" : "eval"} ${pct(state.kind === "recognition" ? run.latest_eval?.top1 : run.latest_eval?.success_rate)}`));
     meta.append(document.createElement("br"), document.createTextNode(
       `${run.archived ? "Archive · " : ""}Log updated ${run.updated_at ? new Date(run.updated_at).toLocaleString() : "unavailable"}`));
     if (run.remote) {
@@ -254,7 +273,16 @@ function renderDetails() {
   const run = state.runs.get(state.focus);
   const latest = run?.latest_eval;
   const sft = supervised(state.kind);
-  const cards = [
+  const recognition = state.kind === "recognition";
+  const cards = recognition ? [
+    ["Latest dev top1 / top3 / top5", latest ? `${pct(latest.top1)} / ${pct(latest.top3)} / ${pct(latest.top5)}` : "—",
+      latest ? `Step ${latest.step} · ${latest.n} box-view observations` : "No dev evaluation logged"],
+    ["Dev macro top1", pct(latest?.macro_top1), latest ? `${latest.families} part IDs · unweighted` : "No dev evaluation logged"],
+    ["Dev seen / unseen top1", latest ? `${pct(latest.seen_id_top1)} / ${pct(latest.unseen_id_top1)}` : "—",
+      latest ? `n=${latest.seen_id_n} / ${latest.unseen_id_n} box-view observations` : "No dev evaluation logged"],
+    ["Dev category family / kind", latest ? `${pct(latest.category_family_accuracy)} / ${pct(latest.category_kind_accuracy)}` : "—",
+      latest ? `Majority baseline top1 ${pct(latest.majority_baseline_top1)}` : "No dev evaluation logged"],
+  ] : [
     ["Latest validation success", pct(latest?.success_rate), latest ? `Step ${latest.step} · unassisted` : "No validation logged"],
     ["Best validation success", pct(run?.best_eval?.success_rate), run?.best_eval ? `Step ${run.best_eval.step}` : "No validation logged"],
     ["Latest optimizer step", `${run?.latest_train?.step ?? "—"}`, run?.latest_train
@@ -267,6 +295,38 @@ function renderDetails() {
     card.append(text("div", label, "card-label"), text("div", value, "card-value"), text("div", note, "card-note"));
     return card;
   }));
+  const results = $("recognition-results");
+  results.hidden = !recognition;
+  results.replaceChildren();
+  if (recognition) {
+    results.append(text("h2", `Selected-checkpoint evaluation${run ? ` · ${shortName(run)}` : ""}`),
+      text("p", "Full training-set measurements and final held-out test are separate from minibatch training and dev. Counts are visible box-view observations, not independent pieces.", "hint"));
+    const table = document.createElement("table");
+    const head = document.createElement("tr");
+    const columns = ["Split", "Checkpoint step", "Observations", "Top1", "Top3", "Top5", "Macro top1",
+      "Seen n", "Seen top1 / top3 / top5", "Unseen n", "Unseen top1 / top3 / top5", "Category family / kind"];
+    head.append(...columns.map(name => text("th", name)));
+    table.append(head);
+    for (const [split, row] of [
+      ...(run?.training_evaluation || []).map(row => ["Training set (selected checkpoint)", row]),
+      ...(run?.final_test ? [["Final held-out test", run.final_test]] : []),
+    ]) {
+      const tr = document.createElement("tr");
+      tr.append(...[split, row.selected_step ?? row.step, row.n, pct(row.top1), pct(row.top3), pct(row.top5),
+        pct(row.macro_top1), row.seen_id_n,
+        `${pct(row.seen_id_top1)} / ${pct(row.seen_id_top3)} / ${pct(row.seen_id_top5)}`,
+        row.unseen_id_n, `${pct(row.unseen_id_top1)} / ${pct(row.unseen_id_top3)} / ${pct(row.unseen_id_top5)}`,
+        `${pct(row.category_family_accuracy)} / ${pct(row.category_kind_accuracy)}`,
+      ].map(value => text("td", `${value ?? "—"}`)));
+      table.append(tr);
+    }
+    const wrap = text("div", "", "table-wrap");
+    wrap.append(table);
+    results.append(wrap,
+      text("p", run?.final_test ? `Test checkpoint selected by ${run.final_test.selection}. ${run.final_test.scope || ""}`
+        : "Final held-out test not published for this run.", "hint"));
+    if (!run?.training_evaluation?.length) results.append(text("p", "Full training-set checkpoint accuracy not published. No historical training accuracy is inferred.", "hint"));
+  }
   const training = points(run, "train", "all").slice(-10);
   const cutoff = training[0]?.step ?? Infinity;
   const preceding = points(run, "eval", "all").filter(row => sft || row.step < cutoff).slice(-2);
@@ -275,7 +335,9 @@ function renderDetails() {
     ...training.map(row => ({...row, phase: "train"})),
   ];
   if (sft) recent.sort((a, b) => a.step - b.step || (a.phase === "eval" ? 1 : -1));
-  const headings = sft
+  const headings = recognition
+    ? ["Step", "Phase", "Loss", "Top1", "Top3", "Top5", "Macro top1", "Observations", "LR"]
+    : sft
     ? ["Step", "Phase", "Loss", "Success", "Efficiency", "Eval RMS jerk", "Wrong object", "LR", "Grad norm", "Step time (s)"]
     : ["Step", "Phase", "Success", "Efficiency", "Jerk gap / eval RMS", "Wrong object", "LR", "Grad norm", "Assistance"];
   $("recent-head").replaceChildren(...headings.map(label => {
@@ -283,12 +345,18 @@ function renderDetails() {
     if (label === "Jerk gap / eval RMS") th.title = "Training: jerk minus reference margin. Validation: absolute RMS jerk (no margin logged).";
     return th;
   }));
-  $("recent-note").textContent = sft
+  $("recent-note").textContent = recognition
+    ? latest?.scope || "Recognition-only training and dev evaluation. Counts are box-view observations, not independent pieces."
+    : sft
     ? "Most recent 10 loss-only optimizer steps and two latest validation rows. Success, efficiency, absolute RMS jerk and wrong-object metrics are evaluation only."
     : "Most recent 10 optimizer steps, plus the two preceding validation-only rows. Training success includes assisted and discarded trajectories; validation is unassisted.";
   $("recent").replaceChildren(...recent.map(row => {
     const tr = text("tr", "", row.phase === "eval" ? "eval-row" : "");
-    const values = sft ? [
+    const values = recognition ? [
+      row.step, row.phase === "eval" ? "Dev evaluation" : "Recognition loss",
+      row.phase === "train" ? num(row.loss) : "—",
+      pct(row.top1), pct(row.top3), pct(row.top5), pct(row.macro_top1), row.n ?? "—", exp(row.learning_rate),
+    ] : sft ? [
       row.step, row.phase === "eval" ? "Validation only" : "SFT loss",
       row.phase === "train" ? num(row.loss) : "—",
       pct(row.success_rate), pct(row.completion_efficiency), num(row.rms_jerk),
@@ -341,7 +409,7 @@ function seriesFor(metric) {
       });
       if (!values.some(point => finite(point.value))) continue;
       result.push({
-        label: `${shortName(run)} · ${series.task} · ${series.phase === "eval" ? "validation" : "train"}`,
+        label: `${shortName(run)} · ${series.task} · ${series.phase === "eval" ? (state.kind === "recognition" ? "dev" : "validation") : "train"}`,
         values, color: color(run.id), axis: supervised(state.kind) ? "Training samples seen" : run.axis,
         dash: series.phase === "eval" ? [6, 4] : [],
       });
@@ -542,6 +610,8 @@ class Chart {
       const point = values.reduce((best, p) => Math.abs(this.x(p.x) - pixel) < Math.abs(this.x(best.x) - pixel) ? p : best);
       const value = this.metric.scientific ? point.raw.toExponential(2) : point.raw.toFixed(2);
       const line = text("div", `${series.label} · ${supervised(state.kind) ? `${point.x} samples · ` : ""}step ${point.step}: ${value}${this.metric.unit === "%" ? "%" : ` ${this.metric.unit}`}`);
+      if (state.kind === "recognition") line.append(document.createTextNode(
+        ` · n=${point.n ?? point.train_accuracy_n ?? "unreported"} box-view observations`));
       line.style.color = series.color;
       tooltip.append(line);
     }

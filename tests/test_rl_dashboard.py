@@ -29,6 +29,48 @@ def test_nested_recognition_log_is_not_action_sft_or_rl(tmp_path):
     assert result["latest_eval"] is None
 
 
+def test_recognition_evaluations_preserve_split_metrics_and_sidecar_updates(tmp_path):
+    log = tmp_path / "sft_training.json"
+    metrics = {
+        "step": 100, "n": 20, "families": 3, "top1": .5, "top3": .8, "top5": 1,
+        "macro_top1": .3, "scope": "Box-view observations, not independent pieces.",
+        "seen_unseen": {"seen_id": {"n": 12, "top1": .75}, "unseen_id": {"n": 8, "top1": .125}},
+        "category_accuracy": {"family": {"n": 20, "accuracy": .6}, "kind": {"n": 20, "accuracy": .7}},
+        "training_majority_baseline": {"top1": .4},
+    }
+    log.write_text(json.dumps({
+        "kind": "piece_recognition_sft",
+        "steps": [{"step": 99, "loss": 3, "samples_seen": 396},
+                  {"step": 100, "loss": 2, "samples_seen": 400,
+                   "train_top1": .25, "train_top3": .5, "train_top5": .75, "train_accuracy_n": 16}],
+        "validation": [metrics], "training_evaluation": [{**metrics, "n": 40}],
+    }))
+    store = RunStore(tmp_path)
+    identity, path = next(iter(store.discover().items()))
+    first = store.load(identity, path)
+    assert first["latest_eval"]["top1"] == .5
+    assert first["latest_eval"]["samples_seen"] == 400
+    assert first["latest_eval"]["category_family_accuracy"] == .6
+    assert first["latest_eval"]["unseen_id_n"] == 8
+    assert "success_rate" not in first["latest_eval"]
+    assert first["latest_train"]["train_top1"] == .25
+    assert first["series"][0]["points"][0]["train_top1"] is None
+    assert first["training_evaluation"][0]["n"] == 40
+    assert "final_test" not in first
+    sidecar = log.with_name("test_results.json")
+    sidecar.write_text(json.dumps({
+        **metrics, "top1": .2, "selected_step": 100, "selection": "development macro_top1",
+        "images_sha256": "a" * 64, "checkpoint_files_sha256": {"config": "b" * 64},
+    }))
+    second = store.load(identity, path)
+    assert second["revision"] != first["revision"]
+    assert second["latest_eval"]["top1"] == .5
+    assert second["final_test"]["top1"] == .2
+    assert second["final_test"]["selected_step"] == 100
+    sidecar.write_text("{")
+    assert store.load(identity, path)["error"]
+
+
 def training_log(step=1):
     return {
         "algorithm": "trajectory group-relative flow matching",

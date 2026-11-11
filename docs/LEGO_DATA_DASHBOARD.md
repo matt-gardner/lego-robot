@@ -4,7 +4,15 @@
 
 The training observatory discovers nested `sft_training.json` logs recursively.
 Logs with kind `piece_recognition_sft` appear in a separate Recognition tab with
-independent selections and recognition loss versus samples seen. Frozen and
+independent selections and recognition loss versus samples seen. Dev evaluation
+shows top-1/3/5, macro top-1, category and seen/unseen accuracies with observation
+counts. Logged `train_top1/3/5` are separate minibatch measurements, never inferred
+from loss. Optional `training_evaluation` rows show full training-set checkpoint
+accuracy, not a reconstructed training history. A sibling `test_results.json`
+shows final held-out test results and selected checkpoint/selection criterion
+separately; sidecar changes invalidate the run cache even if the log is unchanged.
+Missing training or final-test measurements are explicitly labeled unpublished.
+Frozen and
 fine-tuned runs retain their relative parent paths. Recognition losses are never
 combined with action SFT or RL; action-evaluation charts are not shown for them.
 

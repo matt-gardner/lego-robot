@@ -113,6 +113,30 @@ test("recognition runs use a separate tab and sample-matched loss series", async
   assert.equal(values[0].values[0].value,2);
 });
 
+test("recognition shows dev, minibatch accuracy and final test without action labels or fabricated accuracy", async () => {
+  const recognition = run("recognition1", "recognition", true);
+  recognition.latest_train = {step: 100, samples_seen: 400, loss: 2, train_top1: .6, train_accuracy_n: 16};
+  recognition.latest_eval = {step: 100, samples_seen: 400, top1: .5, top3: .7, top5: .8,
+    n: 20, families: 3, macro_top1: .3, seen_id_n: 12, unseen_id_n: 8, seen_id_top1: .7, unseen_id_top1: .2,
+    category_family_accuracy: .6, category_kind_accuracy: .7};
+  recognition.final_test = {...recognition.latest_eval, top1: .25, selected_step: 50, selection: "development macro_top1"};
+  recognition.training_evaluation = [{...recognition.latest_eval, n: 40}];
+  const page = await dashboard([recognition]);
+  await page.elements.get("tab-recognition").events.click();
+  assert.match(page.elements.get("cards").textContent, /Latest dev top1/);
+  assert.doesNotMatch(page.elements.get("cards").textContent, /success|jerk|unassisted/i);
+  assert.match(page.elements.get("recognition-results").textContent, /Final held-out test/);
+  assert.match(page.elements.get("recognition-results").textContent, /25\.0%/);
+  assert.match(page.elements.get("recognition-results").textContent, /Training set \(selected checkpoint\)/);
+  assert.doesNotMatch(page.elements.get("recent-head").textContent, /Success|Jerk|Efficiency/);
+  const dev = page.eval('seriesFor(recognitionSections.find(section=>section.id==="recognition-dev").metrics[0])');
+  assert.equal(dev[0].values[0].value, 50);
+  const train = page.eval('seriesFor(recognitionSections.find(section=>section.id==="recognition-training-accuracy").metrics[0])');
+  assert.equal(train[0].values[0].value, 60);
+  page.eval('state.runs.get("recognition1").latest_train.train_top1 = undefined; state.runs.get("recognition1").series[0].points[0].train_top1 = undefined');
+  assert.equal(page.eval('seriesFor({key:"train_top1",phase:"train",task:"all"})').length, 0);
+});
+
 test("SFT plots align different batch sizes by logged samples, retaining optimizer steps in tooltips", async () => {
   const page = await dashboard([run("11111111", "sft"), run("22222222", "sft")]);
   await page.elements.get("tab-sft").events.click();

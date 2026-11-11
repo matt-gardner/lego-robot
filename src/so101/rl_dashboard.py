@@ -102,6 +102,21 @@ def trajectory_metrics(rows: list[dict]) -> dict:
     }
 
 
+def recognition_metrics(row: dict) -> dict:
+    point = {key: row.get(key) for key in (
+        "step", "n", "families", "top1", "top3", "top5", "macro_top1", "scope",
+    )}
+    for name in ("seen_id", "unseen_id"):
+        metrics = row.get("seen_unseen", {}).get(name, {})
+        for key in ("n", "top1", "top3", "top5"):
+            point[f"{name}_{key}"] = metrics.get(key)
+    for name, metrics in row.get("category_accuracy", {}).items():
+        point[f"category_{name}_accuracy"] = metrics.get("accuracy")
+        point[f"category_{name}_n"] = metrics.get("n")
+    point["majority_baseline_top1"] = row.get("training_majority_baseline", {}).get("top1")
+    return point
+
+
 def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = None) -> dict:
     """Keep scalar plot data only; never ship per-frame or parameter data."""
     series: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -118,6 +133,7 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
                     "loss", "action_loss", "box_loss",
                     "learning_rate", "gradient_norm",
                     "step_seconds", "completed_at", "eta_seconds", "samples_seen",
+                    "train_top1", "train_top3", "train_top5", "train_accuracy_n",
                 )},
             })
     elif trajectory:
@@ -210,7 +226,15 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
                             "step_seconds", "completed_at",
                         )
                     })
-    if trajectory or sft:
+    if recognition:
+        samples_by_step = {row["step"]: row.get("samples_seen") for row in steps}
+        for phase, rows in (("eval", data.get("validation", [])),
+                            ("train_eval", data.get("training_evaluation", []))):
+            for row in rows:
+                point = recognition_metrics(row)
+                point["samples_seen"] = row.get("samples_seen", samples_by_step.get(row["step"]))
+                series[(phase, "all")].append(point)
+    elif trajectory or sft:
         for row in data.get("validation", []):
             for task, metrics in [("all", row), *row.get("by_task", {}).items()]:
                 point = {
@@ -245,6 +269,7 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
         "series": normalized_series,
         "latest_train": training[-1] if training else None,
         "latest_eval": validation[-1] if validation else None,
+        "training_evaluation": series.get(("train_eval", "all"), []),
         "best_eval": max(
             (row for row in validation if row.get("success_rate") is not None),
             key=lambda row: row["success_rate"],
@@ -295,6 +320,12 @@ class RunStore:
         try:
             stat = path.stat()
             revision = f"{stat.st_mtime_ns}:{stat.st_size}"
+            test_path = path.with_name("test_results.json")
+            if not test_path.resolve().is_relative_to(self.root):
+                raise ValueError("Final-test results escape the outputs root")
+            if test_path.exists():
+                test_stat = test_path.stat()
+                revision += f":test:{test_stat.st_mtime_ns}:{test_stat.st_size}"
             if cached and cached["revision"] == revision and not cached.get("error"):
                 return cached
             data = json.loads(path.read_text())
@@ -331,6 +362,14 @@ class RunStore:
                 "error": None,
                 **normalize_log(data, jerk_references),
             }
+            if data.get("kind") == "piece_recognition_sft" and test_path.exists():
+                test = json.loads(test_path.read_text())
+                result["final_test"] = {
+                    **recognition_metrics(test),
+                    **{key: test[key] for key in (
+                        "selected_step", "selection", "images_sha256", "checkpoint_files_sha256",
+                    )},
+                }
             latest = result["latest_train"]
             completed_at = latest.get("completed_at") if latest else None
             has_timestamp = (
