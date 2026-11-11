@@ -385,9 +385,9 @@ async function start() {
         const publication=await latest.json();
         if(!latest.ok) throw new Error(publication.error || `HTTP ${latest.status}`);
         if(publication.manifest.snapshot_id!==data.manifest.snapshot_id) location.reload();
-      } catch(error) {status.textContent=`Publication refresh failed: ${error.message}`;}
+      } catch(error) {status.hidden=false;status.textContent=`Publication refresh failed: ${error.message}`;}
     },20000);
-  } catch(error) {status.textContent=`Bucket publication unavailable: ${error.message}`;}
+  } catch(error) {status.hidden=false;status.textContent=`Bucket publication unavailable: ${error.message}`;}
 }
 if (typeof document !== "undefined") {
   document.getElementById("pile-close").addEventListener("click",()=>document.getElementById("pile-dialog").close());
