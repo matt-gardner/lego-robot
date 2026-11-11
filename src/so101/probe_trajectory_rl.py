@@ -45,6 +45,95 @@ def binary_assistance_step(state, assistance, successes, total, max_rounds):
     return (state["lower"] + state["upper"]) / 2, None
 
 
+def bucket_population(plan):
+    buckets = {}
+    for row in plan:
+        identity = row.get("bucket_id")
+        if not isinstance(identity, str) or not identity:
+            raise ValueError("Bucket screening requires an explicit bucket_id for every problem")
+        buckets.setdefault(identity, []).append(row)
+    if any(len(rows) != 4 or len({row["source"] for row in rows}) != 4
+           for rows in buckets.values()):
+        raise ValueError("Bucket screening requires exactly four distinct problems per bucket")
+    return buckets
+
+
+def probe_buckets(args, plan, available, split, controller, result, sims):
+    buckets = bucket_population(plan)
+    result["binary_search_bounds"] = {}
+    for bucket_index, (identity, rows) in enumerate(buckets.items()):
+        state = {"lower": 0., "upper": .95, "rounds": 0}
+        result["binary_search_bounds"][identity] = state
+        assistance = .95
+        while assistance is not None:
+            groups = []
+            for index, row in enumerate(rows):
+                matches = [group for group in result["groups"]
+                           if group["source"] == row["source"]
+                           and group["assistance"] == assistance]
+                if len(matches) > 1:
+                    raise ValueError("Resumed bucket duplicates a problem/assistance measurement")
+                group = matches[0] if matches else {
+                    **row, "assistance": assistance, "policy_step": 0,
+                    "initial_checkpoint": str(args.checkpoint), "rollouts": [],
+                    "planned_attempts": 1,
+                }
+                observations = group["rollouts"]
+                expected_seeds = [args.seed + bucket_index * 10000 + index + repeat * 4
+                                  for repeat in range(2)]
+                if (group.get("bucket_id") != identity or group["policy_step"] != 0
+                        or len(observations) > 2
+                        or [item["seed"] for item in observations]
+                        != expected_seeds[:len(observations)]):
+                    raise ValueError("Resumed bucket changes its population or paired rollout seeds")
+                if not matches:
+                    result["groups"].append(group)
+                groups.append(group)
+            for repeat in range(2):
+                for index, (row, group) in enumerate(zip(rows, groups, strict=True)):
+                    if len(group["rollouts"]) > repeat:
+                        continue
+                    episode = available[row["source"]]
+                    bounds = dict(split["expert_bounds"][row["task"]])
+                    if "native_reference" in episode.metadata:
+                        bounds["optimal_steps"] = len(load_reference_rows(episode))
+                    seed = args.seed + bucket_index * 10000 + index + repeat * 4
+                    trajectory = rollout(
+                        sims[index % len(sims)], controller, episode, seed, args.horizon, 16,
+                        bounds, False, assistance, .1,
+                    )
+                    group["rollouts"].append({"seed": seed, **serialized_trajectory(trajectory)})
+                    successes = sum(bool(item["success"]) for item in group["rollouts"])
+                    group.update(successes=successes, total=len(group["rollouts"]),
+                                 success_interval_95=success_interval(successes, len(group["rollouts"])))
+                    atomic_json(args.output, result)
+                successes = sum(group["successes"] for group in groups)
+                total = sum(group["total"] for group in groups)
+                first_successes = sum(bool(group["rollouts"][0]["success"]) for group in groups)
+                if first_successes in (0, 4):
+                    if any(len(group["rollouts"]) != 1 for group in groups):
+                        raise ValueError("Unanimous bucket screening contains forbidden extra rollouts")
+                    break
+                for group in groups:
+                    group["planned_attempts"] = 2
+                atomic_json(args.output, result)
+            following, status = binary_assistance_step(
+                state, assistance, successes, total, args.search_rounds,
+            )
+            print(json.dumps({"event": "bucket_difficulty_probe", "bucket_id": identity,
+                              "assistance": assistance, "problems": 4,
+                              "successes": successes, "total": total}), flush=True)
+            if status is not None:
+                result["assistance_decisions"][identity] = {
+                    "status": status, "assistance": assistance,
+                    "sources": [row["source"] for row in rows],
+                    "successes": successes, "total": total,
+                    "success_interval_95": success_interval(successes, total),
+                }
+            atomic_json(args.output, result)
+            assistance = following
+
+
 def probe(args):
     if args.native_references is not None and args.native_pool is None:
         raise ValueError("Native reference qualification requires its exact native pool")
@@ -56,6 +145,11 @@ def probe(args):
     identities = [(row["task"], row["source"], row["assistance"]) for row in plan]
     if len(identities) != len(set(identities)):
         raise ValueError("Probe plan duplicates a problem/assistance measurement")
+    bucket_screening = getattr(args, "bucket_screening", False)
+    if bucket_screening:
+        if not args.binary_search:
+            raise ValueError("Bucket screening requires binary assistance search")
+        bucket_population(plan)
     if args.calibrate_assistance:
         seen = set()
         for row in plan:
@@ -134,6 +228,10 @@ def probe(args):
               "horizon": args.horizon, "seed": args.seed,
               "measurement_scope": "short-horizon-screening" if args.horizon < 300 else "full-horizon-probe",
               "renderer": "gpu-pathtrace", "samples_per_pixel": 16, "action_steps": 16}
+    if bucket_screening:
+        result.update(bucket_screening=True, problems_per_bucket=4,
+                      initial_rollouts_per_problem=1, mixed_confirmation_rollouts_per_problem=1,
+                      parallel_rollouts=1)
     result["assistance_decisions"] = {}
     result["unmeasured_levels"] = []
     result["policy_sha256_before"] = before_policy
@@ -144,6 +242,8 @@ def probe(args):
                 or any(previous[key] != result[key] for key in
                        ("input_sha256", "repeats", "parallel_rollouts", "horizon", "seed"))):
             raise ValueError("Resume changes the measured population, policy, horizon or sampling protocol")
+        if bool(previous.get("bucket_screening", False)) != bucket_screening:
+            raise ValueError("Resume changes bucket screening sampling protocol")
         result = previous
         result["assistance_decisions"] = {}
         result["unmeasured_levels"] = []
@@ -163,6 +263,9 @@ def probe(args):
     try:
         for _ in range(args.batch_rollouts):
             sims.append(create_simulation(args.model_root, backend="gpu-pathtrace", samples=16))
+        if bucket_screening:
+            probe_buckets(args, plan, available, split, controller, result, sims)
+            queue = []
         loaded_step = None
         for row in queue:
             if args.calibrate_assistance and row["source"] in result["assistance_decisions"]:
@@ -298,6 +401,8 @@ def main():
                         help="Maximum policy steps; shorter runs are screening, not full-horizon qualification")
     parser.add_argument("--binary-search", action="store_true",
                         help="Screen four rollouts per level, bisect unanimous outcomes, confirm mixed levels with four more")
+    parser.add_argument("--bucket-screening", action="store_true",
+                        help="Measure four distinct plan problems per bucket, one rollout each; confirm mixed buckets once")
     parser.add_argument("--search-rounds", type=int, default=6)
     parser.add_argument("--resume", action="store_true",
                         help="Continue matching initial-policy measurements without repeating completed samples")

@@ -142,3 +142,57 @@ def test_binary_screen_switches_after_four_and_only_confirms_mixed_levels(
         assert (decision["successes"], decision["total"], decision["status"]) == (
             2, 8, "measured-mixed-outcomes",
         )
+
+
+@pytest.mark.parametrize("count", [1, 3, 5])
+def test_bucket_screen_requires_four_distinct_problems(count):
+    rows = [{"bucket_id": "20:grasp", "source": str(index)} for index in range(count)]
+    with pytest.raises(ValueError, match="four distinct"):
+        module.bucket_population(rows)
+    with pytest.raises(ValueError, match="four distinct"):
+        module.bucket_population([{"bucket_id": "20:grasp", "source": "same"}] * 4)
+
+
+@pytest.mark.parametrize("all_fail", [True, False])
+def test_bucket_screen_samples_each_problem_once_and_confirms_only_mixed(
+        probe_setup, monkeypatch, all_fail):
+    args, _ = probe_setup
+    args.bucket_screening, args.binary_search = True, True
+    args.search_rounds = 6
+    rows = [{"task": "grasp", "source": f"problem-{index}", "assistance": .95,
+             "bucket_id": "20:grasp"} for index in range(4)]
+    args.plan.write_text(json.dumps(rows))
+    episodes = [SimpleNamespace(source=row["source"], task="grasp",
+                                metadata={"native_entry": {}, "native_reference": {}})
+                for row in rows]
+    monkeypatch.setattr(module, "load_corpus", lambda _: {"grasp": episodes})
+    args.split.write_text(json.dumps({
+        "training": {"grasp": [row["source"] for row in rows]},
+        "validation": [], "expert_bounds": {"grasp": {}},
+    }))
+    calls = []
+
+    def sample(sim, controller, episode, seed, horizon, action_steps, bounds,
+               store_decisions, assistance, noise):
+        calls.append((assistance, episode.source, seed))
+        return (not all_fail) if assistance == .95 else episode.source == "problem-0"
+
+    monkeypatch.setattr(module, "rollout", sample)
+    monkeypatch.setattr(module, "serialized_trajectory", lambda success: {"success": success})
+    probe(args)
+    result = json.loads(args.output.read_text())
+    assert calls[:4] == [(.95, f"problem-{index}", 100 + index) for index in range(4)]
+    assert len(calls) == (4 if all_fail else 12)
+    decision = result["assistance_decisions"]["20:grasp"]
+    if all_fail:
+        assert decision["total"] == 4 and decision["successes"] == 0
+    else:
+        assert calls[4:8] == [(.475, f"problem-{index}", 100 + index) for index in range(4)]
+        assert calls[8:] == [(.475, f"problem-{index}", 104 + index) for index in range(4)]
+        assert decision["total"] == 8 and decision["successes"] == 2
+        assert [group["planned_attempts"] for group in result["groups"]] == [1] * 4 + [2] * 4
+    result["complete"] = False
+    args.output.write_text(json.dumps(result))
+    args.resume = True
+    probe(args)
+    assert len(calls) == (4 if all_fail else 12)

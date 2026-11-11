@@ -1042,6 +1042,14 @@ remain explicitly unmeasured, and all-pass problems are marked too easy, not
 qualified training targets. Shared counts distinguish four-trial screens from
 eight-trial mixed-outcome estimates.
 
+For bucket-level calibration, add `--bucket-screening --binary-search` and give
+exactly four distinct problems per `bucket_id` in the plan. Each level runs one
+rollout per problem (four total), not four repeats of each problem. Unanimous
+outcomes change assistance immediately; mixed outcomes run one more rollout per
+problem (eight total). Assistance decisions are keyed by bucket, while raw groups
+retain their actual problem identities, counts and paired seeds. These screens
+currently execute serially across the four problems.
+
 Generate reference overlays with `python -m so101.collect_pile_references
 --pool <immutable-pool.json> --model-root <model> --output <fresh-directory>`.
 Attempts are balanced across scene families and default to 20 per task type.
