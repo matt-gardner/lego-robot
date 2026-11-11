@@ -1,6 +1,6 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
-const {wilson,aggregate,groupPiles,targetBox} = require("../src/so101/dashboard/buckets.js");
+const {wilson,aggregate,groupPiles,targetBox,compareBuckets} = require("../src/so101/dashboard/buckets.js");
 const vm = require("node:vm");
 const fs = require("node:fs");
 test("four successes do not imply certain success or calibration",()=>{
@@ -26,6 +26,8 @@ test("mixed group yield differs from pooled half-success",()=>{
   assert.equal(cells[1].mixed,1);
 });
 test("hierarchy groups target tasks by exact scene within each bucket",()=>{
+  assert.deepEqual(["current:40-pieces","current:5-pieces","current:20-pieces","current:3-pieces","current:8-pieces","current:30-pieces"].sort(compareBuckets),
+    ["current:3-pieces","current:5-pieces","current:8-pieces","current:20-pieces","current:30-pieces","current:40-pieces"]);
   const grouped=groupPiles([
     {id:"a",bucket:"native3",source:{scene_id:"pile1"}},
     {id:"b",bucket:"native3",source:{scene_id:"pile1"}},
@@ -198,10 +200,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.equal(placePoint.opacity,.25);
   pushLegend.listeners.mouseleave();
   assert.equal(pushPoint.r,4);
-  const pilotSection=elements.get("distance-pilots").children[0];
-  assert.equal(pilotSection.children[0].textContent,"Distance-assisted pilot · 1 child starts / 1 parent tasks");
-  assert.equal(pilotSection.children[2].children[1].children[1].textContent,"release");
-  assert.equal(pilotSection.children[2].children[1].children[4].textContent,"1/1 (100.0%)");
+  assert.equal(elements.has("distance-pilots"),false);
   payload.distance_pilots[0].manifest.qualification_notices=[
     {task:"place",status:"initial-predicate-already-true",message:"Some starts already satisfy the goal."},
   ];
@@ -209,11 +208,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
     {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
   await new Promise(resolve=>setImmediate(resolve));
-  const warned=elements.get("distance-pilots").children[0];
-  assert.equal(warned.open,true);
-  assert.match(warned.children[0].textContent,/qualification warning/);
-  assert.equal(warned.children[1].textContent,"place: Some starts already satisfy the goal.");
-  assert.equal(warned.children[3].children[1].children[4].children[0].textContent,"Some starts already satisfy the goal.");
+  assert.equal(elements.has("distance-pilots"),false);
   assert.equal(placePoint.fill,original);
   pushLegend.listeners.focus();
   assert.equal(pushPoint.r,6);
