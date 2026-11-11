@@ -202,6 +202,13 @@ def test_current_generator_selection_is_read_live_without_bucket_publication(tmp
         "groups": [{"problem_id": identity, "assistance": .95, "attempts": 16, "successes": 8}],
         "protocol": {"horizon": 50, "measurement_scope": "short-horizon-screening"},
         "complete": True, "measurement_status": "screening",
+        "measurement_series": [
+            {"series_id": "prior", "label": "Prior", "protocol": {"horizon": 50},
+             "groups": [{"problem_id": identity, "assistance": .95, "attempts": 16, "successes": 8}]},
+            {"series_id": "new", "label": "New", "protocol": {"horizon": 50},
+             "groups": [{"problem_id": identity, "assistance": .95, "attempts": 4, "successes": 0}]},
+        ],
+        "current_measurement_series_id": "prior",
     }
     dashboard = tmp_path / "dashboard"
     publish(dashboard, shared)
@@ -212,6 +219,8 @@ def test_current_generator_selection_is_read_live_without_bucket_publication(tmp
     assert matched["calibration"]["groups"][0]["successes"] == 8
     assert matched["manifest"]["datasets"][0]["protocol"]["horizon"] == 50
     assert matched["calibration"]["complete"] is True
+    assert len(matched["calibration"]["groups"]) == 1
+    assert len(matched["manifest"]["datasets"][0]["measurement_series"]) == 2
     # A different pool must not inherit measurements even with matching task IDs.
     shared["provenance"]["native_pool_sha256"] = "old-pool"
     body = json.dumps(shared).encode()

@@ -291,7 +291,15 @@ class BucketDashboard:
         candidate = matches[0]
         selected = {p["id"]: p for p in publication["problems"]["problems"]}
         measured = {p["id"]: p for p in candidate["problems"]["problems"]}
-        for group in candidate["calibration"]["groups"]:
+        series = candidate["manifest"].get("measurement_series", [])
+        if not isinstance(series, list) or len(series) > 100:
+            raise ValueError("Invalid retained measurement series")
+        series_ids = [s["series_id"] for s in series]
+        if len(set(series_ids)) != len(series_ids):
+            raise ValueError("Duplicate retained measurement series identity")
+        all_groups = [*candidate["calibration"]["groups"],
+                      *(g for s in series for g in s["groups"])]
+        for group in all_groups:
             identity = group["problem_id"]
             if identity not in selected or identity not in measured:
                 raise ValueError("Shared measurement crosses selected task population")
@@ -302,7 +310,8 @@ class BucketDashboard:
                 raise ValueError("Shared measurement source differs from selected task")
         publication["calibration"] = candidate["calibration"]
         manifest = publication["manifest"]
-        for key in ("protocol", "progress", "measurement_status", "measurement_scopes", "complete"):
+        for key in ("protocol", "progress", "measurement_status", "measurement_scopes", "complete",
+                    "measurement_series", "current_measurement_series_id", "latest_measurement_series_id"):
             if key in candidate["manifest"]:
                 manifest[key] = candidate["manifest"][key]
         manifest["snapshot_id"] = hashlib.sha256(

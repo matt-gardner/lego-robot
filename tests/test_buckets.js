@@ -169,4 +169,19 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   pending.listeners.click();
   assert.equal(elements.get("bucket").value,"current:40-pieces");
   assert.equal(elements.get("problems").children.length,1);
+  payload.manifest.datasets=[{dataset_id:"pool",current_measurement_series_id:"prior",
+    measurement_series:[
+      {series_id:"prior",label:"Prior measurements",groups:[{problem_id:"first",assistance:.95,attempts:16,successes:8}]},
+      {series_id:"new",label:"New measurements",groups:[{problem_id:"first",assistance:.95,attempts:4,successes:0}]},
+    ]}];
+  saved.clear();elements.clear();
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
+  await new Promise(resolve=>setImmediate(resolve));
+  const seriesSelect=elements.get("populations").children[0].children[0];
+  const table=elements.get("populations").children[1];
+  assert.ok(table.children[1].children[3].children.some(e=>e.textContent==="push: 1/1 problems · 16 rollouts"));
+  seriesSelect.value="new";seriesSelect.listeners.change();
+  assert.ok(table.children[1].children[3].children.some(e=>e.textContent==="push: 1/1 problems · 4 rollouts"));
+  assert.ok(!table.children[1].children[3].children.some(e=>e.textContent.includes("20 rollouts")));
 });

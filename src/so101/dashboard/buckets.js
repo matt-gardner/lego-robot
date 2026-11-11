@@ -179,7 +179,29 @@ async function start() {
     const data=await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const problems=data.problems.problems.filter(p=>p.source?.kind!=="legacy");
-    const groups=data.calibration.groups;
+    let groups=data.calibration.groups;
+    const seriesControls=[];
+    for(const dataset of data.manifest.datasets || []) {
+      if(!dataset.measurement_series?.length)continue;
+      const key=dataset.dataset_id || dataset.provenance.native_pool_sha256;
+      const choices=dataset.measurement_series;
+      const saved=preferences[`measurement-series:${key}`];
+      const chosen=choices.find(s=>s.series_id===saved) ||
+        choices.find(s=>s.series_id===dataset.current_measurement_series_id) || choices[0];
+      const ids=new Set(problems.filter(p=>p.dataset_snapshot_id===dataset.snapshot_id).map(p=>p.id));
+      const select=node("select");select.setAttribute("aria-label","Measurement series");
+      for(const series of choices) {
+        const horizon=series.protocol?.horizon;
+        const option=node("option",`${series.label}${horizon ? ` · ${horizon}-step` : ""}`);
+        option.value=series.series_id;select.append(option);
+      }
+      select.value=chosen.series_id;
+      const apply=series=>{
+        groups=[...groups.filter(g=>!ids.has(g.problem_id)),...series.groups];
+      };
+      apply(chosen);
+      seriesControls.push({key,select,choices,apply});
+    }
     const admitted=data.admitted_piles || [];
     const admissionBucket=p=>`current:${p.tags.piece_count}-pieces`;
     function admissionCard(pile) {
@@ -216,6 +238,7 @@ async function start() {
       Object.values(data.manifest.measurement_scopes).map(s=>`${s.label}: ${s.policy_rollouts} policy rollouts (${s.status})`).join(". ");
     const sourcePath=s=>typeof s==="object" ? s?.path : s;
     const measuredGroups=new Map();
+    const redrawCharts=[];
     const groupFor=p=>{
       if(!measuredGroups.has(p.id)) measuredGroups.set(p.id,groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index));
       return measuredGroups.get(p.id);
@@ -228,6 +251,8 @@ async function start() {
       const b=buckets.find(x=>x.id===id), ps=problems.filter(p=>p.bucket===id);
       const tasks=[...new Set([...(b?.tasks || []).map(t=>t.task),...ps.map(p=>p.task)])].sort();
       const row=node("tr"),chart=node("td"),coverage=node("td");
+      function draw() {
+      chart.replaceChildren();coverage.replaceChildren();
       bucketChart(chart,tasks.map(task=>({task,cells:aggregate(ps.filter(p=>p.task===task).flatMap(groupFor))})));
       for(const task of tasks) {
         const tp=ps.filter(p=>p.task===task), measured=tp.filter(p=>aggregate(groupFor(p)).length);
@@ -236,6 +261,9 @@ async function start() {
       }
       const ap=admitted.filter(p=>admissionBucket(p)===id);
       if(ap.length) coverage.append(node("p",`${ap.length} admitted piles · task pool pending`));
+      }
+      draw();redrawCharts.push(draw);
+      const ap=admitted.filter(p=>admissionBucket(p)===id);
       row.append(node("td",bucketLabel(b?.label || id)),node("td",ps.length ? String(ps.length) : "Tasks pending"),chart,coverage,
         node("td",ap.length ? `${ps.filter(p=>p.initial_images?.length).length}/${ps.length} task images; ${ap.filter(p=>p.initial_images.length).length}/${ap.length} admitted pile previews` : `${ps.filter(p=>p.initial_images?.length).length}/${ps.length}`));
           row.addEventListener("click",()=>{
@@ -245,6 +273,16 @@ async function start() {
           });
           overview.append(row);
       const opt=node("option",bucketLabel(b?.label || id));opt.value=id;document.getElementById("bucket").append(opt);
+    }
+    for(const control of seriesControls) {
+      const label=node("label","Measurements ");label.append(control.select);
+      document.getElementById("populations").append(label);
+      control.select.addEventListener("change",()=>{
+        const series=control.choices.find(s=>s.series_id===control.select.value);
+        control.apply(series);measuredGroups.clear();
+        preferences[`measurement-series:${control.key}`]=series.series_id;save();
+        redrawCharts.forEach(draw=>draw());render();
+      });
     }
     document.getElementById("populations").append(overview);
     for (const task of [...new Set(problems.map(p=>p.task))].sort()) {const o=node("option",task);o.value=task;document.getElementById("task").append(o);}

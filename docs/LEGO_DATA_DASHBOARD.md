@@ -35,6 +35,13 @@ Current selector inventories also join existing shared
 measured problem's task, canonical source and scene hash. The shared protocol,
 progress and groups are preserved; unmeasured pools remain unmeasured. Rates
 describe only the sampled problems, not the entire enumerated pool.
+Retained `measurement_series` entries contain independent `series_id`, `label`,
+`protocol`, `groups`, `progress`, `complete`, `provenance` and optional scopes.
+`current_measurement_series_id` selects the compatibility top-level groups;
+`latest_measurement_series_id` identifies a successor without replacing history.
+The browser offers a remembered series selector per dataset. Switching replaces
+that dataset's chart and modal measurements, never pools groups from different
+series. All series groups are validated against the exact selected task sources.
 
 Tasks are read immediately from each admitted pile's hash-pinned `problem.json`,
 without waiting for a complete pool or rendered preview. Active generator
