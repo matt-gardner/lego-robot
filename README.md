@@ -1021,6 +1021,11 @@ with `--native-pool` and `--native-references`. This rejects legacy problem sour
 pins the untouched initial policy, pairs rollout seeds across assistance levels,
 and verifies the policy digest is unchanged. `--batch-rollouts 4` batches inference
 without retaining training decisions; the default remains one serial probe.
+`--horizon 50` bounds a fast screening pass instead of the default 300 policy
+steps. Results explicitly record their horizon and screening scope; do not pool
+short-horizon screening with full-horizon measurements or treat it as proof that
+a task cannot succeed later. Explicit plans without `--calibrate-assistance`
+can measure assisted levels first.
 `--calibrate-assistance` stops additional levels for a problem after 16 or more
 repeats show 25--75% success, or all pass without assistance. Unmeasured levels
 remain explicitly unmeasured, and all-pass problems are marked too easy, not

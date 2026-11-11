@@ -88,6 +88,8 @@ def probe(args):
         raise ValueError("Difficulty probes require at least 16 repeated rollouts")
     if args.batch_rollouts < 1:
         raise ValueError("Inference batch must contain at least one rollout")
+    if args.horizon <= 0:
+        raise ValueError("Probe horizon must be positive")
     if args.output.exists():
         raise FileExistsError("Probe output already exists; reconcile before restarting")
     controller = EntityPolicy(args.checkpoint, "cuda", True)
@@ -100,10 +102,14 @@ def probe(args):
                                                   ("native_pool", args.native_pool),
                                                   ("native_references", args.native_references))
                                if path is not None},
-              "optimizer": None, "parallel_rollouts": args.batch_rollouts}
+              "optimizer": None, "parallel_rollouts": args.batch_rollouts,
+              "horizon": args.horizon, "seed": args.seed,
+              "measurement_scope": "short-horizon-screening" if args.horizon < 300 else "full-horizon-probe",
+              "renderer": "gpu-pathtrace", "samples_per_pixel": 16, "action_steps": 16}
     result["assistance_decisions"] = {}
     result["unmeasured_levels"] = []
     result["policy_sha256_before"] = before_policy
+    atomic_json(args.output, result)
     sources = list(dict.fromkeys(row["source"] for row in plan))
     sims = []
     try:
@@ -140,10 +146,10 @@ def probe(args):
                 seeds = [args.seed + sources.index(row["source"]) * 10000 + repeat
                          for repeat in range(start, min(start + args.batch_rollouts, args.repeats))]
                 trajectories = (
-                    [rollout(sims[0], controller, episode, seeds[0], 300, 16,
+                    [rollout(sims[0], controller, episode, seeds[0], args.horizon, 16,
                              bounds, False, row["assistance"], .1)]
                     if args.batch_rollouts == 1 else
-                    rollout_group(sims[:len(seeds)], controller, episode, seeds, 300, 16,
+                    rollout_group(sims[:len(seeds)], controller, episode, seeds, args.horizon, 16,
                                   bounds, row["assistance"], .1, False, store_decisions=False)
                 )
                 observations.extend({"seed": seed, **serialized_trajectory(trajectory)}
@@ -202,6 +208,8 @@ def main():
     parser.add_argument("--repeats", type=int, default=16)
     parser.add_argument("--batch-rollouts", type=int, choices=(1, 2, 4, 8), default=1)
     parser.add_argument("--seed", type=int, default=2551000)
+    parser.add_argument("--horizon", type=int, default=300,
+                        help="Maximum policy steps; shorter runs are screening, not full-horizon qualification")
     probe(parser.parse_args())
 
 
