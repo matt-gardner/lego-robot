@@ -261,6 +261,13 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                                for task, ids in tasks.items()]}
                     for bucket, tasks in sorted(buckets.items())],
         "protocol": {"population": "new-photo-piles-only", "native_pool_sha256": pool_sha,
+                     "horizon": measurements.get("horizon") if measurements is not None else None,
+                     "measurement_scope": measurements.get("measurement_scope")
+                     if measurements is not None else None,
+                     "measurement_results_sha256": hashlib.sha256(measurement_bytes).hexdigest()
+                     if measurements is not None else None,
+                     "measurement_input_sha256": measurements["input_sha256"]
+                     if measurements is not None else None,
                      "reference_collector_sha256": references["collector_sha256"],
                      "policy_sha256_before": measurements.get("policy_sha256_before")
                      if measurements is not None else None,
