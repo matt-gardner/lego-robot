@@ -166,6 +166,12 @@ def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
         photo_pile_tasks.select_current_pools(
             tmp_path, [Path(revision_pool["manifest_path"])] * 2)
     assert (tmp_path / "current-task-pools.json").read_bytes() == before
+    legacy = {key: value for key, value in scene.items() if key != "provenance"}
+    legacy_path = Path(entry["root"]) / "problem.json"
+    legacy_path.write_text(json.dumps(legacy))
+    entry["files_sha256"]["problem.json"] = hashlib.sha256(legacy_path.read_bytes()).hexdigest()
+    native_revision = photo_pile_tasks.retask_scene(entry, tmp_path / "native_revision")
+    assert native_revision["scene_family_id"] == entry["scene_family_id"]
 
 
 def test_progression_rejects_twenty_repeat_and_unbounded_quota():

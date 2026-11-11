@@ -155,6 +155,8 @@ def retask_scene(entry: dict, output: Path, model_root: Path = MODEL_ROOT) -> di
     try:
         snapshot = json.loads((source / "integration_state.json").read_text())
         xml = (source / "model.xml").read_text()
+        if "provenance" not in scene:
+            scene["provenance"] = {"parent_scene_id": scene["scene_id"]}
         scene["provenance"]["parent_problem_sha256"] = entry["files_sha256"]["problem.json"]
         assign_task_starts(sim, scene, snapshot, xml)
         scene["generator_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
