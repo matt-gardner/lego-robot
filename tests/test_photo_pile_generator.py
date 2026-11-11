@@ -353,6 +353,10 @@ def test_direct_assistance_links_parent_without_a_trajectory(photo_source, tmp_p
         assert task["assistance"]["kind"] == pile_task_assistance.PROFILE
         assert max(task["assistance"]["physical_predicates"]["jaw_normal_forces_n"].values(),
                    default=0.) < 1.
+        if task["task_type"] == "push" and distance["active_stage"] == "push":
+            physical = task["assistance"]["physical_predicates"]
+            assert physical["table_supported"]
+            assert abs(physical["pushing_contact_gap_m"]) <= physical["pushing_contact_tolerance_m"]
         problem = load_problem(result, task["task_id"])
         sim = create_simulation(problem)
         try:

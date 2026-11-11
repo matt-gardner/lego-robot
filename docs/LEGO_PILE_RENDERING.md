@@ -163,12 +163,13 @@ Holding starts relocate the target into the robot's jaws and require measured
 bilateral loaded contact without table support. PLACE explicitly initializes
 `initial_task_state.lifted_once`; reset verifies its construction provenance
 and current holding predicate rather than claiming a historical lift.
-PUSH starts relocate the piece next to a contacting robot on the table; these
-are contact-ready states, not a claim of ongoing motion.
+PUSH starts relocate the piece next to a contacting robot on the table,
+with a measured geometric jaw gap within 0.1 mm. They do not require artificial
+initial compression: these are contact-ready states, not a claim of ongoing motion.
 Invalid, already-successful or duplicate states are not admitted. Every child
 must replay its full reset exactly before atomic publication. Failed grasp
 constructions remain unavailable, never metadata-only holding claims.
-Version 2 sums positive contact-normal forces per jaw and caps construction
+Version 2 sums positive target-contact normal forces per jaw and caps construction
 preload at 1 N per jaw. This is a conservative initialization-quality bound,
 not a hardware rating or a sustained-grasp demonstration. The earlier v1 pilot
 is historical and not qualified for training intake: some shapes produced

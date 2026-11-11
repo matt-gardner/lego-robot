@@ -103,6 +103,15 @@ def _finite_contacts(sim):
     )
 
 
+def _pushing_contact_gap(sim, target):
+    bodies = {sim.model.body(name).id for name in ("gripper", "moving_jaw_so101_v1")}
+    collidable = (sim.model.geom_contype != 0) | (sim.model.geom_conaffinity != 0)
+    jaws = np.flatnonzero(np.isin(sim.model.geom_bodyid, list(bodies)) & collidable)
+    pieces = np.flatnonzero((sim.model.geom_bodyid == sim.model.body(target).id) & collidable)
+    return min(mujoco.mj_geomDistance(sim.model, sim.data, int(jaw), int(piece), .05, None)
+               for jaw in jaws for piece in pieces)
+
+
 def _view_outside_goal(sim, target, goal):
     camera = sim.model.camera("wrist_cam").id
     points = []
@@ -257,8 +266,7 @@ def construct_state(sim, problem: dict, stage: str, fraction: float) -> tuple[di
             sim.data.qpos[q + 2] -= separation_to_table + .000005
             mujoco.mj_forward(sim.model, sim.data)
             measured = target_contact_state(sim.native, target)
-            if (measured["jaw_normal_forces_n"] and measured["table_supported"] and _finite_contacts(sim)
-                    and max(measured["jaw_normal_forces_n"].values()) <= MAXIMUM_ASSISTANCE_PRELOAD_N):
+            if measured["jaw_normal_forces_n"] and measured["table_supported"] and _finite_contacts(sim):
                 contact_position = sim.position(target)
                 away = np.r_[direction, 0.]
                 for clearance in (.001, .003, .006, .012):
@@ -276,11 +284,12 @@ def construct_state(sim, problem: dict, stage: str, fraction: float) -> tuple[di
                         touching = middle
                     else:
                         clear = middle
-                _put_target(sim, target, contact_position + away * touching)
+                _put_target(sim, target, contact_position + away * clear)
                 measured = target_contact_state(sim.native, target)
-                if max(measured["jaw_normal_forces_n"].values(), default=0.) > MAXIMUM_ASSISTANCE_PRELOAD_N:
-                    raise ValueError("Constructed state exceeds the 1N per-jaw construction preload cap")
-                if measured["jaw_normal_forces_n"] and measured["table_supported"] and _finite_contacts(sim):
+                gap = _pushing_contact_gap(sim, target)
+                if (measured["table_supported"] and _finite_contacts(sim)
+                        and -.0001 <= gap <= .0001
+                        and max(measured["jaw_normal_forces_n"].values(), default=0.) <= MAXIMUM_ASSISTANCE_PRELOAD_N):
                     break
         else:
             raise ValueError("No valid directly constructed pushing-contact state")
@@ -300,6 +309,11 @@ def construct_state(sim, problem: dict, stage: str, fraction: float) -> tuple[di
         if task_predicate(sim.native, problem):
             raise ValueError("Constructed state already satisfies the parent goal")
     measured = target_contact_state(sim.native, target)
+    if max(measured["jaw_normal_forces_n"].values(), default=0.) > MAXIMUM_ASSISTANCE_PRELOAD_N:
+        raise ValueError("Constructed state exceeds the 1N per-jaw construction preload cap")
+    if kind == "push" and stage == "push":
+        measured["pushing_contact_gap_m"] = _pushing_contact_gap(sim, target)
+        measured["pushing_contact_tolerance_m"] = .0001
     return distance_label(kind, stage, value, metric, units), {
         "initial_task_state": progress, "physical_predicates": measured,
         "target_position_m": sim.position(target).tolist(),
