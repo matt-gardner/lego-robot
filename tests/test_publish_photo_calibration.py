@@ -107,6 +107,10 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
     assert snapshot["calibration"]["protocol"]["assistance_decisions"] == value["assistance_decisions"]
     assert snapshot["manifest"]["progress"]["policy_rollouts"] == 4
     assert snapshot["manifest"]["progress"]["reference_attempts"] == 1
+    row["planned_attempts"] = 8
+    measurements.write_text(json.dumps(value))
+    publish(pool, reference, output, measurements)
+    assert BucketDashboard(output).snapshot()["calibration"]["groups"][0]["planned_attempts"] == 8
     previous_pointer = (output / "current.json").read_bytes()
     row["policy_step"] = 1
     measurements.write_text(json.dumps(value))

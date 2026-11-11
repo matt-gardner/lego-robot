@@ -1026,18 +1026,21 @@ steps. Results explicitly record their horizon and screening scope; do not pool
 short-horizon screening with full-horizon measurements or treat it as proof that
 a task cannot succeed later. Explicit plans without `--calibrate-assistance`
 can measure assisted levels first.
-`--binary-search` measures the 0.95 assistance ceiling first, then bisects each
-problem's assistance interval toward 25--75% success, with up to `--search-rounds`
-measurements per problem. Failure at the measured ceiling is reported as an
+`--binary-search` measures the 0.95 assistance ceiling first, using four total
+rollouts per level (`--repeats 4`, the default). Four failures increase assistance;
+four successes decrease it immediately. Mixed outcomes trigger exactly four more
+rollouts at the same level to refine the estimate, then stop that problem's search.
+There are at most `--search-rounds` levels per problem. Failure at the measured ceiling is reported as an
 unresolved assistance bracket, never task infeasibility. `--resume` retains
 completed and partial samples only when the initial policy, input hashes,
 horizon, repeat count, batch size and paired seeds match.
 Shared calibration publications retain the search strategy and per-problem
 assistance decisions alongside the measured rollout counts.
-`--calibrate-assistance` stops additional levels for a problem after 16 or more
-repeats show 25--75% success, or all pass without assistance. Unmeasured levels
+`--calibrate-assistance` uses the same four-plus-four rule on its explicit level
+plan, stopping after mixed outcomes or four passes without assistance. Unmeasured levels
 remain explicitly unmeasured, and all-pass problems are marked too easy, not
-qualified training targets. Use 32 repeats to refine uncertain estimates.
+qualified training targets. Shared counts distinguish four-trial screens from
+eight-trial mixed-outcome estimates.
 
 Generate reference overlays with `python -m so101.collect_pile_references
 --pool <immutable-pool.json> --model-root <model> --output <fresh-directory>`.

@@ -50,7 +50,8 @@ def test_binary_search_bisects_measured_bounds_and_stops_at_mixed_outcomes():
     )
 
 
-def test_short_horizon_is_used_and_explicitly_labeled(tmp_path, monkeypatch):
+@pytest.fixture
+def probe_setup(tmp_path, monkeypatch):
     source = str(tmp_path / "episode")
     plan, split, output = (tmp_path / name for name in ("plan.json", "split.json", "results.json"))
     plan.write_text(json.dumps([{"task": "grasp", "source": source, "assistance": .95}]))
@@ -78,12 +79,18 @@ def test_short_horizon_is_used_and_explicitly_labeled(tmp_path, monkeypatch):
         plan=plan, split=split, output=output, collection=tmp_path, checkpoint=tmp_path,
         training_output=tmp_path, model_root=tmp_path, native_pool=None, native_references=None,
         calibrate_assistance=False, native_only=True, initial_only=True,
-        repeats=16, batch_rollouts=1, seed=100, horizon=50,
+        repeats=4, batch_rollouts=1, seed=100, horizon=50,
         binary_search=False, search_rounds=2, resume=False,
     )
+    return args, horizons
+
+
+def test_short_horizon_is_used_and_explicitly_labeled(probe_setup):
+    args, horizons = probe_setup
+    output = args.output
     probe(args)
     result = json.loads(output.read_text())
-    assert horizons == [50] * 16
+    assert horizons == [50] * 4
     assert result["horizon"] == 50
     assert result["measurement_scope"] == "short-horizon-screening"
     assert result["policy_sha256_before"] == result["policy_sha256_after"] == "unchanged"
@@ -92,11 +99,46 @@ def test_short_horizon_is_used_and_explicitly_labeled(tmp_path, monkeypatch):
     args.binary_search, args.resume = True, True
     probe(args)
     resumed = json.loads(output.read_text())
-    assert len(horizons) == 32
-    assert [(group["assistance"], group["total"]) for group in resumed["groups"]] == [(.95, 16), (.475, 16)]
+    assert len(horizons) == 8
+    assert [(group["assistance"], group["total"]) for group in resumed["groups"]] == [(.95, 4), (.475, 4)]
     assert resumed["search_strategy"] == "binary-search"
     resumed["complete"] = False
     output.write_text(json.dumps(resumed))
     args.horizon = 51
     with pytest.raises(ValueError, match="horizon"):
         probe(args)
+
+
+@pytest.mark.parametrize("fail_at_ceiling", [False, True])
+def test_binary_screen_switches_after_four_and_only_confirms_mixed_levels(
+        probe_setup, monkeypatch, fail_at_ceiling):
+    args, _ = probe_setup
+    args.binary_search, args.batch_rollouts, args.search_rounds = True, 4, 6
+    calls = []
+
+    def sample(sims, controller, episode, seeds, horizon, action_steps, bounds,
+               assistance, *rest, **kwargs):
+        calls.append((assistance, list(seeds)))
+        assert len(seeds) == 4 and horizon == 50
+        if assistance == .95:
+            return [not fail_at_ceiling] * 4
+        if assistance == .475:
+            return [False] * 4
+        return [True, False, False, False]
+
+    monkeypatch.setattr(module, "rollout_group", sample)
+    monkeypatch.setattr(module, "serialized_trajectory", lambda success: {"success": success})
+    probe(args)
+    result = json.loads(args.output.read_text())
+    if fail_at_ceiling:
+        assert calls == [(.95, [100, 101, 102, 103])]
+        assert result["groups"][0]["total"] == 4
+    else:
+        assert [level for level, _ in calls] == pytest.approx([.95, .475, .7125, .7125])
+        assert [seeds for _, seeds in calls] == [[100, 101, 102, 103]] * 3 + [[104, 105, 106, 107]]
+        assert [group["total"] for group in result["groups"]] == [4, 4, 8]
+        assert [group["planned_attempts"] for group in result["groups"]] == [4, 4, 8]
+        decision = next(iter(result["assistance_decisions"].values()))
+        assert (decision["successes"], decision["total"], decision["status"]) == (
+            2, 8, "measured-mixed-outcomes",
+        )

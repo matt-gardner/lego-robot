@@ -32,7 +32,7 @@ def success_interval(successes, total):
 def binary_assistance_step(state, assistance, successes, total, max_rounds):
     state["rounds"] += 1
     rate = successes / total
-    if .25 <= rate <= .75:
+    if 0 < successes < total:
         return None, "measured-mixed-outcomes"
     if rate < .25:
         state["lower"] = max(state["lower"], assistance)
@@ -100,8 +100,14 @@ def probe(args):
         if ("native_entry" in episode.metadata and row["assistance"] != 0
                 and "native_reference" not in episode.metadata):
             raise ValueError("Native assistance requires a replay-qualified reference")
-    if args.repeats < 16:
-        raise ValueError("Difficulty probes require at least 16 repeated rollouts")
+    adaptive_screening = args.binary_search or args.calibrate_assistance
+    if args.repeats < 1:
+        raise ValueError("Difficulty probes require a positive rollout count")
+    if adaptive_screening and args.repeats != 4:
+        raise ValueError("Assistance screening requires four initial rollouts per level")
+    if adaptive_screening and args.batch_rollouts > 4:
+        raise ValueError("Assistance screening batches cannot exceed four rollouts")
+    maximum_rollouts = args.repeats * 2 if adaptive_screening else args.repeats
     if args.batch_rollouts < 1:
         raise ValueError("Inference batch must contain at least one rollout")
     if args.horizon <= 0:
@@ -142,6 +148,7 @@ def probe(args):
         result["assistance_decisions"] = {}
         result["unmeasured_levels"] = []
     result["search_strategy"] = "binary-search" if args.binary_search else "explicit-plan"
+    result["mixed_confirmation_rollouts"] = 4 if adaptive_screening else 0
     atomic_json(args.output, result)
     sources = list(dict.fromkeys(row["source"] for row in plan))
     if args.binary_search:
@@ -183,7 +190,7 @@ def probe(args):
                 **row, "policy_step": policy_step, "initial_checkpoint": str(args.checkpoint), "rollouts": [],
             }
             observations = group["rollouts"]
-            if (group["policy_step"] != policy_step or len(observations) > args.repeats
+            if (group["policy_step"] != policy_step or len(observations) > maximum_rollouts
                     or [item["seed"] for item in observations] != [
                         args.seed + sources.index(row["source"]) * 10000 + repeat
                         for repeat in range(len(observations))
@@ -195,9 +202,13 @@ def probe(args):
             bounds = dict(split["expert_bounds"][row["task"]])
             if "native_reference" in episode.metadata:
                 bounds["optimal_steps"] = len(load_reference_rows(episode))
-            for start in range(len(observations), args.repeats, args.batch_rollouts):
+            for start in range(len(observations), maximum_rollouts, args.batch_rollouts):
+                if (adaptive_screening and len(observations) >= args.repeats
+                        and (all(item["success"] for item in observations)
+                             or not any(item["success"] for item in observations))):
+                    break
                 seeds = [args.seed + sources.index(row["source"]) * 10000 + repeat
-                         for repeat in range(start, min(start + args.batch_rollouts, args.repeats))]
+                         for repeat in range(start, min(start + args.batch_rollouts, maximum_rollouts))]
                 trajectories = (
                     [rollout(sims[0], controller, episode, seeds[0], args.horizon, 16,
                              bounds, False, row["assistance"], .1)]
@@ -210,6 +221,10 @@ def probe(args):
                 successes = sum(bool(item["success"]) for item in observations)
                 group.update(successes=successes, total=len(observations),
                              success_interval_95=success_interval(successes, len(observations)))
+                group["planned_attempts"] = (
+                    maximum_rollouts if adaptive_screening and 0 < successes < len(observations)
+                    and len(observations) >= args.repeats else args.repeats
+                )
                 atomic_json(args.output, result)
                 print(json.dumps({"event": "difficulty_probe", "source": row["source"],
                                   "policy_step": policy_step, "assistance": row["assistance"],
@@ -232,8 +247,8 @@ def probe(args):
             if args.calibrate_assistance:
                 status = (
                     "too-easy-without-assistance" if row["assistance"] == 0
-                    and group["successes"] == args.repeats else
-                    "measured-mixed-outcomes" if .25 <= group["successes"] / args.repeats <= .75
+                    and group["successes"] == group["total"] else
+                    "measured-mixed-outcomes" if 0 < group["successes"] < group["total"]
                     else None
                 )
                 if status is not None:
@@ -275,13 +290,14 @@ def main():
                         help="Always use the initial policy; ignore rolling training checkpoints")
     parser.add_argument("--calibrate-assistance", action="store_true",
                         help="Stop further levels for each problem after measured mixed outcomes")
-    parser.add_argument("--repeats", type=int, default=16)
+    parser.add_argument("--repeats", type=int, default=4,
+                        help="Initial rollouts per level; adaptive screening confirms mixed outcomes with four more")
     parser.add_argument("--batch-rollouts", type=int, choices=(1, 2, 4, 8), default=1)
     parser.add_argument("--seed", type=int, default=2551000)
     parser.add_argument("--horizon", type=int, default=300,
                         help="Maximum policy steps; shorter runs are screening, not full-horizon qualification")
     parser.add_argument("--binary-search", action="store_true",
-                        help="Measure the maximum assistance first, then bisect toward 25--75%% success")
+                        help="Screen four rollouts per level, bisect unanimous outcomes, confirm mixed levels with four more")
     parser.add_argument("--search-rounds", type=int, default=6)
     parser.add_argument("--resume", action="store_true",
                         help="Continue matching initial-policy measurements without repeating completed samples")
