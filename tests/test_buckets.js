@@ -88,4 +88,12 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   measured.listeners.click();
   assert.equal(elements.get("bucket").value,"b");
   assert.match(elements.get("count").textContent,/1 matching problems/);
+  payload.manifest.progress={phase:"expert_reference_qualification",reference_attempts:35,
+    reference_accepted:17,policy_calibration_status:"pending",policy_rollouts:0};
+  payload.calibration.groups=[];
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
+    {document,fetch:async()=>({ok:true,json:async()=>payload}),console});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(elements.get("status").textContent,/17 accepted \/ 35 attempts \(not model pass rate\)/);
+  assert.match(elements.get("status").textContent,/No policy pass rates measured yet/);
 });

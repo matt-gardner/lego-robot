@@ -84,6 +84,11 @@ async function start() {
     const buckets=(data.problems.buckets || []).filter(b=>!b.id.startsWith("corpus:"));
     const pilot=data.calibration.qualification_status !== "qualified";
     status.textContent=`${pilot ? "SCREENING ONLY — not calibrated qualification" : "Measurement status: "+(data.calibration.qualification_status || "Unqualified / unspecified")}. ${problems.length} published problems. ${data.calibration.complete ? "Measurement plan complete" : "Measurements in progress"}.`;
+    const progress=data.manifest.progress;
+    if (progress) {
+      status.textContent=`${problems.length} published problems. Phase: ${progress.phase || "unknown"}. Expert references: ${progress.reference_accepted ?? "unknown"} accepted / ${progress.reference_attempts ?? "unknown"} attempts (not model pass rate). Policy calibration: ${progress.policy_calibration_status || "unknown"}; ${progress.policy_rollouts ?? "unknown"} policy rollouts.`;
+      if (progress.policy_rollouts===0) status.textContent+=" No policy pass rates measured yet.";
+    }
     document.getElementById("provenance").textContent=JSON.stringify({manifest:data.manifest,protocol:data.calibration.protocol},null,2);
     const sourcePath=s=>typeof s==="object" ? s?.path : s;
     const groupFor=p=>groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index);

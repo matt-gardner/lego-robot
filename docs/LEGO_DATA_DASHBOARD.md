@@ -55,6 +55,13 @@ Click a pile card to reveal target tasks, labeled by action, object number and
 dimensions when available. Technical identities remain in provenance, not card
 headings. Task details expand to measurements and provenance.
 
+An optional top-level `progress` object distinguishes expert qualification from
+policy measurements: `phase`, `reference_attempts`, `reference_accepted`,
+`policy_calibration_status`, `policy_rollouts`, `pool_sha256`. The page labels
+reference acceptance as **not model pass rate** and zero policy rollouts as no
+policy rates measured yet. A new pool publishes its own population/protocol and
+empty groups until measured, never recycled old-pool screening outcomes.
+
 Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
 browsing, feedback and activation, not collection or part qualification.
 
