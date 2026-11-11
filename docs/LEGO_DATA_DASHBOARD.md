@@ -1,16 +1,42 @@
 # Workstream 2: Interactive catalog and curriculum dashboard
 
-## Data buckets publication (schema 1)
+## Live data buckets (schema 1)
 
 The read-only `/buckets` page reads `--bucket-dashboard-root`, defaulting to
-`data/bucket_dashboard` beside the configured outputs root. The current producer
-publication uses
+`data/bucket_dashboard` beside the configured outputs root. Shared data uses
 `outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/bucket_dashboard`
 in the shared data workspace (writable by the producer without permissions changes).
-Trainer owns calibration and INITIAL renders; generator owns native
-problem identities/tags. `current.json` atomically publishes
+The dashboard composes ordinary producer files on every API/image read.
+No renderer or generator session needs to run a dashboard publisher.
+The renderer writes atomic completed per-task receipts and assets under
+`initial-photo-external-v1/<pool SHA>/`; `_roles-v1/<task>.json` takes precedence
+over that task's original receipt. The reader validates pool, canonical source,
+scene hash, target, reset invariants, annotations and image hashes, then serves
+the original asset without copying it. A metrics callback replacing a legacy
+snapshot cannot erase these images.
+
+`live-metrics/<scope>/results.json` contains the live inference result file.
+It is joined only to its exact `input_sha256.native_pool`; horizon and scope
+are explicit. Its groups replace the legacy current metrics rather than mixing
+50-step screening with archived 300-step outcomes. Multiple current result
+files for the same pool fail explicitly instead of combining protocols.
+Actual transport of remote result bytes is separate from dashboard publishing.
+
+`--bucket-curriculum-root` defaults to the existing read-only
+`/mnt/data/lego-curriculum` mount. The generator's atomic
+`current-task-pools.json` (`kind: lego-current-task-pools`, `schema_version: 1`,
+`pools: [{manifest_path,sha256,scenes,task_count,piece_counts}]`) selects current
+complete TRAIN pools directly. Paths under the canonical producer prefix
+`/mnt/dockyard/lego-robot-data/data/lego_curriculum` are mapped into that mount,
+without changing canonical task identities. Missing matching images remain
+unrendered, never substituted from a previous task/reset. Pool hashes, scene
+problem hashes and population counts are checked. No recursive search or mtime
+guessing selects historical/subset pools.
+
+Until that generator selection exists, old inventories remain readable via
+the compatibility snapshot format. `current.json` points to
 `{"path":"snapshots/<id>/manifest.json","sha256":"<manifest bytes SHA256>"}`.
-Write immutable snapshot assets before replacing this pointer.
+These legacy snapshots are not required for new generator or renderer updates.
 The manifest has `kind: lego-data-buckets`, `schema_version: 1`,
 `generated_at`, `measurement_status` (screening/calibrating/qualified),
 `provenance` (generator/source/grader/protocol hashes), `protocol`, `buckets`,
@@ -24,7 +50,7 @@ hash, split, native scene/task IDs where applicable, tags, provenance,
 physical qualification, visibility/reach and images are explicitly unmeasured.
 Image entries contain snapshot-relative `path`, byte `sha256`, `camera`, actual
 `width/height` and renderer/protocol provenance; PNG/JPEG only, no upscaling claim.
-Images are hash-checked and served only through exact published problem identity.
+Images are hash-checked and served only through exact selected problem identity.
 
 Groups join by `problem_id`; legacy raw groups may join the exact
 bucket/task/source/problem_index tuple. Preserve assistance, attempts (rollouts),
@@ -66,6 +92,7 @@ Independent datasets publish `publications/<dataset>/current.json` in the same
 shared root, each pointing to a root-relative hash-pinned snapshot. The dashboard
 automatically discovers these pointers on every API read, retains all datasets
 and their protocol/progress, and joins measurements only to exact problem IDs.
+This is the legacy inventory fallback, superseded by `current-task-pools.json`.
 Duplicate problem identities fail explicitly rather than mixing datasets.
 Root `current.json` remains a compatibility fallback only when no dataset pointers
 exist. The browser refreshes publications every 20 seconds unless a pile modal is

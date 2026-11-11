@@ -79,6 +79,115 @@ def test_auto_discovers_independent_publications_and_preserves_images(tmp_path):
     assert len(browser.snapshot()["manifest"]["datasets"]) == 2
 
 
+def test_live_renderer_files_survive_base_publication_replacement(tmp_path):
+    source = "/scenes/tasks/push"
+    identity = hashlib.sha256(source.encode()).hexdigest()
+    pool = "a" * 64
+    manifest = {
+        "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "base",
+        "provenance": {"native_pool_sha256": pool},
+        "problems": [{"id": identity, "task": "push",
+                      "source": {"episode_source": source, "sha256": "scene"},
+                      "tags": {"target_instance_id": "brick_0"}}], "groups": [],
+    }
+    directory = publish(tmp_path, manifest)
+    receipts = tmp_path / "initial-photo-external-v1" / pool
+    receipts.mkdir(parents=True)
+    image = b"\x89PNG\r\n\x1a\nlive"
+    (receipts / "image.png").write_bytes(image)
+    row = {
+        "problem_id": identity, "pool_sha256": pool, "episode_source": source,
+        "scene_files_sha256": {"problem.json": "scene"}, "target_instance_id": "brick_0",
+        "physics_unchanged": True, "assistance": 0, "is_gpu_policy_frame": False,
+        "camera": "external", "backend": "mitsuba-llvm_ad_rgb", "width": 10, "height": 10,
+        "image_file": "image.png", "sha256": hashlib.sha256(image).hexdigest(),
+        "target_bbox_status": "visible", "target_bbox_xyxy": [1, 1, 3, 3], "target_visible_pixels": 4,
+    }
+    receipt = receipts / f"{identity}.json"
+    receipt.write_text(json.dumps(row))
+    browser = BucketDashboard(tmp_path)
+    first = browser.snapshot()["manifest"]["snapshot_id"]
+    assert browser.image(identity, 0, first) == (image, "image/png")
+    # A legacy callback may replace base data, but cannot erase live renderer files.
+    manifest["snapshot_id"] = "next"
+    body = json.dumps(manifest).encode()
+    (directory / "manifest.json").write_bytes(body)
+    (tmp_path / "current.json").write_text(json.dumps({
+        "path": "snapshots/one/manifest.json", "sha256": hashlib.sha256(body).hexdigest(),
+    }))
+    second = browser.snapshot()["manifest"]["snapshot_id"]
+    assert first != second
+    assert browser.image(identity, 0, second) == (image, "image/png")
+    row["scene_files_sha256"]["problem.json"] = "wrong-state"
+    receipt.write_text(json.dumps(row))
+    with pytest.raises(ValueError, match="selected initial task"):
+        browser.snapshot()
+
+
+def test_live_metrics_replace_old_protocol_without_publication(tmp_path):
+    pool = "a" * 64
+    publish(tmp_path, {
+        "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "base",
+        "provenance": {"native_pool_sha256": pool},
+        "problems": [{"id": "p", "task": "push", "source": {"episode_source": "task"}}],
+        "groups": [{"problem_id": "p", "attempts": 10, "successes": 8}],
+    })
+    path = tmp_path / "live-metrics" / "short" / "results.json"
+    path.parent.mkdir(parents=True)
+    row = {
+        "input_sha256": {"native_pool": pool}, "optimizer": None, "policy_sha256_before": "policy",
+        "horizon": 50, "measurement_scope": "short-horizon-screening", "complete": False,
+        "groups": [{"source": "task", "task": "push", "policy_step": 0, "assistance": .95,
+                    "rollouts": [{"success": False, "invalid_action_error": None}]}],
+    }
+    path.write_text(json.dumps(row))
+    browser = BucketDashboard(tmp_path)
+    snapshot = browser.snapshot()
+    assert len(snapshot["calibration"]["groups"]) == 1
+    assert snapshot["calibration"]["groups"][0]["successes"] == 0
+    assert snapshot["calibration"]["protocol"]["horizon"] == 50
+    row["groups"][0]["rollouts"].append({"success": True, "invalid_action_error": None})
+    path.write_text(json.dumps(row))
+    assert browser.snapshot()["calibration"]["groups"][0]["attempts"] == 2
+    assert browser.snapshot()["manifest"]["snapshot_id"] != snapshot["manifest"]["snapshot_id"]
+
+
+def test_current_generator_selection_is_read_live_without_bucket_publication(tmp_path):
+    curriculum = tmp_path / "curriculum"
+    scene_root = curriculum / "scene"
+    scene_root.mkdir(parents=True)
+    scene = {"scene_id": "scene", "tags": {"piece_count": 20}, "tasks": [
+        {"task_id": "push", "task_type": "push", "target_instance_id": "brick_0", "goal": {}},
+    ]}
+    scene_bytes = json.dumps(scene).encode()
+    (scene_root / "problem.json").write_bytes(scene_bytes)
+    pool = {"kind": "lego-pile-task-pool", "status": "complete", "scenes": [
+        {"root": str(scene_root), "split": "train",
+         "files_sha256": {"problem.json": hashlib.sha256(scene_bytes).hexdigest()}},
+    ]}
+    pool_bytes = json.dumps(pool).encode()
+    (curriculum / "pool.json").write_bytes(pool_bytes)
+    descriptor = {"schema_version": 1, "kind": "lego-current-task-pools", "pools": [
+        {"manifest_path": str(curriculum / "pool.json"), "sha256": hashlib.sha256(pool_bytes).hexdigest(),
+         "task_count": 1, "scenes": 1},
+    ]}
+    current = curriculum / "current-task-pools.json"
+    current.write_text(json.dumps(descriptor))
+    browser = BucketDashboard(tmp_path / "dashboard", curriculum)
+    snapshot = browser.snapshot()
+    assert len(snapshot["problems"]["problems"]) == 1
+    assert snapshot["problems"]["problems"][0]["source"]["task_id"] == "push"
+    assert snapshot["calibration"]["groups"] == []
+    descriptor["pools"][0]["sha256"] = "wrong"
+    current.write_text(json.dumps(descriptor))
+    with pytest.raises(ValueError, match="hash mismatch"):
+        browser.snapshot()
+    descriptor["pools"][0]["manifest_path"] = "/etc/passwd"
+    current.write_text(json.dumps(descriptor))
+    with pytest.raises(ValueError, match="escapes"):
+        browser.snapshot()
+
+
 def test_prefixed_http_page_missing_publication_and_exact_image(tmp_path):
     from so101.rl_dashboard import make_server
 

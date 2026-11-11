@@ -152,7 +152,8 @@ async function start() {
       status.textContent=`${problems.length} problems across ${data.manifest.datasets.length} published datasets. `+
         data.manifest.datasets.map(d=>{
           const p=d.progress;
-          return p ? `${d.label || d.dataset_id || "Dataset"}: policy ${p.policy_calibration_status}; ${p.policy_rollouts} rollouts; expert references ${p.reference_accepted}/${p.reference_attempts} (not model pass rate)` :
+          const protocol=d.protocol?.horizon ? ` (${d.protocol.horizon}-step ${d.protocol.measurement_scope || "screening"})` : "";
+          return p ? `${d.label || d.dataset_id || "Dataset"}${protocol}: policy ${p.policy_calibration_status}; ${p.policy_rollouts} rollouts; expert references ${p.reference_accepted ?? "unmeasured"}/${p.reference_attempts ?? "unmeasured"} (not model pass rate)` :
             `${d.label || d.dataset_id || "Dataset"}: ${d.measurement_status || "unmeasured"}`;
         }).join(". ");
     }
