@@ -87,6 +87,40 @@ The source's historical `catalog-demo` labels are retained, not invented part
 identities. Saved models/states are renderable by the appearance command above;
 generation itself does not produce a photograph or establish RL/SFT acceptance.
 
+### Robot tasks and capped progression
+
+`python -m so101.photo_pile_tasks --source-root <saved-photo-pool> --root
+<new-task-pool> --pieces 20 --scenes 10` selects ten distinct saved model
+identities and integrates them with the SO101 robot and visible destination
+markers. Original object poses are translated onto the robot workspace table,
+then the full scene is dynamically settled with the photo-demo physics.
+Sources that fail this additional settling are recorded and skipped. Original
+pile files are never modified. The new receipts bind source hashes and the
+translation explicitly.
+
+Each admitted scene has four tasks per target (view, grasp, push, place),
+persistent body/geometry identities, the existing task predicates, and an exact
+robot reset. Published pools use the existing `pile_pool`/`rl_pile_adapter`
+contract, with the photo collision profile explicit in scene tags/provenance.
+Task solvability and initial visibility remain unmeasured; emitting task goals
+is not demonstrating successful policy execution. These pools have no expert
+references and cannot support nonzero gold-prefix assistance until genuine
+successful references are generated and the trainer's replay contract supports
+them. They are not paired SFT recordings.
+
+After handing the ten-scene 20-piece pool to the trainer, use
+`python -m so101.photo_pile_curriculum --source <original-photo-demo> --root
+<new-curriculum-root>` for **30, 40, 60 and 90 pieces**, in that order. Each
+stage stops accepting after ten robot-integrated task scenes; it does not
+replenish the 20-piece bucket. Piece count is a structural difficulty
+progression, not a measured policy-success ordering. Trainer probing supplies
+the latter. Each stage has at most 100 proposals; failure to reach quota
+publishes the partial pool and an explicit blocked status rather than silently
+generating forever or skipping to another size. `pieces-N/handoff.json` binds
+each stage's immutable manifest/checksum, count and quota. The same STOP,
+idle-priority and resource limits apply. New task roots stay separate from
+frozen measurement pools and historical datasets.
+
 ## Optional CPU path tracing
 
 `so101.pathtrace_pile` consumes a pinned `scene.json` world-space PLY

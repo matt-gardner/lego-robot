@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 import threading
 
 import mujoco
@@ -7,6 +8,12 @@ import numpy as np
 import pytest
 
 from so101 import photo_pile_generator as generator
+from so101 import photo_pile_tasks
+from so101 import photo_pile_curriculum
+from so101.photo_pile_curriculum import validate_stages
+from so101.pile_pool import publish_pool
+from so101.pile_task_runtime import create_simulation, load_problem, reset_problem, task_predicate
+from so101.rl_pile_adapter import load_native_pool
 
 
 @pytest.fixture
@@ -84,3 +91,70 @@ def test_rejections_resume_and_stop_preserve_attempts(photo_source, tmp_path, mo
     assert json.loads((root / "status.json").read_text())["status"] == "stopped"
     with pytest.raises(ValueError, match="different generator"):
         generator.run(root, photo_source, seed=11, count=21, attempts=1)
+
+
+def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
+    source = tmp_path / "fresh"
+    generator.generate_scene(photo_source, source, count=20, seed=20261111)
+    root = tmp_path / "tasks"
+    root.mkdir()
+    entry = photo_pile_tasks.build_problem(source, root / "scene_000000000")
+    scene = json.loads((root / "scene_000000000" / "problem.json").read_text())
+    assert len(scene["tasks"]) == 80
+    assert len({task["target_instance_id"] for task in scene["tasks"]}) == 20
+    assert scene["provenance"]["receipt_sha256"] == hashlib.sha256(
+        (source / "receipt.json").read_bytes()).hexdigest()
+    manifest = publish_pool(root)
+    episodes = load_native_pool(Path(manifest["manifest_path"]), set())
+    assert {kind: len(values) for kind, values in episodes.items()} == {
+        "view": 20, "grasp": 20, "push": 20, "place": 20,
+    }
+    task = next(task for task in scene["tasks"] if task["task_type"] == "grasp")
+    problem = load_problem(entry, task["task_id"])
+    sim = create_simulation(problem)
+    try:
+        original = sim.data.qpos.copy()
+        assert not task_predicate(sim, problem)
+        sim.data.qpos[:] += .001
+        reset_problem(sim, problem)
+        assert np.array_equal(sim.data.qpos, original)
+    finally:
+        sim.close()
+    assert photo_pile_tasks.build_problem(source, root / "scene_000000000") == entry
+
+
+def test_progression_rejects_twenty_repeat_and_unbounded_quota():
+    validate_stages((30, 40, 60, 90), 10, 100)
+    for stages in ((20, 30), (40, 30), (30, 30), (30, 100), ()):
+        with pytest.raises(ValueError, match="Stages"):
+            validate_stages(stages, 10, 100)
+    with pytest.raises(ValueError, match="1..10"):
+        validate_stages((30, 40), 11, 100)
+
+
+def test_progression_caps_each_bucket_and_resumes(photo_source, tmp_path, monkeypatch):
+    generated = []
+    monkeypatch.setattr(photo_pile_curriculum, "resource_check", lambda root: None)
+
+    def generate(source, output, *, count, **kwargs):
+        generated.append(count)
+        output.mkdir()
+
+    def build(source, output, model_root):
+        output.mkdir()
+        (output / "admission.json").write_text("{}")
+        return {"root": str(output)}
+
+    def publish(root):
+        return {"scenes": len(list(root.glob("scene_*/admission.json"))),
+                "manifest_path": str(root / "pool.json"), "sha256": "test"}
+
+    monkeypatch.setattr(photo_pile_curriculum, "generate_scene", generate)
+    monkeypatch.setattr(photo_pile_curriculum, "build_problem", build)
+    monkeypatch.setattr(photo_pile_curriculum, "publish_pool", publish)
+    root = tmp_path / "curriculum"
+    photo_pile_curriculum.run(root, photo_source, stages=(30, 40), quota=2, maximum_attempts=3)
+    assert generated == [30, 30, 40, 40]
+    assert json.loads((root / "status.json").read_text())["status"] == "complete"
+    photo_pile_curriculum.run(root, photo_source, stages=(30, 40), quota=2, maximum_attempts=3)
+    assert generated == [30, 30, 40, 40]
