@@ -202,6 +202,18 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.equal(pilotSection.children[0].textContent,"Distance-assisted pilot · 1 child starts / 1 parent tasks");
   assert.equal(pilotSection.children[2].children[1].children[1].textContent,"release");
   assert.equal(pilotSection.children[2].children[1].children[4].textContent,"1/1 (100.0%)");
+  payload.distance_pilots[0].manifest.qualification_notices=[
+    {task:"place",status:"initial-predicate-already-true",message:"Some starts already satisfy the goal."},
+  ];
+  elements.clear();
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
+  await new Promise(resolve=>setImmediate(resolve));
+  const warned=elements.get("distance-pilots").children[0];
+  assert.equal(warned.open,true);
+  assert.match(warned.children[0].textContent,/qualification warning/);
+  assert.equal(warned.children[1].textContent,"place: Some starts already satisfy the goal.");
+  assert.equal(warned.children[3].children[1].children[4].children[0].textContent,"Some starts already satisfy the goal.");
   assert.equal(placePoint.fill,original);
   pushLegend.listeners.focus();
   assert.equal(pushPoint.r,6);

@@ -11,6 +11,9 @@ assistance zero does not mean an original unassisted physical start. Pilot
 groups never enter original bucket charts.
 An explicit `provenance.supersedes_native_pool_sha256` hides the overlapping
 predecessor pilot from the current view without deleting its historical files.
+Shared manifest `qualification_notices` (task/status/message/evidence hash and
+affected parent IDs) open the affected pilot view with a visible warning and
+annotate corresponding task results. Recorded counts remain unchanged.
 
 The read-only `/buckets` page reads `--bucket-dashboard-root`, defaulting to
 `data/bucket_dashboard` beside the configured outputs root. Shared data uses

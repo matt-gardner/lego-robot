@@ -274,6 +274,12 @@ async function start() {
     for(const pilot of data.distance_pilots || []) {
       const section=node("details");
       section.append(node("summary",`Distance-assisted pilot · ${pilot.child_count} child starts / ${pilot.parent_count} parent tasks`));
+      const notices=pilot.manifest.qualification_notices || [];
+      if(notices.length) {
+        section.children[0].textContent+=" · qualification warning";
+        section.open=true;
+        for(const notice of notices) section.append(node("p",`${notice.task || "Pilot"}: ${notice.message}`,"missing"));
+      }
       section.append(node("p","Physically assisted starts, not original unassisted trials. Expert-prefix percentage does not measure remaining task distance."));
       const table=node("table"),header=node("tr");
       for(const label of ["Task","Active stage","Remaining stages","Within-stage distance","Policy success","Horizon"])header.append(node("th",label));
@@ -290,6 +296,9 @@ async function start() {
           `${metric.metric}: ${metric.value} ${metric.units}`,
           attempts ? `${successes}/${attempts} (${(100*successes/attempts).toFixed(1)}%)` : "Unmeasured",
           horizons.length ? horizons.join(", ") : "Unmeasured"])row.append(node("td",value));
+        for(const notice of notices.filter(n=>!n.task||n.task===problem.task)) {
+          row.children[4].append(node("p",notice.message,"missing"));
+        }
         table.append(row);
       }
       section.append(table);
