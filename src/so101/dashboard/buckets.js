@@ -217,6 +217,29 @@ async function start() {
           pileSection.append(summary);
           grid.append(pileSection);
           const taskContent=node("div");
+          const stage=node("div",undefined,"task-stage"), controls=node("div",undefined,"carousel-controls");
+          const previous=node("button","Previous"), position=node("span"), next=node("button","Next");
+          const strip=node("div",undefined,"task-strip");
+          strip.setAttribute("aria-label","Choose task");
+          const slides=[], thumbnails=[];
+          let selected=0;
+          function selectTask(index) {
+            selected=(index+slides.length)%slides.length;
+            slides.forEach((slide,i)=>{slide.hidden=i!==selected;});
+            thumbnails.forEach((thumb,i)=>thumb.setAttribute("aria-pressed",String(i===selected)));
+            position.textContent=`Task ${selected+1} of ${slides.length}`;
+            thumbnails[selected]?.scrollIntoView?.({block:"nearest",inline:"nearest"});
+          }
+          previous.addEventListener("click",()=>selectTask(selected-1));
+          next.addEventListener("click",()=>selectTask(selected+1));
+          strip.addEventListener("keydown",event=>{
+            if(event.key==="ArrowRight" || event.key==="ArrowLeft") {
+              event.preventDefault();selectTask(selected+(event.key==="ArrowRight"?1:-1));
+              thumbnails[selected].focus();
+            }
+          });
+          controls.append(previous,position,next);
+          taskContent.append(stage,controls,strip);
           summary.addEventListener("click",()=>{
             const dialog=document.getElementById("pile-dialog");
             document.getElementById("pile-title").textContent=`${label} · Pile ${pileIndex+1} · ${pile.tasks.length} tasks`;
@@ -224,15 +247,24 @@ async function start() {
             dialog.showModal();
           });
           for (const p of pile.tasks) {
-        const card=node("details",undefined,"problem");
+        const card=node("article",undefined,"problem");
         const target=(p.tags?.target_instance_id || p.source?.task_id || "").match(/(?:object|brick)_(\d+)/);
         const dimensions=p.tags?.target?.part_dimensions_m;
         const targetLabel=target ? `Object ${Number(target[1])+1}` : "Target";
-        card.append(node("summary",`${p.task} · ${targetLabel}${dimensions ? " · "+dimensions.map(x=>(x*1000).toFixed(1)).join(" × ")+" mm" : ""}`));
+        const taskTitle=`${p.task} · ${targetLabel}${dimensions ? " · "+dimensions.map(x=>(x*1000).toFixed(1)).join(" × ")+" mm" : ""}`;
+        const thumb=node("button",undefined,"task-thumbnail");
+        thumb.type="button";thumb.setAttribute("aria-label",taskTitle);
+        const thumbnailImage=p.initial_images?.[0];
+        if(thumbnailImage) thumb.append(taskImage(p,thumbnailImage,0,p.dataset_snapshot_id || data.manifest.snapshot_id));
+        thumb.append(node("span",taskTitle));
+        const slideIndex=slides.length;
+        thumb.addEventListener("click",()=>selectTask(slideIndex));
+        thumbnails.push(thumb);strip.append(thumb);
         for (const [index,image] of (p.initial_images || []).entries()) {
           card.append(taskImage(p,image,index,p.dataset_snapshot_id || data.manifest.snapshot_id));
         }
         if (!p.initial_images?.length) card.append(node("p","Task image not published yet","missing"));
+        card.append(node("h3",taskTitle));
         card.append(node("p",`Feasibility: ${p.feasibility?.status || "unmeasured"}. Low policy success does not prove infeasibility or solvability.`));
         const measured=groupFor(p);
         stats(card,measured);
@@ -240,8 +272,9 @@ async function start() {
         card.append(node("p",`Observed unsuccessful rollouts: ${measured.length ? failures : "unmeasured"}. Feasibility vs policy failure attribution: ${p.failure_attribution_status || "unmeasured"}. Visibility / reach: ${p.tags?.visibility ?? "unmeasured"} / ${p.tags?.reach ?? "unmeasured"}.`));
         json(card,"Tags / provenance / measurement and failure evidence",p);
         json(card,"Raw measured groups (invalid actions, policy vs feasibility failures)",groupFor(p));
-        taskContent.append(card);
+        slides.push(card);stage.append(card);
           }
+          selectTask(0);
         }
         remaining=Math.max(0,remaining-group.piles.length);
       }

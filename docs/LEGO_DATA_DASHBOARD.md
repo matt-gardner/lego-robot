@@ -72,6 +72,10 @@ exist. The browser refreshes publications every 20 seconds unless a pile modal i
 open, preserving inspection; manual Refresh is also available.
 Pile cards open a native dialog with close/Escape/backdrop dismissal instead of
 expanding in the grid.
+The dialog presents one selected task with a large annotated image at the top
+and a horizontally scrolling strip of smaller task thumbnails below. Previous,
+Next, thumbnail clicks and arrow keys change the selection; task measurements
+and provenance remain attached to the selected task.
 
 Each task image can publish `target_bbox_xyxy` in image pixels
 `[xmin,ymin,xmax_exclusive,ymax_exclusive]`, `target_visible_pixels` and

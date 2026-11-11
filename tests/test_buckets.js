@@ -76,7 +76,11 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.equal(pileCard.children.length,1);
   pileCard.children[0].listeners.click();
   assert.equal(elements.get("pile-dialog").open,true);
-  assert.equal(elements.get("pile-tasks").children[0].children[0].className,"problem");
+  const carousel=elements.get("pile-tasks").children[0];
+  assert.equal(carousel.children[0].className,"task-stage");
+  assert.equal(carousel.children[0].children[0].hidden,false);
+  assert.equal(carousel.children[2].className,"task-strip");
+  assert.equal(carousel.children[2].children[0]["aria-pressed"],"true");
   const all=[];
   function collect(e){all.push(e);for(const child of e.children || [])collect(child);}
   collect(elements.get("problems"));
