@@ -1035,8 +1035,23 @@ grader succeeds at the end and maximum replay qpos error is at most 1e-7.
 Scripted IK failures and failed predicates are reported, not called infeasible.
 The completed overlay binds the original pool, scene files and action hashes;
 it never changes the producer's reference-free capabilities or immutable scenes.
-Before selecting training buckets, `python -m so101.calibrate_trajectory_rl`
-performs inference only on the final SFT checkpoint, with no optimizer.
+For task visualization, `python -m so101.capture_pile_task_images --pool <pool>
+--model-root <model> --output <fresh-directory> --camera external` captures a
+renderer-only external view of the actual unchanged reset. The default
+`--camera wrist_cam` instead captures CPU16spp wrist RGB. Both require a working
+MuJoCo GL context and bind per-target segmentation boxes to each image SHA.
+Boxes use exclusive pixel maxima; invisible targets have a null box and zero
+visible pixels. External visibility is not policy-wrist visibility or solvability.
+`python -m so101.publish_photo_calibration --pool <pool> --references <manifest>
+--output <dashboard-root> --images <external-directory> --images <wrist-directory>`
+publishes all admitted tasks, preparation progress, and ordered camera images.
+Add `--measurements <probe-results.json>` only for actual new-pile policy results.
+Reference acceptance never supplies model pass rates; historical groups/images
+are not merged into the new population.
+
+The historical `python -m so101.calibrate_trajectory_rl` screening command
+performs inference only on the final SFT checkpoint, with no optimizer; it is
+not the repeated new-photo assistance calibration described above.
 Supply `--checkpoint`, `--collection`, the existing frozen `--split`,
 `--native-pool`, `--model-root`, `--source-commit`, and a fresh `--output` JSON.
 It reuses five distinct TRAIN problems per bucket/task across assistance levels
