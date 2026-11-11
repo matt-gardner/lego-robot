@@ -313,7 +313,18 @@ def test_direct_assistance_links_parent_without_a_trajectory(photo_source, tmp_p
     def reject_step(*args, **kwargs):
         raise AssertionError("Distance variants must not require a setup trajectory")
 
+    push_ik = pile_task_assistance.PlacementSimulation.push_ik
+    push_calls = 0
+
+    def reject_first_push(sim, *args, **kwargs):
+        nonlocal push_calls
+        push_calls += 1
+        if push_calls == 1:
+            raise RuntimeError("No fixed-wrist push IK solution for this candidate")
+        return push_ik(sim, *args, **kwargs)
+
     monkeypatch.setattr(mujoco, "mj_step", reject_step)
+    monkeypatch.setattr(pile_task_assistance.PlacementSimulation, "push_ik", reject_first_push)
     result = pile_task_assistance.generate(
         entry, tmp_path / "assistance" / "scene_000000000", task_ids=list(parents))
     revised = json.loads((Path(result["root"]) / "problem.json").read_bytes())
@@ -326,6 +337,8 @@ def test_direct_assistance_links_parent_without_a_trajectory(photo_source, tmp_p
     assert any(task["initial_task_state"]["lifted_once"] for task in revised["tasks"])
     assert any(task["task_type"] == "push" and task["assistance"]["distance"]["active_stage"] == "push"
                for task in revised["tasks"])
+    assert any("No fixed-wrist push IK" in failure["reason"]
+               for group in revised["task_families"] for failure in group["unavailable"])
     for task in revised["tasks"]:
         parent = parents[task["parent_task_id"]]
         group = next(group for group in revised["task_families"]

@@ -345,7 +345,8 @@ def generate(entry: dict, output: Path, *, task_ids: list[str] | None = None,
                     try:
                         distance, construction = construct_state(sim, problem, stage, fraction)
                     except (ValueError, RuntimeError) as error:
-                        if not (str(error).startswith(("No vertical IK solution", "No valid directly",
+                        if not (str(error).startswith(("No vertical IK solution", "No fixed-wrist push IK solution",
+                                                      "No valid directly",
                                                       "Constructed state", "Parent target"))):
                             raise
                         group["unavailable"].append({"stage": stage, "fraction": fraction, "reason": str(error)})
