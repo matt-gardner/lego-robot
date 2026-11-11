@@ -361,7 +361,7 @@ exits after completion and surfaces premature trainer exit as a failure.
 The bounded piece-recognition experiment uses the existing SFT7296 four-frame
 checkpoint, offline base cache and immutable worker image. Its execution root is
 `/mnt/data/piece-recognition-v1` on `i-040e17ff6f19a6292`; prepared Docker commands
-bind the source read-only and use `render-gpu-fast/images.json`. After rendering
+bind the source read-only and use `render-gpu-fast/images-reconciled.json`. After rendering
 completes, launch the frozen comparison as a persistent background process:
 
 ```sh
@@ -370,15 +370,15 @@ python3 scripts/sync_gpu_dashboard.py \
   --known-hosts /home/claude/.ssh/lego_classifier_known_hosts \
   --job-id piece-recognition-v1-frozen --container-name lego-classifier-frozen \
   --remote-root /mnt/data/piece-recognition-v1/output-frozen \
-  --output /mnt/dockyard/lego-robot-data/outputs/piece-recognition-v1/frozen \
-  --launch-command /mnt/data/piece-recognition-v1/lego-classifier-frozen.json
+  --output /mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/piece-recognition-v1/frozen \
+  --launch-command /mnt/data/piece-recognition-v1/lego-classifier-frozen-v2.json
 ```
 
 Verify the first successful mirror refresh. Only after that run completes, use
 the same connection with job `piece-recognition-v1-finetune`, container
 `lego-classifier-finetune`, remote root `/mnt/data/piece-recognition-v1/output`,
-local output `/mnt/dockyard/lego-robot-data/outputs/piece-recognition-v1/finetune`,
-and command `/mnt/data/piece-recognition-v1/lego-classifier-finetune.json`.
+local output `/mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/piece-recognition-v1/finetune`,
+and command `/mnt/data/piece-recognition-v1/lego-classifier-finetune-v2.json`.
 Reconcile actual instance/container state before either launch; do not allocate
 another GPU to replay these connection details. Export both runs and terminate
 the shared instance after the comparison. See

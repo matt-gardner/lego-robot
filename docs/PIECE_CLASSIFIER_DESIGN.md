@@ -49,6 +49,12 @@ pile family before rendering**. Group exact models, source receipts and retasked
 family relatives together, including raw piles and robot-integrated derivatives.
 All eight rendered views and four-view windows of a pile remain in its split.
 No class-balancing migration of individual test pieces into train.
+Before training, exact rendered-image hashes also connect whole families whose
+source metadata missed a relationship. Keep each connected component in its
+most held-out original split (test before development before train), recording
+the reconciliation. Never move a held-out observation into training or discard
+observations to hide overlap. Both the original plan and render manifest remain
+available when a reconciled manifest is produced.
 
 Render unchanged saved states with existing MuJoCo raster APIs; never settle,
 step or generate a new pile. Annotate every visible piece, not just task targets.

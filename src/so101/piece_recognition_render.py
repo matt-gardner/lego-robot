@@ -15,7 +15,9 @@ from PIL import Image
 
 from so101.capture_pile_task_images import target_annotation
 from so101.lego_scene import restore_scene
-from so101.piece_recognition_data import digest, read_bound, write_new_json
+from so101.piece_recognition_data import (
+    digest, read_bound, reconcile_image_families, write_new_json,
+)
 from so101.rl_renderer import compile_visual_model
 
 
@@ -160,6 +162,7 @@ def render(plan_path: Path, output: Path, views: int = 8, minimum_pixels: int = 
                     camera = camera_for(model, data, list(range(1, model.nbody)), azimuth, elevation)
                     renderer.update_scene(data, camera=camera)
                     canonical[part["part_id"]].append(save_image(images, renderer.render().copy()))
+    rows, reconciliation = reconcile_image_families(rows)
     if any(not any(row["split"] == split for row in rows)
            for split in ("train", "development", "test")):
         raise ValueError("Visibility filtering left an empty experiment split")
@@ -167,6 +170,7 @@ def render(plan_path: Path, output: Path, views: int = 8, minimum_pixels: int = 
         "schema_version": 1, "kind": "pile-recognition-images",
         "plan": str(plan_path.resolve()), "plan_sha256": digest(plan_path),
         "parts": plan["parts"], "canonical": canonical, "rows": rows,
+        "split_reconciliation": reconciliation,
         "visibility": dict(visibility), "views_per_pile": views,
         "minimum_pixels": minimum_pixels, "physics_version": mujoco.__version__,
         "implementation_sha256": {

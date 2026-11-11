@@ -70,6 +70,51 @@ def photo_identity_map(template: Path) -> dict[str, str]:
     return result
 
 
+def reconcile_image_families(rows: list[dict]) -> tuple[list[dict], dict]:
+    """Keep visually identical observations in the most held-out family split."""
+    rank = {"train": 0, "development": 1, "test": 2}
+    parent = {row["family"]: row["family"] for row in rows}
+
+    def find(family):
+        while parent[family] != family:
+            parent[family] = parent[parent[family]]
+            family = parent[family]
+        return family
+
+    owners, original = {}, {}
+    for row in rows:
+        family, split = row["family"], row["split"]
+        if split not in rank or original.setdefault(family, split) != split:
+            raise ValueError("Invalid original family split")
+        for image in row["history"]:
+            previous = owners.setdefault(image["sha256"], family)
+            parent[find(family)] = find(previous)
+    components = defaultdict(set)
+    for family in parent:
+        components[find(family)].add(family)
+    assignments, changes = {}, []
+    for families in components.values():
+        split = max((original[family] for family in families), key=rank.get)
+        family_id = (next(iter(families)) if len(families) == 1 else hashlib.sha256(
+            "\n".join(sorted(families)).encode()).hexdigest())
+        for family in families:
+            assignments[family] = (family_id, split)
+            if split != original[family]:
+                changes.append({"family": family, "from": original[family], "to": split})
+    result = [
+        {**row, "source_family": row["family"], "source_split": row["split"],
+         "family": assignments[row["family"]][0], "split": assignments[row["family"]][1]}
+        for row in rows
+    ]
+    return result, {
+        "profile": "image-connected-heldout-promotion-v1",
+        "original_families": len(parent), "final_families": len(components),
+        "promoted_families": sorted(changes, key=lambda change: change["family"]),
+        "policy": "Exact image hashes connect whole families; test > development > train. "
+                  "No held-out observation moves into training; no observations are removed.",
+    }
+
+
 def assign_splits(scenes: list[dict], seed: int) -> list[dict]:
     """Union provenance relatives before assigning whole components to splits."""
     parent = list(range(len(scenes)))

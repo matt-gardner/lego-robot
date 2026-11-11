@@ -9,11 +9,31 @@ from unittest.mock import MagicMock, patch
 import xml.etree.ElementTree as ET
 
 from so101.piece_recognition_data import (
-    assign_splits, digest, discover, prepare, read_bound, visual_signature,
+    assign_splits, digest, discover, prepare, read_bound, reconcile_image_families,
+    visual_signature,
 )
 
 
 class RecognitionDataTests(unittest.TestCase):
+    def test_exact_images_union_whole_families_without_moving_holdouts_to_training(self):
+        rows = [
+            {"family": "a", "split": "train", "history": [{"sha256": "shared"}]},
+            {"family": "a", "split": "train", "history": [{"sha256": "other"}]},
+            {"family": "b", "split": "development", "history": [{"sha256": "shared"}]},
+            {"family": "b", "split": "development", "history": [{"sha256": "transitive"}]},
+            {"family": "c", "split": "test", "history": [{"sha256": "transitive"}]},
+            {"family": "d", "split": "train", "history": [{"sha256": "unique"}]},
+        ]
+        result, receipt = reconcile_image_families(rows)
+        self.assertEqual(len(result), len(rows))
+        self.assertEqual({row["split"] for row in result[:5]}, {"test"})
+        self.assertEqual(len({row["family"] for row in result[:5]}), 1)
+        self.assertEqual(result[-1]["family"], "d")
+        self.assertEqual(result[-1]["split"], "train")
+        self.assertEqual(rows[0]["split"], "train")
+        self.assertEqual(receipt["final_families"], 2)
+        self.assertEqual(len(receipt["promoted_families"]), 2)
+
     def test_body_lookup_matches_geometry_masks_and_ignores_non_geometry(self):
         import mujoco
         import numpy as np
