@@ -297,3 +297,17 @@ inventory, writes `selected_inventory.json`, verifies completed containers and
 resumes incomplete non-excluded releases. It rejects mixed-task pairs and any
 existing excluded derivatives rather than deleting them. Completion counts
 refer to the selected inventory, not the superseded original population.
+### Pile-first CPU scheduling
+
+`scripts/render_pile_first.py --root <initial-photo-external-v2> --data
+<lego_curriculum>` checks the current immutable pools and atomic
+`photo-task-progression-collective-v1/pieces-*/tasks/scene_*/admission.json`
+records before every frame. Every admitted pile gets one representative
+exact-task-reset image before any additional task images. Newly arriving piles
+preempt task expansion at the next frame boundary.
+
+Existing selected-pool receipts remain under their pool SHA. Admissions from
+unfinished stages publish separately under `pile-previews-v1/<admissionSHA>`;
+these are pile previews, not completed-stage or selected-task coverage.
+The queue uses the existing exclusive worker lock and a fresh CPU subprocess
+per image, preserving unpublished interrupted exports rather than deleting them.
