@@ -168,7 +168,8 @@ def admit_render(output):
         raise RuntimeError("CPU rendering paused: less than 2 GiB memory headroom available")
 
 
-def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contract):
+def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contract,
+                       variant="llvm_ad_rgb"):
     started = time.monotonic()
     profile = json.loads(profile_path.read_bytes())
     problem = load_problem(entry, tasks[0]["task_id"])
@@ -196,7 +197,7 @@ def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contr
     if export.exists():
         raise ValueError(f"Unpublished export already exists; preserve and inspect it: {export}")
     scene_path = export_scene(sim, problem["root"], export, geometry_camera, output / "_meshes")
-    rendered = render_pathtrace(scene_path, scene_output / "pathtrace", profile_path)
+    rendered = render_pathtrace(scene_path, scene_output / "pathtrace", profile_path, variant=variant)
     if (not np.array_equal(before, integration_state(sim))
             or physical != runtime_model_sha256(sim.model)):
         raise ValueError("Appearance or labels changed the source physical model/state")
@@ -222,7 +223,7 @@ def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contr
             "capture_implementation_sha256": contract["implementation_sha256"]["photoreal_task_images.py"],
             "target_instance_id": target, "image_file": destination.name, "sha256": image_sha,
             "width": profile["width"], "height": profile["height"], "camera": "external",
-            "camera_provenance": geometry_camera, "backend": "mitsuba-llvm_ad_rgb",
+            "camera_provenance": geometry_camera, "backend": rendered["backend"],
             "samples": profile["samples"], "physics_unchanged": True, "assistance": 0,
             "is_gpu_policy_frame": False, "initial_state": "exact-admitted-integration-reset",
             "scene_files_sha256": entry["files_sha256"], "integration_state_sha256": state_sha,

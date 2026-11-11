@@ -36,6 +36,8 @@ def test_uncovered_piles_and_new_admissions_preempt_task_expansion(tmp_path):
     assert job["phase"] == "tasks"
     assert job["entry"] == entries[0][0]
     assert job["task"]["task_id"] == "second"
+    assert queue.next_job(entries, reserved_pools=["0"])["entry"] == entries[1][0]
+    assert queue.next_job(entries, reserved_pools=["0", "1"]) is None
 
 
 def test_discovery_includes_only_atomic_admissions_from_both_generators(tmp_path):

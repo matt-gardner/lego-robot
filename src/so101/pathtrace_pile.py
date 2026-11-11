@@ -1,4 +1,4 @@
-"""Optional CPU-only appearance rendering of a pinned world-space mesh export."""
+"""Optional CPU or CUDA appearance rendering of a pinned world-space mesh export."""
 
 import argparse
 import hashlib
@@ -64,7 +64,10 @@ def check_segmentation_alignment(mi, dr, loaded, description, segmentation_path,
 def render_pathtrace(
     scene_path: Path, output: Path, profile_path: Path = DEFAULT_PROFILE,
     mesh_root: Path | None = None,
+    variant: str = "llvm_ad_rgb",
 ) -> dict:
+    if variant not in ("llvm_ad_rgb", "cuda_ad_rgb"):
+        raise ValueError(f"Unsupported appearance backend: {variant}")
     # Mitsuba is an optional heavy backend; normal simulation imports must not require it.
     import drjit as dr
     import mitsuba as mi
@@ -94,7 +97,7 @@ def render_pathtrace(
     table_z = float(description["table_z_m"])
     if not np.isfinite(table_z):
         raise ValueError("Table height must be finite")
-    mi.set_variant("llvm_ad_rgb")
+    mi.set_variant(variant)
     dr.set_thread_count(profile["threads"])
     scene = {
         "type": "scene",
@@ -158,7 +161,7 @@ def render_pathtrace(
         if file_hash(path) != digest:
             raise RuntimeError(f"Mesh changed while rendering: {path}")
     receipt = {
-        "backend": "mitsuba-llvm_ad_rgb", "mitsuba_version": mi.__version__,
+        "backend": f"mitsuba-{variant}", "mitsuba_version": mi.__version__,
         "scene_sha256": file_hash(scene_path), "profile_sha256": file_hash(profile_path),
         "implementation_sha256": file_hash(Path(__file__)),
         "mesh_sha256": {str(path): digest for path, digest, _ in meshes},
@@ -179,8 +182,9 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
     parser.add_argument("--mesh-root", type=Path, help="Explicit relocation directory for mesh basenames")
+    parser.add_argument("--variant", choices=("llvm_ad_rgb", "cuda_ad_rgb"), default="llvm_ad_rgb")
     args = parser.parse_args()
-    render_pathtrace(args.scene, args.output, args.profile, args.mesh_root)
+    render_pathtrace(args.scene, args.output, args.profile, args.mesh_root, args.variant)
 
 
 if __name__ == "__main__":

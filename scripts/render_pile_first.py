@@ -71,7 +71,7 @@ def discover(data, output):
     return entries
 
 
-def next_job(entries):
+def next_job(entries, reserved_pools=()):
     pending_tasks = []
     for entry, output, sha, scope in entries:
         problem = Path(entry["root"]) / "problem.json"
@@ -92,7 +92,7 @@ def next_job(entries):
         if not measured:
             return {"entry": entry, "output": str(output), "sha": sha,
                     "task": tasks[0], "phase": "piles", "scope": scope}
-        if missing and scope == "selected":
+        if missing and scope == "selected" and sha not in reserved_pools:
             pending_tasks.append({"entry": entry, "output": str(output), "sha": sha,
                                   "task": missing[0], "phase": "tasks", "scope": scope})
     return pending_tasks[0] if pending_tasks else None
@@ -135,7 +135,12 @@ def render_job(job):
         sim.model.vis.global_.offwidth = max(sim.model.vis.global_.offwidth, profile["width"])
         sim.model.vis.global_.offheight = max(sim.model.vis.global_.offheight, profile["height"])
         sim.renderer = mujoco.Renderer(sim.model, height=profile["height"], width=profile["width"])
-        render_reset_group(sim, entry, [task], state_sha, output, DEFAULT_PROFILE, contract)
+        variant = job.get("variant", "llvm_ad_rgb")
+        if variant == "llvm_ad_rgb":
+            render_reset_group(sim, entry, [task], state_sha, output, DEFAULT_PROFILE, contract)
+        else:
+            render_reset_group(sim, entry, [task], state_sha, output, DEFAULT_PROFILE, contract,
+                               variant=variant)
     finally:
         sim.close()
 
@@ -157,7 +162,9 @@ def main():
     os.nice(10)
     while True:
         entries = discover(args.data, args.root)
-        job = next_job(entries)
+        reservations = queue / "task-reservations.json"
+        reserved_pools = read(reservations)["gpu_pool_sha256"] if reservations.exists() else []
+        job = next_job(entries, reserved_pools)
         summary = {
             "pid": os.getpid(), "phase": job["phase"] if job else "awaiting_new_piles",
             "priority": "all-piles-before-tasks", "discovered_piles": len(entries),

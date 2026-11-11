@@ -7,7 +7,12 @@ import subprocess
 import numpy as np
 import pytest
 
-from so101.pathtrace_pile import DEFAULT_PROFILE, camera_frame, linear_rgb
+from so101.pathtrace_pile import DEFAULT_PROFILE, camera_frame, linear_rgb, render_pathtrace
+
+
+def test_unknown_backend_is_rejected_before_rendering(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported appearance backend"):
+        render_pathtrace(tmp_path / "scene.json", tmp_path / "output", variant="auto")
 
 
 def test_camera_rejects_degenerate_frame():
