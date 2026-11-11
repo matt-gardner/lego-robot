@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from so101.pathtrace_pile import DEFAULT_PROFILE, render_pathtrace
-from so101.photoreal_task_images import export_scene, group_task_resets, mono_camera, world_mesh
+from so101.photoreal_task_images import export_scene, group_task_resets, mono_camera, world_mesh, write_ply
+from so101.task_image_roles import role_annotations
 
 
 def test_world_mesh_uses_compiled_center_and_world_rotation_once():
@@ -40,6 +41,42 @@ def test_reset_grouping_distinguishes_full_state_not_scene_or_qpos(monkeypatch):
         ["first", "same-as-first"], ["second"],
     ]
 
+
+def test_binary_world_meshes_share_storage_only_for_identical_world_geometry(tmp_path):
+    vertices = np.eye(3)
+    normals = np.tile([0., 0., 1.], (3, 1))
+    shared = tmp_path / "meshes"
+    first, same, moved = [tmp_path / name for name in ("first.ply", "same.ply", "moved.ply")]
+    write_ply(first, vertices, normals, shared)
+    write_ply(same, vertices, normals, shared)
+    write_ply(moved, vertices + [1, 0, 0], normals, shared)
+    assert first.samefile(same)
+    assert not first.samefile(moved)
+    assert len(list(shared.glob("*.ply"))) == 2
+    assert b"format binary_little_endian 1.0" in first.read_bytes()
+
+
+def test_source_and_destination_visibility_are_independent():
+    model = mujoco.MjModel.from_xml_string("""
+      <mujoco><worldbody><body name="target"><geom type="box" size=".01 .01 .01"/></body>
+      <body name="goal" pos=".2 .1 0"><geom type="cylinder" size=".02 .001"/></body>
+      </worldbody></mujoco>
+    """)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    task = {"task_type": "push", "target_instance_id": "target",
+            "goal": {"destination_entity": "goal", "destination_xy": [.2, .1]}}
+    segmentation = np.full((2, 3, 2), -1, dtype=int)
+    segmentation[0, 0] = [0, mujoco.mjtObj.mjOBJ_GEOM]
+    source, destination = role_annotations(model, data, task, segmentation)
+    assert source["target_bbox_xyxy"] == [0, 0, 1, 1]
+    assert destination["target_bbox_status"] == "not_visible"
+    assert destination["target_bbox_xyxy"] is None
+    segmentation[1, 2] = [1, mujoco.mjtObj.mjOBJ_GEOM]
+    source, destination = role_annotations(model, data, task, segmentation)
+    assert destination["target_bbox_xyxy"] == [2, 1, 3, 2]
+    assert destination["entity_kind"] == "goal_marker"
+    assert "not tolerance-region/amodal" in destination["bbox_semantics"]
 
 @pytest.mark.skipif(not os.environ.get("LEGO_PATHTRACE_PYTHON"), reason="Optional CPU backend absent")
 def test_actual_export_matches_segmentation_and_rejects_wrong_camera(tmp_path):

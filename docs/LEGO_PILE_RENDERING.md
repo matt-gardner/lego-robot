@@ -214,7 +214,7 @@ task-specific `initial_state` (or legacy `integration_state.json`) through
 Images are shared only when the actual full integration-state hashes match,
 not merely because task descriptors belong to the same scene.
 It exports compiled visual vertices and normals
-once into world-space PLYs, groups them by body/material, and uses the pinned
+once into binary world-space PLYs, groups them by body/material, and uses the pinned
 `pile_pathtrace_v1` CPU recipe. MuJoCo segmentation is captured separately at the
 same resolution and mono camera (average of both eye transforms). Sampled
 pixel-center Mitsuba primary rays must agree with the segmentation within 1%;
@@ -238,6 +238,11 @@ pool directory, preferring enriched `_roles-v1` receipts per task. It validates
 the exact pool, problem/source, target and image hashes on read. No image
 publication callback or copied measurement manifest is required, and a metrics
 refresh cannot overwrite these independent image derivatives.
+New captures include both roles in their first complete atomic receipt. Binary
+exports hard-link identical content-addressed world meshes in `_meshes/`, so
+unchanged pile geometry is not stored again for every robot starting pose.
+The storage-corrected full backfill uses `initial-photo-external-v2/<pool-sha>/`;
+earlier v1 proofs remain intact. Appearance settings are unchanged.
 
 ## Archived curriculum wrist rerenders
 

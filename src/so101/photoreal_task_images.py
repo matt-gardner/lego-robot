@@ -11,18 +11,12 @@ import mujoco
 import numpy as np
 from PIL import Image
 
-from so101.capture_pile_task_images import target_annotation
+from so101.capture_pile_task_images import integration_state, target_annotation
 from so101.cloud_checkpoint import atomic_json
 from so101.lego_scene import runtime_model_sha256
 from so101.pathtrace_pile import DEFAULT_PROFILE, file_hash, render_pathtrace
 from so101.pile_task_runtime import create_simulation, load_problem, reset_problem
-
-
-def integration_state(sim):
-    specification = mujoco.mjtState.mjSTATE_INTEGRATION
-    state = np.empty(mujoco.mj_stateSize(sim.model, specification))
-    mujoco.mj_getState(sim.model, sim.data, state, specification)
-    return state
+from so101.task_image_roles import role_annotations
 
 
 def mono_camera(scene):
@@ -85,23 +79,36 @@ def world_mesh(model, data, geom):
     return vertices @ rotation.T + data.geom_xpos[geom], normals @ rotation.T
 
 
-def write_ply(path, vertices, normals):
-    rows = np.column_stack((vertices, normals))
+def write_ply(path, vertices, normals, mesh_root=None):
+    rows = np.column_stack((vertices, normals)).astype("<f4")
     header = (
-        "ply\nformat ascii 1.0\n"
+        "ply\nformat binary_little_endian 1.0\n"
         f"element vertex {len(vertices)}\n"
         "property float x\nproperty float y\nproperty float z\n"
         "property float nx\nproperty float ny\nproperty float nz\n"
         f"element face {len(vertices) // 3}\nproperty list uchar int vertex_indices\nend_header\n"
     )
-    with path.open("w") as stream:
-        stream.write(header)
-        np.savetxt(stream, rows, fmt="%.9g")
-        for i in range(0, len(vertices), 3):
-            stream.write(f"3 {i} {i + 1} {i + 2}\n")
+    faces = np.empty(len(vertices) // 3, dtype=[("count", "u1"), ("vertices", "<i4", (3,))])
+    faces["count"] = 3
+    faces["vertices"] = np.arange(len(vertices)).reshape(-1, 3)
+    with path.open("wb") as stream:
+        stream.write(header.encode("ascii"))
+        stream.write(rows.tobytes())
+        stream.write(faces.tobytes())
+    if mesh_root is not None:
+        mesh_root.mkdir(parents=True, exist_ok=True)
+        digest = file_hash(path)
+        shared = mesh_root / f"{digest}.ply"
+        if shared.exists():
+            if file_hash(shared) != digest:
+                raise ValueError("Content-addressed world mesh changed")
+            path.unlink()
+            os.link(shared, path)
+        else:
+            os.link(path, shared)
 
 
-def export_scene(sim, root, output, camera):
+def export_scene(sim, root, output, camera, mesh_root=None):
     output.mkdir(parents=True, exist_ok=False)
     model, data = sim.model, sim.data
     table = model.geom("table").id
@@ -125,7 +132,7 @@ def export_scene(sim, root, output, camera):
         group["geom_ids"].append(geom)
     for (body, rgb), group in grouped.items():
         path = output / f"body-{body}-material-{len(objects)}.ply"
-        write_ply(path, np.concatenate(group["vertices"]), np.concatenate(group["normals"]))
+        write_ply(path, np.concatenate(group["vertices"]), np.concatenate(group["normals"]), mesh_root)
         objects.append({"mesh": path.name, "rgb": list(map(float, rgb)), "geom_ids": group["geom_ids"]})
     description = {
         "source": str(root), "source_state_file": "problem.json",
@@ -144,6 +151,20 @@ def group_task_resets(sim, entry, tasks):
         digest = hashlib.sha256(integration_state(sim).tobytes()).hexdigest()
         groups.setdefault(digest, []).append(task)
     return groups
+
+
+def admit_render(output):
+    if shutil.disk_usage(output).free < 10 * 1024**3:
+        raise RuntimeError("CPU rendering paused: less than 10 GiB output disk available")
+    memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+    available = int(memory["MemAvailable"].split()[0]) * 1024
+    cgroup = Path("/sys/fs/cgroup")
+    if (cgroup / "memory.max").exists():
+        limit = (cgroup / "memory.max").read_text().strip()
+        if limit != "max":
+            available = min(available, int(limit) - int((cgroup / "memory.current").read_text()))
+    if available < 2 * 1024**3:
+        raise RuntimeError("CPU rendering paused: less than 2 GiB memory headroom available")
 
 
 def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contract):
@@ -172,7 +193,7 @@ def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contr
     export = scene_output / "export"
     if export.exists():
         raise ValueError(f"Unpublished export already exists; preserve and inspect it: {export}")
-    scene_path = export_scene(sim, problem["root"], export, geometry_camera)
+    scene_path = export_scene(sim, problem["root"], export, geometry_camera, output / "_meshes")
     rendered = render_pathtrace(scene_path, scene_output / "pathtrace", profile_path)
     if (not np.array_equal(before, integration_state(sim))
             or physical != runtime_model_sha256(sim.model)):
@@ -205,6 +226,7 @@ def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contr
             "segmentation_sha256": file_hash(scene_output / "segmentation.npz"),
             "segmentation_file": str((scene_output / "segmentation.npz").relative_to(output)),
             "appearance_receipt": str((scene_output / "pathtrace" / "receipt.json").relative_to(output)),
+            "target_annotations": role_annotations(sim.model, sim.data, task, segmentation),
             "scene_sha256": rendered["scene_sha256"], **target_annotation(mask),
         }
         rows.append(receipt)
@@ -225,7 +247,7 @@ def capture_pool(pool_path, output, profile_path=DEFAULT_PROFILE, limit_scenes=N
     profile = json.loads(profile_path.read_bytes())
     implementation = {
         name: file_hash(Path(__file__).with_name(name))
-        for name in ("photoreal_task_images.py", "pathtrace_pile.py", "pile_task_runtime.py",
+        for name in ("photoreal_task_images.py", "task_image_roles.py", "pathtrace_pile.py", "pile_task_runtime.py",
                      "lego_scene.py", "capture_pile_task_images.py")
     }
     contract = {"pool_sha256": pool_sha, "profile_sha256": file_hash(profile_path),
@@ -245,8 +267,7 @@ def capture_pool(pool_path, output, profile_path=DEFAULT_PROFILE, limit_scenes=N
     for index, entry in enumerate(pool["scenes"]):
         if limit_scenes is not None and index >= limit_scenes:
             break
-        if shutil.disk_usage(output).free < 10 * 1024**3:
-            raise RuntimeError("CPU rendering paused: less than 10 GiB output disk available")
+        admit_render(output)
         scene = json.loads((Path(entry["root"]) / "problem.json").read_bytes())
         tasks = scene["tasks"]
         identities = {
@@ -281,6 +302,7 @@ def capture_pool(pool_path, output, profile_path=DEFAULT_PROFILE, limit_scenes=N
                     if limit_states is not None and rendered_states >= limit_states:
                         return {"completed_tasks": completed, "selected_tasks": selected_tasks,
                                 "pool_sha256": pool_sha}
+                    admit_render(output)
                     rows = render_reset_group(sim, entry, group, state_sha, output, profile_path, contract)
                     rendered_states += 1
                 completed += len(rows)

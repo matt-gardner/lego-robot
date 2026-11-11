@@ -12,6 +12,13 @@ from PIL import Image
 from so101.cloud_checkpoint import atomic_json
 
 
+def integration_state(sim):
+    specification = mujoco.mjtState.mjSTATE_INTEGRATION
+    state = np.empty(mujoco.mj_stateSize(sim.model, specification))
+    mujoco.mj_getState(sim.model, sim.data, state, specification)
+    return state
+
+
 def target_annotation(mask):
     if mask.ndim != 2 or mask.dtype != np.bool_:
         raise ValueError("Target annotation requires a two-dimensional boolean segmentation mask")

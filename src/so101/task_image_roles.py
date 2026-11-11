@@ -8,10 +8,33 @@ import shutil
 import mujoco
 import numpy as np
 
-from so101.capture_pile_task_images import target_annotation
+from so101.capture_pile_task_images import integration_state, target_annotation
 from so101.cloud_checkpoint import atomic_json
-from so101.photoreal_task_images import integration_state
 from so101.pile_task_runtime import create_simulation, load_problem, reset_problem
+
+
+def role_annotations(model, data, task, segmentation):
+    roles = [("source_object", task["target_instance_id"], "lego_object")]
+    if task["task_type"] in ("push", "place"):
+        entity = task["goal"]["destination_entity"]
+        if not np.allclose(data.body(entity).xpos[:2], task["goal"]["destination_xy"],
+                           atol=1e-10, rtol=0):
+            raise ValueError("Destination marker differs from task goal")
+        roles.append(("destination", entity, "goal_marker"))
+    annotations = []
+    for role, entity, kind in roles:
+        body = model.body(entity).id
+        geoms = np.flatnonzero(model.geom_bodyid == body)
+        mask = ((segmentation[:, :, 1] == mujoco.mjtObj.mjOBJ_GEOM)
+                & np.isin(segmentation[:, :, 0], geoms))
+        annotations.append({
+            "role": role, "entity_id": entity, "entity_kind": kind,
+            "bbox_semantics": "visible goal-marker geometry, not tolerance-region/amodal"
+            if role == "destination" else "visible source-object geometry",
+            **({"goal": task["goal"]} if role == "destination" else {}),
+            **target_annotation(mask),
+        })
+    return annotations
 
 
 def annotate_roles(images, output):
@@ -47,30 +70,10 @@ def annotate_roles(images, output):
                 segmentation = archive["segmentation"]
             if segmentation.shape != (receipt["height"], receipt["width"], 2):
                 raise ValueError("Role segmentation differs from image dimensions")
-            task = problem["task"]
-            roles = [("source_object", task["target_instance_id"], "lego_object")]
-            if task["task_type"] in ("push", "place"):
-                entity = task["goal"]["destination_entity"]
-                if not np.allclose(sim.data.body(entity).xpos[:2], task["goal"]["destination_xy"],
-                                   atol=1e-10, rtol=0):
-                    raise ValueError("Destination marker differs from task goal")
-                roles.append(("destination", entity, "goal_marker"))
-            annotations = []
-            for role, entity, kind in roles:
-                body = sim.model.body(entity).id
-                geoms = np.flatnonzero(sim.model.geom_bodyid == body)
-                mask = ((segmentation[:, :, 1] == mujoco.mjtObj.mjOBJ_GEOM)
-                        & np.isin(segmentation[:, :, 0], geoms))
-                annotation = target_annotation(mask)
-                if role == "source_object" and any(annotation[key] != receipt[key] for key in annotation):
+            annotations = role_annotations(sim.model, sim.data, problem["task"], segmentation)
+            for key in ("target_bbox_xyxy", "target_visible_pixels", "target_bbox_status"):
+                if annotations[0][key] != receipt[key]:
                     raise ValueError("Source role differs from original target annotation")
-                annotations.append({
-                    "role": role, "entity_id": entity, "entity_kind": kind,
-                    "bbox_semantics": "visible goal-marker geometry, not tolerance-region/amodal"
-                    if role == "destination" else "visible source-object geometry",
-                    **({"goal": task["goal"]} if role == "destination" else {}),
-                    **annotation,
-                })
             updated = {
                 **receipt, "target_annotations": annotations,
                 "role_implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
