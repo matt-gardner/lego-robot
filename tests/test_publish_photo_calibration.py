@@ -1,11 +1,13 @@
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
 from so101.bucket_dashboard import BucketDashboard
 from so101.publish_photo_calibration import publish
+from scripts.sync_unassisted_calibration import refresh
 
 
 def inputs(tmp_path):
@@ -117,6 +119,60 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
     with pytest.raises(ValueError, match="bound task"):
         publish(pool, reference, output, measurements)
     assert (output / "current.json").read_bytes() == previous_pointer
+
+
+@pytest.mark.parametrize("kind", ["photo", "native"])
+def test_unassisted_partial_results_publish_without_expert_collection(tmp_path, kind):
+    pool, _, output, references, _ = inputs(tmp_path)
+    measurements = tmp_path / "measurements.json"
+    row = {"task": "grasp", "source": references["attempts"][0]["source"],
+           "policy_step": 0, "assistance": 0, "success_interval_95": [0., .8],
+           "rollouts": [{"success": False, "invalid_action_error": None, "seed": 117}]}
+    value = {"input_sha256": {"native_pool": references["pool_sha256"]},
+             "optimizer": None, "policy_sha256_before": "initial", "repeats": 1,
+             "groups": [row], "complete": False}
+    measurements.write_text(json.dumps(value))
+    publish(pool, None, output, measurements, source_kind=kind, measurement_series_id="unassisted")
+    snapshot = BucketDashboard(output).snapshot()
+    assert snapshot["problems"]["problems"][0]["source"]["kind"] == kind
+    assert snapshot["manifest"]["progress"]["reference_complete"] is None
+    assert snapshot["calibration"]["groups"][0]["attempts"] == 1
+    row["rollouts"].append({"success": True, "invalid_action_error": None, "seed": 118})
+    measurements.write_text(json.dumps(value))
+    publish(pool, None, output, measurements, source_kind=kind, measurement_series_id="unassisted")
+    assert BucketDashboard(output).snapshot()["calibration"]["groups"][0]["attempts"] == 2
+    row["assistance"] = .5
+    measurements.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="require a reference manifest"):
+        publish(pool, None, output, measurements, source_kind=kind, measurement_series_id="unassisted")
+
+
+def test_mirror_publishes_growing_results_once_per_update(tmp_path, monkeypatch):
+    pool, _, output, references, _ = inputs(tmp_path)
+    local = tmp_path / "recovery"
+    local.mkdir()
+    (local / "status.json").write_text(json.dumps({"phase": "policy-rollouts"}))
+    path = local / "results-3-initial.json"
+    result = {"input_sha256": {"native_pool": references["pool_sha256"]},
+              "optimizer": None, "groups": [{"assistance": 0, "rollouts": []}]}
+    path.write_text(json.dumps(result))
+    args = SimpleNamespace(known_hosts=tmp_path / "hosts", key=tmp_path / "key",
+                           host="ubuntu@example", remote="/remote", local=local,
+                           photo_pool=[], native_pool=[pool], output=output, job_id="job")
+    commands = []
+    monkeypatch.setattr("scripts.sync_unassisted_calibration.subprocess.run",
+                        lambda command, **_: commands.append(command))
+    published = {}
+    assert refresh(args, published) is False
+    assert refresh(args, published) is False
+    assert sum("so101.publish_photo_calibration" in command for command in commands) == 1
+    result["groups"][0]["rollouts"].append({"success": False})
+    path.write_text(json.dumps(result))
+    (local / "status.json").write_text(json.dumps({"phase": "policy-rollouts-complete"}))
+    assert refresh(args, published) is True
+    publications = [command for command in commands if "so101.publish_photo_calibration" in command]
+    assert len(publications) == 2
+    assert publications[-1][publications[-1].index("--measurement-series-id") + 1] == "unassisted-job-3-initial"
 
 
 def test_new_measurement_series_retains_prior_counts_without_pooling_or_duplicate_updates(tmp_path):

@@ -1025,6 +1025,14 @@ The probe pins the latest atomically published full-model snapshot per combinati
 (or the initial SFT before the first checkpoint), records its iteration, and never
 mixes measurements across policy versions or constructs an optimizer. These are
 lagged difficulty estimates, not training rollouts or automatic bucket admission.
+For zero-assistance screening, run `scripts/sync_unassisted_calibration.py` alongside
+the policy driver, with `--host`, `--remote` output directory, `--local` recovery
+directory, `--output` shared dashboard root, `--key`, `--known-hosts`, `--job-id`,
+and repeatable `--photo-pool` / `--native-pool` immutable manifests. It mirrors
+every 20 seconds and publishes each growing result file as an additive series,
+without requiring expert references or replacing prior measurements. It exits
+after the driver's final refresh, and surfaces driver/publication failures.
+
 For assistance calibration on new photo piles, use `--native-only --initial-only`
 with `--native-pool` and `--native-references`. This rejects legacy problem sources,
 pins the untouched initial policy, pairs rollout seeds across assistance levels,

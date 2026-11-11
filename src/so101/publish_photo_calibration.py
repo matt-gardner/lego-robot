@@ -192,22 +192,27 @@ def publish_native_channel(original: dict, source: Path, source_bytes: bytes,
     return publish_manifest(manifest, directory, output, identity)
 
 
-def publish(pool_path: Path, references_path: Path, output: Path,
+def publish(pool_path: Path, references_path: Path | None, output: Path,
             measurements_path: Path | None = None, images_paths: list[Path] | None = None,
             native_snapshot_path: Path | None = None, native_snapshot_sha256: str | None = None,
             publication_id: str | None = None, measurement_series_id: str | None = None,
-            measurement_series_label: str | None = None):
+            measurement_series_label: str | None = None, source_kind: str = "photo"):
+    if source_kind not in ("photo", "native"):
+        raise ValueError("Unsupported task population source kind")
+    scope = f"{source_kind}-assistance-calibration"
     publication_pointer(output, publication_id)
     previous = previous_manifest(output, publication_id)
     if previous is not None and previous.get("measurement_series") and measurement_series_id is None:
         raise ValueError("Retained measurement history requires an explicit series identity for updates")
-    pool_bytes, reference_bytes = pool_path.read_bytes(), references_path.read_bytes()
-    pool, references = json.loads(pool_bytes), json.loads(reference_bytes)
+    pool_bytes = pool_path.read_bytes()
+    reference_bytes = references_path.read_bytes() if references_path is not None else b""
+    pool = json.loads(pool_bytes)
+    references = json.loads(reference_bytes) if reference_bytes else None
     pool_sha = hashlib.sha256(pool_bytes).hexdigest()
     if (pool.get("kind") != "lego-pile-task-pool" or pool.get("status") != "complete"
-            or references.get("kind") != "pile-expert-references"
+            or (references is not None and (references.get("kind") != "pile-expert-references"
             or references.get("pool_sha256") != pool_sha
-            or references.get("success_condition") != "terminal-native-dwell-v1"):
+            or references.get("success_condition") != "terminal-native-dwell-v1"))):
         raise ValueError("Photo progress is not bound to the supplied immutable task pool")
     problems, by_source, buckets = [], {}, defaultdict(lambda: defaultdict(list))
     for entry in pool["scenes"]:
@@ -218,7 +223,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
             if Path(name).name != name or hashlib.sha256((root / name).read_bytes()).hexdigest() != expected:
                 raise ValueError("Photo scene dependency differs from its admission")
         scene = json.loads((root / "problem.json").read_text())
-        bucket = f'photo:{scene["tags"]["piece_count"]}-pieces'
+        bucket = f'{source_kind}:{scene["tags"]["piece_count"]}-pieces'
         for task in scene["tasks"]:
             source = str(root / "tasks" / task["task_id"])
             if source in by_source:
@@ -226,7 +231,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
             identity = hashlib.sha256(source.encode()).hexdigest()
             problem = {
                 "id": identity, "bucket_id": bucket, "task": task["task_type"],
-                "source": {"kind": "photo", "path": str(root / "problem.json"),
+                "source": {"kind": source_kind, "path": str(root / "problem.json"),
                            "sha256": entry["files_sha256"]["problem.json"],
                            "scene_id": scene["scene_id"], "task_id": task["task_id"],
                            "split": "train", "episode_source": source},
@@ -236,7 +241,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                          "goal": task["goal"], "solvability": task["solvability"],
                          "grader_version": task["grader_version"]},
                 "measurement_status": "unmeasured",
-                "measurement_scope": "photo-assistance-calibration",
+                "measurement_scope": scope,
                 "feasibility": {"status": "unknown", "evidence": None},
                 "initial_images": [], "initial_images_status": "not-yet-rendered",
             }
@@ -270,7 +275,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                 raise ValueError("Task image/annotation differs from its unchanged reset receipt")
             images.append((problem, receipt, image))
             image_digest.update(receipt_bytes)
-    attempts = references["attempts"]
+    attempts = references["attempts"] if references is not None else []
     if (len({row["source"] for row in attempts}) != len(attempts)
             or any(row["source"] not in by_source
                    or row["task"] != by_source[row["source"]]["task"] for row in attempts)):
@@ -284,6 +289,8 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                 or not measurements.get("policy_sha256_before")):
             raise ValueError("Policy measurements do not belong to this inference-only photo calibration")
         for row in measurements["groups"]:
+            if references is None and row["assistance"] != 0:
+                raise ValueError("Assisted policy measurements require a reference manifest")
             problem = by_source[row["source"]]
             observations = row["rollouts"]
             successes = sum(item["success"] for item in observations)
@@ -296,7 +303,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
             problem["measurement_status"] = "calibrating"
             groups.append({
                 "problem_id": problem["id"], "assistance": row["assistance"],
-                "measurement_scope": "photo-assistance-calibration",
+                "measurement_scope": scope,
                 "provenance": {"native_pool_sha256": pool_sha},
                 "attempts": len(observations), "successes": successes,
                 "planned_attempts": row.get("planned_attempts", measurements["repeats"]),
@@ -309,8 +316,9 @@ def publish(pool_path: Path, references_path: Path, output: Path,
             })
     progress = {
         "phase": "policy_assistance_calibration" if measurements is not None else "expert_reference_qualification",
-        "reference_attempts": len(attempts), "reference_accepted": len(references["references"]),
-        "reference_complete": references["complete"],
+        "reference_attempts": len(attempts),
+        "reference_accepted": len(references["references"]) if references is not None else 0,
+        "reference_complete": references["complete"] if references is not None else None,
         "policy_calibration_status": ("complete" if measurements["complete"] else "running")
         if measurements is not None else "pending",
         "policy_rollouts": sum(group["attempts"] for group in groups), "pool_sha256": pool_sha,
@@ -321,7 +329,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
     native_bytes = native_snapshot_path.read_bytes() if native_snapshot_path is not None else b""
     if native_snapshot_path is not None and hashlib.sha256(native_bytes).hexdigest() != native_snapshot_sha256:
         raise ValueError("Native snapshot differs from its pinned SHA256")
-    dataset_id = publication_id or "photo-" + pool_sha
+    dataset_id = publication_id or source_kind + "-" + pool_sha
     snapshot_id = hashlib.sha256(
         implementation + dataset_id.encode() + pool_bytes + reference_bytes + measurement_bytes + image_digest.digest(),
     ).hexdigest()
@@ -338,7 +346,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                      "tasks": [{"task": task, "population_total": len(ids), "problem_ids": ids}
                                for task, ids in tasks.items()]}
                     for bucket, tasks in sorted(buckets.items())],
-        "protocol": {"population": "new-photo-piles-only", "native_pool_sha256": pool_sha,
+        "protocol": {"population": f"new-{source_kind}-piles-only", "native_pool_sha256": pool_sha,
                      "horizon": measurements.get("horizon") if measurements is not None else None,
                      "measurement_scope": measurements.get("measurement_scope")
                      if measurements is not None else None,
@@ -355,7 +363,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                      if measurements is not None else None,
                      "measurement_input_sha256": measurements["input_sha256"]
                      if measurements is not None else None,
-                     "reference_collector_sha256": references["collector_sha256"],
+                     "reference_collector_sha256": references["collector_sha256"] if references is not None else None,
                      "policy_sha256_before": measurements.get("policy_sha256_before")
                      if measurements is not None else None,
                      "policy_sha256_after": measurements.get("policy_sha256_after")
@@ -363,13 +371,13 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                      "reference_progress_is_policy_success_rate": False},
         "provenance": {"native_pool_sha256": pool_sha,
                        "publisher_implementation_sha256": implementation.hex(),
-                       "population_status": "immutable-photo-TRAIN-pool"},
+                       "population_status": f"immutable-{source_kind}-TRAIN-pool"},
         "notes": ["Reference acceptance is not policy success or proof of general task feasibility.",
                   "Native historical screening belongs only to its original native problems, not photo outcomes."],
     }
     manifest["measurement_scopes"] = {
-        "photo-assistance-calibration": {
-            "label": "Current photo-pile assistance calibration",
+        scope: {
+            "label": f"Current {source_kind}-pile assistance calibration",
             "status": progress["policy_calibration_status"],
             "provenance": {"native_pool_sha256": pool_sha},
             "protocol": dict(manifest["protocol"]), "problem_count": len(problems),
@@ -409,8 +417,10 @@ def publish(pool_path: Path, references_path: Path, output: Path,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("pool", "references", "output"):
+    for name in ("pool", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--references", type=Path)
+    parser.add_argument("--source-kind", choices=("photo", "native"), default="photo")
     parser.add_argument("--measurements", type=Path)
     parser.add_argument("--images", type=Path, action="append")
     parser.add_argument("--native-snapshot", type=Path)
@@ -421,7 +431,7 @@ def main():
     args = parser.parse_args()
     print(json.dumps(publish(args.pool, args.references, args.output, args.measurements, args.images,
                              args.native_snapshot, args.native_snapshot_sha256, args.publication_id,
-                             args.measurement_series_id, args.measurement_series_label)))
+                             args.measurement_series_id, args.measurement_series_label, args.source_kind)))
 
 
 if __name__ == "__main__":
