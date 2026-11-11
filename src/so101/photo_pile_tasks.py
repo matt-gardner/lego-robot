@@ -26,6 +26,40 @@ from so101.robot_sim import (
 START_PROFILE = "independent-robot-starts-v1"
 
 
+def select_current_pools(root: Path, paths: list[Path]) -> dict:
+    pools, families = [], set()
+    if not paths:
+        raise ValueError("Current task selection cannot be empty")
+    for path in paths:
+        if not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError("Current pool must be contained in the curriculum root")
+        content = path.read_bytes()
+        manifest = json.loads(content)
+        if (manifest.get("kind") != "lego-pile-task-pool"
+                or manifest.get("status") != "complete" or not manifest["scenes"]):
+            raise ValueError("Current selection requires completed task pools")
+        task_count, piece_counts = 0, set()
+        for entry in manifest["scenes"]:
+            scene = json.loads((Path(entry["root"]) / "problem.json").read_text())
+            load_problem(entry, scene["tasks"][0]["task_id"])
+            if entry["scene_family_id"] in families or any(
+                task.get("start", {}).get("profile") != START_PROFILE
+                or "initial_state" not in task for task in scene["tasks"]
+            ):
+                raise ValueError("Current selection duplicates families or lacks per-task starts")
+            families.add(entry["scene_family_id"])
+            task_count += len(scene["tasks"])
+            piece_counts.add(len(scene["instances"]))
+        pools.append({"manifest_path": str(path.resolve()),
+                      "sha256": hashlib.sha256(content).hexdigest(),
+                      "scenes": len(manifest["scenes"]), "task_count": task_count,
+                      "piece_counts": sorted(piece_counts)})
+    selection = {"schema_version": 1, "kind": "lego-current-task-pools",
+                 "task_start_profile": START_PROFILE, "pools": pools}
+    atomic_json(root / "current-task-pools.json", selection)
+    return selection
+
+
 def assign_task_starts(sim: BeamSimulation, scene: dict, snapshot: dict, xml: str) -> None:
     """Sample collision-free arm configurations without moving the settled pile."""
     model = sim.model
@@ -376,9 +410,13 @@ def main() -> None:
     parser.add_argument("--pieces", type=int, default=20)
     parser.add_argument("--model-root", type=Path, default=MODEL_ROOT)
     parser.add_argument("--retask-pool", type=Path)
+    parser.add_argument("--select-pools", type=Path, nargs="+")
     args = parser.parse_args()
     if args.scenes <= 0 or args.pieces < 20:
         parser.error("Require a positive scene quota and at least 20 pieces")
+    if args.select_pools is not None:
+        print(json.dumps(select_current_pools(args.root, args.select_pools)), flush=True)
+        return
     if args.retask_pool is not None:
         manifest = json.loads(args.retask_pool.read_text())
         args.root.mkdir(parents=True, exist_ok=True)

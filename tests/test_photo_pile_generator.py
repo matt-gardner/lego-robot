@@ -152,11 +152,20 @@ def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
     finally:
         sim.close()
     assert photo_pile_tasks.build_problem(source, root / "scene_000000000") == entry
-    revised = photo_pile_tasks.retask_scene(entry, tmp_path / "revised")
+    revised = photo_pile_tasks.retask_scene(entry, tmp_path / "revisions" / "scene_000000000")
     assert revised["scene_family_id"] == entry["scene_family_id"]
     assert revised["scene_id"] != entry["scene_id"]
     for name in ("model.mjb", "model.xml", "integration_state.json"):
         assert revised["files_sha256"][name] == entry["files_sha256"][name]
+    revision_pool = publish_pool(tmp_path / "revisions")
+    selected = photo_pile_tasks.select_current_pools(
+        tmp_path, [Path(revision_pool["manifest_path"])])
+    assert selected["pools"][0]["task_count"] == 80
+    before = (tmp_path / "current-task-pools.json").read_bytes()
+    with pytest.raises(ValueError, match="duplicates"):
+        photo_pile_tasks.select_current_pools(
+            tmp_path, [Path(revision_pool["manifest_path"])] * 2)
+    assert (tmp_path / "current-task-pools.json").read_bytes() == before
 
 
 def test_progression_rejects_twenty_repeat_and_unbounded_quota():
