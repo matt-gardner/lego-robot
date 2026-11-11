@@ -106,3 +106,68 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
     with pytest.raises(ValueError, match="bound task"):
         publish(pool, reference, output, measurements)
     assert (output / "current.json").read_bytes() == previous_pointer
+
+
+def test_channels_keep_native_inventory_images_and_scoped_history_without_legacy(tmp_path):
+    pool, reference, output, _, _ = inputs(tmp_path)
+    original_directory = tmp_path / "historical"
+    original_directory.mkdir()
+    image = original_directory / "native.png"
+    Image.new("RGB", (5, 3)).save(image)
+    image_sha = hashlib.sha256(image.read_bytes()).hexdigest()
+    native = []
+    buckets = []
+    for pieces in (3, 5, 8):
+        scene = original_directory / f"scene-{pieces}.json"
+        scene.write_text(json.dumps({"pieces": pieces}))
+        identity = f"native-{pieces}"
+        native.append({
+            "id": identity, "bucket_id": f"native:{pieces}-pieces", "task": "grasp",
+            "source": {"kind": "native", "path": str(scene), "split": "train",
+                       "sha256": hashlib.sha256(scene.read_bytes()).hexdigest()},
+            "initial_images": [{"path": image.name, "sha256": image_sha, "camera": "wrist_cam"}],
+        })
+        buckets.append({"id": f"native:{pieces}-pieces",
+                        "tasks": [{"task": "grasp", "problem_ids": [identity]}]})
+    original = {
+        "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "original",
+        "problems": [*native, {"id": "legacy", "source": {"kind": "legacy"}}],
+        "groups": [{"problem_id": "native-3", "attempts": 4, "successes": 1, "status": "screening"},
+                   {"problem_id": "legacy", "attempts": 100, "successes": 100}],
+        "buckets": [*buckets, {"id": "legacy", "tasks": [{"problem_ids": ["legacy"]}]}],
+        "provenance": {"native_pool_sha256": "native-pool"}, "protocol": {"rollouts_per_group": 4},
+    }
+    source = original_directory / "manifest.json"
+    source.write_text(json.dumps(original))
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    publish(pool, reference, output)
+    previous_pointer = (output / "current.json").read_bytes()
+    result = publish(pool, reference, output, native_snapshot_path=source,
+                     native_snapshot_sha256=digest, publication_id="photo-test")
+    snapshot = BucketDashboard(output).snapshot()
+    assert result["problems"] == 1
+    assert len(snapshot["problems"]["problems"]) == 4
+    assert len(list((output / "publications").glob("*/current.json"))) == 2
+    assert (output / "current.json").read_bytes() == previous_pointer
+    assert len(snapshot["problems"]["buckets"]) == 4
+    assert {row["source"]["kind"] for row in snapshot["problems"]["problems"]} == {"native", "photo"}
+    assert BucketDashboard(output).image("native-3", 0)[0] == image.read_bytes()
+    datasets = {row["dataset_id"]: row for row in snapshot["manifest"]["datasets"]}
+    assert datasets["photo-test"]["progress"]["policy_rollouts"] == 0
+    assert datasets["native-native-pool"]["progress"]["historical_native_policy_rollouts"] == 4
+    assert snapshot["calibration"]["groups"] == [{
+        **original["groups"][0], "measurement_scope": "native-historical-screening",
+        "dataset_snapshot_id": datasets["native-native-pool"]["snapshot_id"],
+        "provenance": {"snapshot_id": "original", "manifest_sha256": digest,
+                       "native_pool_sha256": "native-pool"},
+    }]
+    previous_pointer = (output / "current.json").read_bytes()
+    with pytest.raises(ValueError, match="pinned SHA256"):
+        publish(pool, reference, output, native_snapshot_path=source,
+                native_snapshot_sha256="changed", publication_id="photo-test")
+    assert (output / "current.json").read_bytes() == previous_pointer
+    (original_directory / "scene-3.json").write_text("changed")
+    with pytest.raises(ValueError, match="pinned provenance"):
+        publish(pool, reference, output, native_snapshot_path=source,
+                native_snapshot_sha256=digest, publication_id="photo-test")
+    assert (output / "current.json").read_bytes() == previous_pointer

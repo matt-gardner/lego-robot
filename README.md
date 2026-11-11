@@ -1047,7 +1047,16 @@ visible pixels. External visibility is not policy-wrist visibility or solvabilit
 publishes all admitted tasks, preparation progress, and ordered camera images.
 Add `--measurements <probe-results.json>` only for actual new-pile policy results.
 Reference acceptance never supplies model pass rates; historical groups/images
-are not merged into the new population.
+are not reused as photo outcomes. The shared dashboard publisher also supplies
+`--native-snapshot <immutable-manifest> --native-snapshot-sha256 <sha256>` to
+bootstrap a separate native 3/5/8-piece publication with its original images,
+excluding legacy corpus rows. `--publication-id <dataset-id>` writes
+`publications/<dataset-id>/current.json`, pointing to the root-relative immutable
+snapshot; it does not overwrite another dataset or the compatibility root pointer.
+The dashboard discovers these channels automatically. Native historical screening and current photo
+calibration have separate `measurement_scope` values and pinned pool/protocol
+provenance. `progress.policy_rollouts` counts only current photo measurements;
+`historical_native_policy_rollouts` reports the separate historical population.
 
 The historical `python -m so101.calibrate_trajectory_rl` screening command
 performs inference only on the final SFT checkpoint, with no optimizer; it is
