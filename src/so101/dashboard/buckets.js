@@ -52,19 +52,30 @@ function targetBox(image) {
     frame.append(img);
     let caption;
     try {
-      const box=targetBox(image);
+      const annotations=image.target_annotations ?? image.provenance?.target_annotations ??
+        [{...image,role:"source_object"}];
+      if (!Array.isArray(annotations) || !annotations.length) throw new Error("Invalid published target annotations");
+      const captions=[];
+      for (const annotation of annotations) {
+      if (!["source_object","destination"].includes(annotation.role)) throw new Error("Invalid published target annotation role");
+      const label=annotation.role==="destination" ? "Destination goal marker (cyan)" : "Source object (yellow)";
+      const box=targetBox({...annotation,width:image.width,height:image.height});
       if (box) {
         const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg"),rect=document.createElementNS(ns,"rect");
         svg.setAttribute("viewBox",`0 0 ${image.width} ${image.height}`);
         svg.setAttribute("aria-label","Visible target bounding box from renderer segmentation");
-        for (const [key,value] of Object.entries({x:box[0],y:box[1],width:box[2]-box[0],height:box[3]-box[1],fill:"none",stroke:"#ffdd00","stroke-width":2,"vector-effect":"non-scaling-stroke"})) rect.setAttribute(key,value);
+        const title=document.createElementNS(ns,"title");title.textContent=label;rect.append(title);
+        for (const [key,value] of Object.entries({x:box[0],y:box[1],width:box[2]-box[0],height:box[3]-box[1],fill:"none",stroke:annotation.role==="destination" ? "#00e5ff" : "#ffdd00","stroke-width":2,"vector-effect":"non-scaling-stroke"})) rect.setAttribute(key,value);
         svg.append(rect);frame.append(svg);
-        caption="Target bounding box · visible segmentation";
+        captions.push(`${label} · visible segmentation`);
       } else {
-        const state=image.target_bbox_status ?? image.provenance?.target_bbox_status;
-        const pixels=image.target_visible_pixels ?? image.provenance?.initial_visible_target_pixels;
-        caption=state==="not_visible" || pixels===0 ? "Target not visible in this camera · no box" : "Target bounding box not measured yet";
+        const state=annotation.target_bbox_status ?? annotation.provenance?.target_bbox_status;
+        const pixels=annotation.target_visible_pixels ?? annotation.provenance?.initial_visible_target_pixels;
+        captions.push(`${label} · ${state==="not_visible" || pixels===0 ? "not visible in this camera · no box" : "bounding box not measured yet"}`);
       }
+      }
+      if (["push","place"].includes(problem.task) && !annotations.some(a=>a.role==="destination")) captions.push("Destination bounding box not measured yet");
+      caption=captions.join(" · ");
     } catch(error) {caption=error.message;}
     figure.append(frame,node("figcaption",`${image.camera || "Camera unspecified"} · initial state · ${caption}`));
     return figure;

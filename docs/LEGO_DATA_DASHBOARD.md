@@ -85,6 +85,15 @@ the hash-bound RGB image and actual dimensions. The task inspector overlays
 these boxes at responsive image scale; absent/zero-visible targets show explicit
 unmeasured/not-visible states, not guessed or amodal boxes.
 
+Push/place images support `target_annotations` (image-level or in provenance),
+with independent `source_object` and `destination` roles using those same box
+and visibility fields. Source boxes are yellow; destination boxes are cyan,
+with a textual legend. The destination is visible goal-marker geometry, not
+a second LEGO object or an inferred tolerance region. Include `entity_id`,
+`entity_kind`, `bbox_semantics` and the original `goal` for provenance.
+Legacy singular boxes remain source-only; missing destination measurements
+are explicitly labeled.
+
 Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
 browsing, feedback and activation, not collection or part qualification.
 
