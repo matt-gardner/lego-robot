@@ -36,10 +36,13 @@ measured problem's task, canonical source and scene hash. The shared protocol,
 progress and groups are preserved; unmeasured pools remain unmeasured. Rates
 describe only the sampled problems, not the entire enumerated pool.
 
-Independent newly admitted piles appear in their piece-count bucket alongside
-complete-pool piles, including a table row and filter option for admission-only
-buckets. Their cards and table coverage explicitly label task-pool readiness
-as pending, separately from image availability and unmeasured policy rates.
+Tasks are read immediately from each admitted pile's hash-pinned `problem.json`,
+without waiting for a complete pool or rendered preview. Active generator
+admissions under `photo-task-progression-collective-v1` and
+`catalog-diverse-20-v1` are discovered independently of renderer progress.
+Canonical task IDs deduplicate selected-pool tasks. All admitted tasks appear
+in their piece-count bucket and carousel; matching images attach only to their
+exact task. Missing images and unmeasured policy rates remain separate states.
 The reader discovers `pile-previews-v1/<admission SHA>/admission.json`, validates
 the pin and scene problem hash, and shows an explicit pending state until an
 atomic task receipt and original PNG arrive in that directory. Receipt pool SHA

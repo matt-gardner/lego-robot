@@ -263,11 +263,11 @@ def test_prefixed_http_page_missing_publication_and_exact_image(tmp_path):
         server.server_close()
 
 
-def test_admitted_pile_is_separate_from_task_inventory(tmp_path):
+def test_admitted_tasks_are_available_before_pool_or_preview_completion(tmp_path):
     curriculum = tmp_path / "curriculum"
     curriculum.mkdir()
     scene = {"scene_id": "new-scene", "tags": {"piece_count": 40}, "tasks": [
-        {"task_id": "view", "target_instance_id": "brick_0"},
+        {"task_id": "view", "task_type": "view", "target_instance_id": "brick_0"},
     ]}
     body = json.dumps(scene).encode()
     (curriculum / "problem.json").write_bytes(body)
@@ -287,8 +287,16 @@ def test_admitted_pile_is_separate_from_task_inventory(tmp_path):
     (channel / "current.json").write_bytes((dashboard / "current.json").read_bytes())
     browser = BucketDashboard(dashboard, curriculum)
     first = browser.snapshot()
-    assert first["problems"]["problems"] == []
-    assert first["admitted_piles"][0]["initial_images"] == []
+    assert len(first["problems"]["problems"]) == 1
+    assert first["problems"]["problems"][0]["task"] == "view"
+    assert first["problems"]["problems"][0]["bucket"] == "current:40-pieces"
+    assert first["problems"]["problems"][0]["initial_images"] == []
+    assert first["admitted_piles"] == []
+    generated = curriculum / "photo-task-progression-collective-v1/pieces-40/tasks/scene_000/admission.json"
+    generated.parent.mkdir(parents=True)
+    generated.write_bytes(admission_bytes)
+    (directory / "admission.json").unlink()
+    assert len(browser.snapshot()["problems"]["problems"]) == 1
     image = b"\x89PNG\r\n\x1a\nadmitted"
     (directory / "image.png").write_bytes(image)
     source = str(curriculum / "tasks" / "view")
@@ -301,7 +309,7 @@ def test_admitted_pile_is_separate_from_task_inventory(tmp_path):
                "target_bbox_status": "not_visible", "target_bbox_xyxy": None, "target_visible_pixels": 0}
     (directory / "task.json").write_text(json.dumps(receipt))
     snapshot = browser.snapshot()
-    pile = snapshot["admitted_piles"][0]
+    pile = snapshot["problems"]["problems"][0]
     assert browser.image(pile["id"], 0, pile["dataset_snapshot_id"]) == (image, "image/png")
     assert snapshot["manifest"]["snapshot_id"] != first["manifest"]["snapshot_id"]
     assert snapshot["calibration"]["groups"] == []

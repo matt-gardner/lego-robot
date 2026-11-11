@@ -118,8 +118,16 @@ class BucketDashboard:
                           for group in publication["calibration"]["groups"])
             buckets.extend(publication["problems"]["buckets"])
         admissions = self.admitted_piles()
+        for pile in admissions:
+            for problem in pile.pop("tasks"):
+                if problem["id"] not in identities:
+                    identities.add(problem["id"])
+                    problems.append(problem)
+        task_scenes = {p.get("source", {}).get("scene_id") for p in problems}
+        admissions = [p for p in admissions if p["scene_id"] not in task_scenes]
         revision = hashlib.sha256(json.dumps(
-            [[p["snapshot_id"] for p in datasets], admissions], sort_keys=True).encode()).hexdigest()
+            [[p["snapshot_id"] for p in datasets], admissions,
+             [(p["id"], p["dataset_snapshot_id"]) for p in problems]], sort_keys=True).encode()).hexdigest()
         return {"manifest": {"snapshot_id": revision, "datasets": datasets},
                 "admitted_piles": admissions,
                 "problems": {"problems": problems, "buckets": buckets},
@@ -129,18 +137,27 @@ class BucketDashboard:
 
     def admitted_piles(self) -> list:
         pins = sorted(self.root.glob("pile-previews-v1/*/admission.json"))
+        sources = {pin.parent.name: (pin, False) for pin in pins}
+        if self.curriculum_root:
+            for workstream in ("photo-task-progression-collective-v1", "catalog-diverse-20-v1"):
+                for pin in sorted((self.curriculum_root / workstream).glob(
+                        "pieces-*/tasks/scene_*/admission.json")):
+                    body = self.curriculum_read(pin)
+                    sources[hashlib.sha256(body).hexdigest()] = (pin, True)
+        pins = sorted(sources.items())
         if len(pins) > 20000:
             raise ValueError("Too many admitted pile previews")
         piles = []
-        for pin in pins:
-            sha = pin.parent.name
-            admission = json.loads(self.read(str(pin.relative_to(self.root)), sha))
+        for sha, (pin, generator_source) in pins:
+            admission = json.loads(self.curriculum_read(pin, sha) if generator_source else
+                                   self.read(str(pin.relative_to(self.root)), sha))
             if admission["split"] != "train":
                 raise ValueError("Pile preview crosses TRAIN admission")
             scene = json.loads(self.curriculum_read(
                 Path(admission["root"]) / "problem.json", admission["files_sha256"]["problem.json"]))
             images = []
-            for path in sorted(pin.parent.glob("*.json")):
+            preview_directory = self.root / "pile-previews-v1" / sha
+            for path in sorted(preview_directory.glob("*.json")):
                 if path.name == "admission.json":
                     continue
                 row = json.loads(self.read(str(path.relative_to(self.root)), limit=1024 * 1024))
@@ -160,11 +177,28 @@ class BucketDashboard:
                     validate_annotation(annotation, row["width"], row["height"])
                 images.append({**row, "renderer": row["backend"], "root_relative": True,
                                "path": str(path.parent.relative_to(self.root) / row["image_file"])})
-            piles.append({"id": "admission:" + sha, "admission_sha256": sha,
+            revision = hashlib.sha256(json.dumps([sha, images], sort_keys=True).encode()).hexdigest()
+            tasks = []
+            for task in scene["tasks"]:
+                source = str(Path(admission["root"]) / "tasks" / task["task_id"])
+                identity = hashlib.sha256(source.encode()).hexdigest()
+                tasks.append({
+                    "id": identity, "bucket": f'current:{scene["tags"]["piece_count"]}-pieces',
+                    "task": task["task_type"],
+                    "source": {"kind": "admitted", "episode_source": source,
+                               "path": str(Path(admission["root"]) / "problem.json"),
+                               "sha256": admission["files_sha256"]["problem.json"],
+                               "scene_id": scene["scene_id"], "task_id": task["task_id"], "split": "train"},
+                    "tags": {"scene": scene["tags"], "target_instance_id": task["target_instance_id"],
+                             "goal": task.get("goal"), "task_start": task.get("task_start")},
+                    "measurement_status": "unmeasured", "feasibility": {"status": "unmeasured"},
+                    "dataset_snapshot_id": revision, "snapshot_directory": "",
+                    "initial_images": [image for image in images if image["problem_id"] == identity],
+                })
+            piles.append({"id": "admission:" + sha, "admission_sha256": sha, "tasks": tasks,
                           "scene_id": scene["scene_id"], "tags": scene["tags"],
                           "status": "admitted pile preview — not a complete task pool",
-                          "initial_images": images, "dataset_snapshot_id": hashlib.sha256(
-                              json.dumps(images, sort_keys=True).encode()).hexdigest()})
+                          "initial_images": images, "dataset_snapshot_id": revision})
         return piles
 
     def curriculum_path(self, source: str) -> Path:
