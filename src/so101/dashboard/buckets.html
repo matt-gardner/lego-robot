@@ -2,12 +2,11 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Data buckets</title><link rel="stylesheet" href="dashboard.css"><link rel="stylesheet" href="buckets.css"></head>
 <body><!-- dashboard-header -->
-<main><button id="refresh">Refresh</button><p id="status" role="status" hidden></p>
+<main><p id="status" role="status" hidden></p>
 <section id="populations" aria-label="All bucket and task populations"></section>
 <section id="admitted-piles" aria-label="Admitted pile previews, not complete task pools"></section>
 <label>Bucket <select id="bucket"><option value="">All buckets</option></select></label>
 <label>Task <select id="task"><option value="">All tasks</option></select></label>
 <label>Find problem <input id="search" type="search"></label>
 <p id="count"></p><div id="problems"></div><button id="more" hidden>Show more piles</button>
-<details id="snapshot-details"><summary>Technical details</summary><pre id="provenance"></pre></details>
 </main><dialog id="pile-dialog" aria-labelledby="pile-title"><header><h2 id="pile-title"></h2><button id="pile-close" aria-label="Close pile details">Close</button></header><div id="pile-tasks"></div></dialog><script src="buckets.js"></script></body></html>

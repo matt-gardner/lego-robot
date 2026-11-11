@@ -214,7 +214,6 @@ async function start() {
     }
     if(data.manifest.measurement_scopes) status.textContent+=" "+
       Object.values(data.manifest.measurement_scopes).map(s=>`${s.label}: ${s.policy_rollouts} policy rollouts (${s.status})`).join(". ");
-    document.getElementById("provenance").textContent=JSON.stringify({manifest:data.manifest,protocol:data.calibration.protocol},null,2);
     const sourcePath=s=>typeof s==="object" ? s?.path : s;
     const measuredGroups=new Map();
     const groupFor=p=>{
@@ -252,7 +251,6 @@ async function start() {
       if(typeof preferences[id]==="string" &&
         (id==="search" || (id==="bucket" ? bucketIds : [...new Set(problems.map(p=>p.task))]).includes(preferences[id]))) element.value=preferences[id];
     }
-    rememberDetails(document.getElementById("snapshot-details"),"snapshot-details");
     let shown=Number.isInteger(preferences.shown) && preferences.shown>=24 ? preferences.shown : 24;
     function saveFilters() {
       for (const id of ["bucket","task","search"]) preferences[id]=document.getElementById(id).value;
@@ -397,7 +395,6 @@ if (typeof document !== "undefined") {
       if(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom) event.target.close();
     }
   });
-  document.getElementById("refresh").addEventListener("click",()=>location.reload());
   start();
 }
 if (typeof module !== "undefined") module.exports={wilson,aggregate,groupPiles,targetBox};

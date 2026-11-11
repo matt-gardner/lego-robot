@@ -146,8 +146,6 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   elements.get("search").value="first";
   elements.get("search").listeners.input();
   assert.equal(elements.get("problems").children[0].open,false);
-  elements.get("snapshot-details").open=true;
-  elements.get("snapshot-details").listeners.toggle();
   elements.clear();
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
     {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
@@ -155,5 +153,4 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.equal(elements.get("search").value,"first");
   assert.equal(elements.get("bucket").value,"b");
   assert.equal(elements.get("problems").children[0].open,false);
-  assert.equal(elements.get("snapshot-details").open,true);
 });
