@@ -17,6 +17,11 @@ from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
 
 
 class ReferenceSimulation(NativePileSimulation):
+    def demonstrate_push(self, target, destination):
+        return super().demonstrate_push(
+            target, destination, stop_distance=.015, success_distance=.025, max_cycles=4,
+        )
+
     def reset_native(self, episode):
         result = super().reset_native(episode)
         self.yaws = {}

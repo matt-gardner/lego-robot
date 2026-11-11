@@ -1287,7 +1287,17 @@ class BeamSimulation:
             "pinch": grasp["pinch"],
         }
 
-    def demonstrate_push(self, target: str, destination: str) -> dict:
+    def demonstrate_push(
+        self, target: str, destination: str, *,
+        stop_distance: float = .055, success_distance: float = .070,
+        max_cycles: int | None = None,
+    ) -> dict:
+        if not (math.isfinite(stop_distance) and math.isfinite(success_distance)
+                and 0 < stop_distance <= success_distance):
+            raise ValueError("Push stop distance must be positive and within its success distance")
+        cycles = max_cycles if max_cycles is not None else (1 if self.scene_version >= SCENE_VERSION else 4)
+        if cycles < 1:
+            raise ValueError("Push controller requires at least one cycle")
         self.configure_command(
             "push", [(target, "object"), (destination, "destination")]
         )
@@ -1296,11 +1306,11 @@ class BeamSimulation:
         closed = self.limits[-1, 0]
         wrist_roll = float(self.data.qpos[self.qadr[4]])
         retreat = None
-        for cycle in range(1 if self.scene_version >= SCENE_VERSION else 4):
+        for cycle in range(cycles):
             current_position = self.position(target).copy()
             direction = destination_position[:2] - current_position[:2]
             distance = float(np.linalg.norm(direction))
-            if distance <= .055:
+            if distance <= stop_distance:
                 break
             direction /= max(distance, 1e-9)
 
@@ -1338,8 +1348,8 @@ class BeamSimulation:
         initial_destination_error = float(np.linalg.norm(
             start_position[:2] - destination_position[:2]
         ))
-        success = destination_error <= .070 and (
-            displacement >= .02 or initial_destination_error <= .070
+        success = destination_error <= success_distance and (
+            displacement >= .02 or initial_destination_error <= success_distance
         )
         return {
             "success": success,

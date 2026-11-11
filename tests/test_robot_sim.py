@@ -39,6 +39,37 @@ def test_exact_failed_first_push_is_not_accepted_after_recovery():
     assert corrected["destination_error_m"] == pytest.approx(.17034389)
 
 
+def test_native_push_tolerances_continue_realigning_without_changing_legacy_defaults():
+    def run(**options):
+        position = np.array([.15, 0., 0.])
+        errors = iter([.06, .027, .014])
+        phases = []
+
+        def move(goal, phase, **kwargs):
+            phases.append(phase)
+            if phase == "push":
+                position[0] = next(errors)
+
+        fake = SimpleNamespace(
+            scene_version=4, limits=np.array([[0., 1.]] * 6),
+            data=SimpleNamespace(qpos=np.zeros(6), ctrl=np.zeros(6)),
+            qadr=np.arange(6), actuators=np.arange(6),
+            configure_command=lambda *args: None,
+            position=lambda name: position.copy() if name == "target" else np.zeros(3),
+            push_ik=lambda *args: np.zeros(6), move=move, step=lambda *args: None,
+        )
+        return BeamSimulation.demonstrate_push(fake, "target", "goal", **options), phases
+
+    legacy, phases = run()
+    assert legacy["success"] and legacy["destination_error_m"] == pytest.approx(.06)
+    assert phases.count("push") == 1
+    tight, phases = run(stop_distance=.015, success_distance=.025, max_cycles=4)
+    assert tight["success"] and tight["destination_error_m"] == pytest.approx(.014)
+    assert phases.count("push") == 3
+    incomplete, _ = run(stop_distance=.015, success_distance=.025, max_cycles=2)
+    assert not incomplete["success"] and incomplete["destination_error_m"] == pytest.approx(.027)
+
+
 @pytest.mark.parametrize("phases", [
     ["push", "push_retreat", "push_realign", "push"],
     ["close", "retry_open", "grasp_retry", "lift"],

@@ -1057,6 +1057,10 @@ Use `--piece-count <count> --accepted-per-task 4` to collect up to four qualifie
 references per task within one bucket, stopping early at that target while keeping
 the `--max-per-task` attempt ceiling. Fewer accepted references remain explicitly
 unqualified for a four-problem assistance screen.
+Native push references use up to four alignment cycles, a 15mm controller stop
+distance and 25mm scripted success distance. Admission still requires the unchanged
+native release, support, stability and dwell predicates; scripted success alone
+does not qualify a reference. Legacy scripted push defaults remain unchanged.
 The collector executes numeric policy actions, restores the exact integration
 state, replays every action, and admits a reference only when the native dwell
 grader succeeds at the end and maximum replay qpos error is at most 1e-7.
