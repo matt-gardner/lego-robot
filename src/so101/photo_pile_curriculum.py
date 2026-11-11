@@ -33,12 +33,14 @@ def validate_stages(stages: tuple[int, ...], quota: int, maximum_attempts: int) 
 
 def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
         quota: int = 10, maximum_attempts: int = 100, seed: int = 20261112,
-        model_root: Path = MODEL_ROOT, stopping: threading.Event | None = None) -> None:
+        model_root: Path = MODEL_ROOT, stopping: threading.Event | None = None,
+        sampling: str = "original") -> None:
     validate_stages(stages, quota, maximum_attempts)
     stopping = stopping or threading.Event()
     root.mkdir(parents=True, exist_ok=True)
     config = {"stages": list(stages), "quota": quota, "maximum_attempts": maximum_attempts,
               "seed": seed, "source": str(source.resolve()), "model_root": str(model_root.resolve()),
+              "sampling": sampling,
               "source_sha256": hashlib.sha256((source / "model.xml").read_bytes()).hexdigest(),
               "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     with (root / ".curriculum.lock").open("a") as lock:
@@ -100,7 +102,8 @@ def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
                     try:
                         if not pile.exists():
                             generate_scene(source, pile, count=count, seed=candidate_seed,
-                                           check_stop=check_stop, progress=progress)
+                                           check_stop=check_stop, progress=progress,
+                                           sampling=sampling)
                         check_stop()
                         entry = build_problem(pile, tasks / f"scene_{sequence:09d}", model_root)
                         attempt.update(status="complete", entry=entry)
@@ -143,6 +146,7 @@ def main() -> None:
     parser.add_argument("--quota", type=int, default=10)
     parser.add_argument("--maximum-attempts", type=int, default=100)
     parser.add_argument("--model-root", type=Path, default=MODEL_ROOT)
+    parser.add_argument("--sampling", choices=("original", "common-basic-v1"), default="original")
     args = parser.parse_args()
     os.nice(19)
     logging.basicConfig(level=logging.INFO)
@@ -150,7 +154,8 @@ def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
     run(args.root, args.source, stages=tuple(args.stages), quota=args.quota,
-        maximum_attempts=args.maximum_attempts, model_root=args.model_root, stopping=stopping)
+        maximum_attempts=args.maximum_attempts, model_root=args.model_root, stopping=stopping,
+        sampling=args.sampling)
 
 
 if __name__ == "__main__":

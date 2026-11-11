@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import json
@@ -25,13 +26,16 @@ from so101.pile_task_generator import resource_check
 
 LOGGER = logging.getLogger(__name__)
 PROFILE = "photo-demo-visual-hull-v1"
+PHOTO_TEMPLATE_SHA256 = "ae154b5b6c938c8b55867dea647338de1eb52aec4d3ca6ee8ce5ab1117e64543"
+PHOTO_PART_IDS = ("3001", "3002", "3003", "3004", "3020", "3022", "3700", "3702")
 
 
 class RejectedPile(ValueError):
     """A fresh placement failed the unchanged photo-demo physical criteria."""
 
 
-def prepare_model(source: Path, count: int, seed: int) -> tuple[str, dict, list[dict]]:
+def prepare_model(source: Path, count: int, seed: int,
+                  sampling: str = "original") -> tuple[str, dict, list[dict]]:
     if not 20 <= count <= 90:
         raise ValueError("Photo piles must contain between 20 and 90 pieces")
     original = json.loads((source / "receipt.json").read_text())
@@ -45,17 +49,39 @@ def prepare_model(source: Path, count: int, seed: int) -> tuple[str, dict, list[
     bodies = world.findall("body")
     if len(bodies) != 90:
         raise ValueError("Expected the retained 90-piece photo model")
-    for body in bodies[count:]:
+    if sampling not in ("original", "common-basic-v1"):
+        raise ValueError("Unknown photo-pile sampling profile")
+    rng = np.random.default_rng(seed)
+    if sampling == "common-basic-v1":
+        if original["model_xml_sha256"] != PHOTO_TEMPLATE_SHA256:
+            raise ValueError("Common-piece mapping requires the exact verified original photo model")
+        basic_count = round(.9 * count)
+        choices = np.r_[rng.integers(0, 6, size=basic_count),
+                        rng.integers(6, 8, size=count - basic_count)]
+        rng.shuffle(choices)
+        selected = []
+        for index, choice in enumerate(choices):
+            body = copy.deepcopy(bodies[int(choice)])
+            old_name = body.attrib["name"]
+            for node in body.iter():
+                if "name" in node.attrib:
+                    node.set("name", node.attrib["name"].replace(old_name, f"brick_{index}", 1))
+            selected.append(body)
+    else:
+        choices = np.arange(count) % len(PHOTO_PART_IDS)
+        selected = bodies[:count]
+    for body in bodies:
         world.remove(body)
+    for body in selected:
+        world.append(body)
     used_meshes = {geom.attrib["mesh"] for geom in world.iter("geom") if "mesh" in geom.attrib}
     assets = tree.find("asset")
     if assets is not None:
         for mesh in assets.findall("mesh"):
             if mesh.attrib["name"] not in used_meshes:
                 assets.remove(mesh)
-    rng = np.random.default_rng(seed)
     placements = []
-    for index, body in enumerate(bodies[:count]):
+    for index, body in enumerate(selected):
         radius = .07 * math.sqrt(float(rng.random()))
         angle, yaw = rng.uniform(-math.pi, math.pi, 2)
         position = [radius * math.cos(angle), radius * math.sin(angle), .04 + .025 * index]
@@ -63,7 +89,10 @@ def prepare_model(source: Path, count: int, seed: int) -> tuple[str, dict, list[
         body.set("pos", " ".join(map(str, position)))
         body.set("quat", " ".join(map(str, quaternion)))
         placements.append({"instance_id": body.attrib["name"], "position": position,
-                           "quaternion": quaternion})
+                           "quaternion": quaternion,
+                           "part_id": (PHOTO_PART_IDS[int(choices[index])]
+                                       if original["model_xml_sha256"] == PHOTO_TEMPLATE_SHA256
+                                       else "catalog-demo")})
     return ET.tostring(tree, encoding="unicode"), original, placements
 
 
@@ -90,8 +119,9 @@ def verify_scene(output: Path) -> dict:
 
 
 def generate_scene(source: Path, output: Path, *, count: int, seed: int,
-                   check_stop=lambda: None, progress=lambda value: None) -> dict:
-    xml, original, placements = prepare_model(source, count, seed)
+                   check_stop=lambda: None, progress=lambda value: None,
+                   sampling: str = "original") -> dict:
+    xml, original, placements = prepare_model(source, count, seed, sampling)
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)
     if model.nbody != count + 1 or model.nq != count * 7 or model.nv != count * 6:
@@ -153,7 +183,7 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
             raise RejectedPile(f"Insertion {index + 1}: 10-second simulated settling timeout")
         progress({"inserted": index + 1, "piece_count": count,
                   "simulated_seconds": data.time, "contacts": data.ncon})
-    objects = [{"instance_id": p["instance_id"], "part_id": "catalog-demo"} for p in placements]
+    objects = [{"instance_id": p["instance_id"], "part_id": p["part_id"]} for p in placements]
     plan = {"scene_id": output.name, "catalog_sha256": original["catalog_sha256"],
             "objects": objects}
     try:
@@ -173,6 +203,7 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
         "source_receipt_sha256": hashlib.sha256((source / "receipt.json").read_bytes()).hexdigest(),
         "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "piece_count": count, "seed": seed, "initial_placements": placements,
+        "sampling": sampling,
         "replayed_from_initial_xml": False, "restored_original_integration_state": False,
         "initialization": "Fresh sequential low-height drops; pending pieces parked/reset until insertion",
         "qualification": "Photo-demo convex visual hulls; not native cavity, clutch, RL or SFT qualification",

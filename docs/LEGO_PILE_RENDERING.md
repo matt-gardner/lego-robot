@@ -121,6 +121,16 @@ each stage's immutable manifest/checksum, count and quota. The same STOP,
 idle-priority and resource limits apply. New task roots stay separate from
 frozen measurement pools and historical datasets.
 
+For Matt's simple/common-piece preference, add `--sampling common-basic-v1`.
+It assigns 90% of each pile (rounded) to ordinary bricks/plates
+3001, 3002, 3003, 3004, 3020 and 3022, with the remainder split between
+Technic bricks 3700 and 3702. Selection within each group is seeded and allows
+repeats; body identities remain unique. This is an explicit basic-piece prior,
+not measured sales/set-frequency popularity. The mapping is restricted to the
+exact retained photo-model hash and was checked against catalog visual vertices.
+Part identities and sampling profile are recorded on new scenes; existing
+scene/task receipts are not rewritten.
+
 ## Optional CPU path tracing
 
 `so101.pathtrace_pile` consumes a pinned `scene.json` world-space PLY

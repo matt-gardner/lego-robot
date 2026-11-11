@@ -158,3 +158,13 @@ def test_progression_caps_each_bucket_and_resumes(photo_source, tmp_path, monkey
     assert json.loads((root / "status.json").read_text())["status"] == "complete"
     photo_pile_curriculum.run(root, photo_source, stages=(30, 40), quota=2, maximum_attempts=3)
     assert generated == [30, 30, 40, 40]
+
+
+def test_common_bias_has_ninety_percent_basics_and_unique_instances(photo_source, monkeypatch):
+    digest = hashlib.sha256((photo_source / "model.xml").read_bytes()).hexdigest()
+    monkeypatch.setattr(generator, "PHOTO_TEMPLATE_SHA256", digest)
+    xml, _, placements = generator.prepare_model(photo_source, 30, 14, "common-basic-v1")
+    assert sum(p["part_id"] in generator.PHOTO_PART_IDS[:6] for p in placements) == 27
+    assert len({p["instance_id"] for p in placements}) == 30
+    assert mujoco.MjModel.from_xml_string(xml).nbody == 31
+    assert generator.prepare_model(photo_source, 30, 14, "common-basic-v1")[0] == xml

@@ -111,7 +111,8 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
         family = hashlib.sha256(f"photo-pile:{receipt['seed']}:{len(names)}".encode()).hexdigest()
         plan = {"scene_id": scene_id, "catalog_sha256": receipt["catalog_sha256"],
                 "seed": receipt["seed"], "objects": [
-                    {"instance_id": name, "part_id": "catalog-demo"} for name in names]}
+                    {"instance_id": obj["instance_id"], "part_id": obj["part_id"]}
+                    for obj in receipt["objects"]]}
         _, _, snapshot = settle_data(
             model, sim.data, xml, plan, velocity_tolerance=.0005, contact_limit_m=.005,
             stationarity_metric="surface-speed-v2",
@@ -121,7 +122,9 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
         for name in names:
             body = model.body(name).id
             instances.append({
-                "instance_id": name, "body_name": name, "part_id": "catalog-demo",
+                "instance_id": name, "body_name": name,
+                "part_id": next(obj["part_id"] for obj in receipt["objects"]
+                                if obj["instance_id"] == name),
                 "geom_names": [model.geom(int(g)).name
                                for g in np.flatnonzero(model.geom_bodyid == body)],
             })
