@@ -66,7 +66,7 @@ function targetBox(image) {
         caption=state==="not_visible" || pixels===0 ? "Target not visible in this camera · no box" : "Target bounding box not measured yet";
       }
     } catch(error) {caption=error.message;}
-    figure.append(frame,node("figcaption",caption));
+    figure.append(frame,node("figcaption",`${image.camera || "Camera unspecified"} · initial state · ${caption}`));
     return figure;
   }
 function node(tag, text, cls) {
@@ -206,7 +206,7 @@ async function start() {
           grid.append(pileSection);
           for (const p of pile.tasks) {
         const card=node("details",undefined,"problem");
-        const target=p.source?.task_id?.match(/object_(\d+)/);
+        const target=(p.tags?.target_instance_id || p.source?.task_id || "").match(/(?:object|brick)_(\d+)/);
         const dimensions=p.tags?.target?.part_dimensions_m;
         const targetLabel=target ? `Object ${Number(target[1])+1}` : "Target";
         card.append(node("summary",`${p.task} · ${targetLabel}${dimensions ? " · "+dimensions.map(x=>(x*1000).toFixed(1)).join(" × ")+" mm" : ""}`));
