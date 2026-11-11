@@ -48,8 +48,12 @@ unchanged. The remaining published population currently comprises native buckets
 Below the table, the inspector groups bucket → pile → target-specific task.
 Pile identity is the source scene ID (or an explicit pile/scene ID); missing
 identity stays separate rather than merging unrelated problems. Pagination counts
-piles, not tasks, so a pile's matching tasks stay together. Task details expand
-to their images, measurements and provenance.
+piles, not tasks, so a pile's matching tasks stay together. Collapsible bucket
+sections contain pile cards with one initial pile image and meaningful scene
+tags (piece/shape/color counts, colors, obstructions and available tasks).
+Click a pile card to reveal target tasks, labeled by action, object number and
+dimensions when available. Technical identities remain in provenance, not card
+headings. Task details expand to measurements and provenance.
 
 Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
 browsing, feedback and activation, not collection or part qualification.

@@ -61,11 +61,17 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.match(elements.get("status").textContent,/SCREENING ONLY/);
   assert.match(elements.get("count").textContent,/2 matching problems/);
   assert.equal(elements.get("problems").children.length,1);
-  assert.equal(elements.get("problems").children[0].children[1].className,"pile-group");
-  assert.equal(elements.get("problems").children[0].children[1].children[1].className,"problem");
+  const bucketSection=elements.get("problems").children[0];
+  assert.equal(bucketSection.open,true);
+  const pileCard=bucketSection.children[1].children[0];
+  assert.equal(pileCard.className,"pile-group");
+  assert.ok(!pileCard.open);
+  assert.equal(pileCard.children[1].className,"problem");
   const all=[];
   function collect(e){all.push(e);for(const child of e.children || [])collect(child);}
   collect(elements.get("problems"));
+  assert.ok(all.some(e=>e.textContent==="Pile 1"));
+  assert.ok(all.some(e=>e.textContent==="push · Target"));
   assert.ok(all.some(e=>e.src==="api/buckets/image?problem=first&index=0&snapshot=snapshot"));
   assert.ok(all.some(e=>e.textContent==="Initial scene images not published."));
   assert.ok(all.some(e=>e.textContent==="Unmeasured: no valid rollout counts published."));

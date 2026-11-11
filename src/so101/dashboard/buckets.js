@@ -132,26 +132,46 @@ async function start() {
       let remaining=shown;
       for (const group of hierarchy) {
         if (!remaining) break;
-        const bucketSection=node("section",undefined,"bucket-group");
-        bucketSection.append(node("h2",buckets.find(b=>b.id===group.bucket)?.label || group.bucket));
+        const bucketSection=node("details",undefined,"bucket-group");
+        bucketSection.open=true;
+        const label=(buckets.find(b=>b.id===group.bucket)?.label || group.bucket).replace(/^native:/,"").replace(/-/g," ");
+        bucketSection.append(node("summary",`${label} · ${group.piles.length} piles`));
+        const grid=node("div",undefined,"pile-grid");
+        bucketSection.append(grid);
         container.append(bucketSection);
-        for (const pile of group.piles.slice(0,remaining)) {
+        for (const [pileIndex,pile] of group.piles.slice(0,remaining).entries()) {
           const pileSection=node("details",undefined,"pile-group");
-          pileSection.open=true;
-          pileSection.append(node("summary",`Pile ${pile.id} · ${pile.tasks.length} tasks`));
-          bucketSection.append(pileSection);
+          const representative=pile.tasks.find(p=>p.initial_images?.length) || pile.tasks[0];
+          const scene=representative.tags?.scene || {};
+          const summary=node("summary"), preview=node("div",undefined,"pile-preview");
+          const image=representative.initial_images?.[0];
+          if (image) {
+          const img=node("img");img.loading="lazy";img.alt=`Initial pile ${pileIndex+1}`;
+          img.src=`api/buckets/image?problem=${encodeURIComponent(representative.id)}&index=0&snapshot=${encodeURIComponent(data.manifest.snapshot_id)}`;
+          img.addEventListener("error",()=>{img.replaceWith(node("p","Initial image unavailable / failed integrity check","missing"));});
+          preview.append(img);
+          } else preview.append(node("p","Initial scene images not published.","missing"));
+          summary.append(preview,node("strong",`Pile ${pileIndex+1}`));
+          const tags=node("div",undefined,"pile-tags");
+          const descriptions=[
+            scene.piece_count != null ? `${scene.piece_count} pieces` : null,
+            scene.unique_piece_count != null ? `${scene.unique_piece_count} distinct shapes` : null,
+            scene.unique_color_count != null ? `${scene.unique_color_count} colors` : null,
+            ...Object.keys(scene.color_counts || {}),
+            scene.view_obstructions?.count ? `${scene.view_obstructions.count} view obstructions` : null,
+            `${pile.tasks.length} tasks`,
+            ...new Set(pile.tasks.map(p=>p.task)),
+          ].filter(Boolean);
+          for (const description of descriptions) tags.append(node("span",description));
+          summary.append(tags);
+          pileSection.append(summary);
+          grid.append(pileSection);
           for (const p of pile.tasks) {
         const card=node("details",undefined,"problem");
-        card.append(node("summary",`${p.task} · ${p.source?.task_id || p.id}`));
-        const images=node("div",undefined,"images");
-        for (const [i,image] of (p.initial_images || []).entries()) {
-          const f=node("figure"),img=node("img");img.loading="lazy";img.alt=`Initial ${image.camera || "scene"} for ${p.id}`;
-          img.src=`api/buckets/image?problem=${encodeURIComponent(p.id)}&index=${i}&snapshot=${encodeURIComponent(data.manifest.snapshot_id)}`;
-          img.addEventListener("error",()=>{img.replaceWith(node("p","Initial image unavailable / failed integrity check","missing"));});
-          f.append(img,node("figcaption",image.camera || "Initial scene"));images.append(f);
-        }
-        card.append(images);
-        if (!p.initial_images?.length) card.append(node("p","Initial scene images not published.", "missing"));
+        const target=p.source?.task_id?.match(/object_(\d+)/);
+        const dimensions=p.tags?.target?.part_dimensions_m;
+        const targetLabel=target ? `Object ${Number(target[1])+1}` : "Target";
+        card.append(node("summary",`${p.task} · ${targetLabel}${dimensions ? " · "+dimensions.map(x=>(x*1000).toFixed(1)).join(" × ")+" mm" : ""}`));
         card.append(node("p",`Feasibility: ${p.feasibility?.status || "unmeasured"}. Low policy success does not prove infeasibility or solvability.`));
         const measured=groupFor(p);
         stats(card,measured);
