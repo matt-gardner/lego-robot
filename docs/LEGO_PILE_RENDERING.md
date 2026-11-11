@@ -429,6 +429,11 @@ records before every frame. Every admitted pile gets one representative
 exact-task-reset image before any additional task images. Newly arriving piles
 preempt task expansion at the next frame boundary.
 
+Additional named generation roots can be registered without restarting via
+`<initial-photo-external-v2>/_queue/admission-roots.json`, containing
+`{"additional_roots": ["catalog-diverse-20-v2"]}`. The scheduler rereads this
+file before each frame; names must be direct children of the curriculum root.
+
 Existing selected-pool receipts remain under their pool SHA. Admissions from
 unfinished stages publish separately under `pile-previews-v1/<admissionSHA>`;
 these are pile previews, not completed-stage or selected-task coverage.

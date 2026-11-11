@@ -54,3 +54,14 @@ def test_discovery_includes_only_atomic_admissions_from_both_generators(tmp_path
     entries = queue.discover(data, output)
     assert {entry[0]["scene_id"] for entry in entries} == {"0", "1"}
     assert all(entry[3] == "admitted-pile" for entry in entries)
+    new_scene = data / "catalog-diverse-20-v2/pieces-20/tasks/scene_1"
+    new_scene.mkdir(parents=True)
+    (new_scene / "admission.json").write_text(json.dumps({
+        "scene_id": "new", "split": "train", "root": str(new_scene),
+    }))
+    assert len(queue.discover(data, output)) == 2
+    (output / "_queue").mkdir()
+    (output / "_queue/admission-roots.json").write_text(json.dumps({
+        "additional_roots": ["catalog-diverse-20-v2"],
+    }))
+    assert {entry[0]["scene_id"] for entry in queue.discover(data, output)} == {"0", "1", "new"}

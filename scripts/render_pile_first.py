@@ -25,10 +25,19 @@ def receipt_path(output, entry, task):
 
 def discover(data, output):
     pools = read(data / "current-task-pools.json")["pools"]
-    admission_roots = (
+    admission_roots = [
         data / "photo-task-progression-collective-v1",
         data / "catalog-diverse-20-v1",
-    )
+    ]
+    config = output / "_queue" / "admission-roots.json"
+    if config.exists():
+        names = read(config)["additional_roots"]
+        if not isinstance(names, list) or any(
+                not isinstance(name, str) or Path(name).name != name or name in (".", "..")
+                for name in names):
+            raise ValueError(f"Invalid admission discovery roots: {config}")
+        admission_roots.extend(data / name for name in names)
+    admission_roots = list(dict.fromkeys(admission_roots))
     entries = []
     seen = set()
     for row in pools:
