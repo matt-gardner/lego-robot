@@ -21,6 +21,21 @@ function aggregate(groups) {
   }
   return [...cells.values()].sort((a, b) => a.assistance - b.assistance);
 }
+function pileIdentity(problem) {
+  return problem.source?.scene_id || problem.pile_id || problem.scene_id || problem.id;
+}
+function groupPiles(problems) {
+  const buckets = new Map();
+  for (const problem of problems) {
+    if (!buckets.has(problem.bucket)) buckets.set(problem.bucket,new Map());
+    const piles=buckets.get(problem.bucket), id=pileIdentity(problem);
+    if (!piles.has(id)) piles.set(id,[]);
+    piles.get(id).push(problem);
+  }
+  return [...buckets].sort(([a],[b])=>a.localeCompare(b)).map(([bucket,piles])=>({
+    bucket, piles:[...piles].map(([id,tasks])=>({id,tasks})),
+  }));
+}
 function node(tag, text, cls) {
   const e = document.createElement(tag);
   if (text !== undefined) e.textContent = text;
@@ -112,9 +127,22 @@ async function start() {
       const bucket=document.getElementById("bucket").value,task=document.getElementById("task").value,q=document.getElementById("search").value.toLowerCase();
       const filtered=problems.filter(p=>(!bucket||p.bucket===bucket)&&(!task||p.task===task)&&(!q||JSON.stringify(p).toLowerCase().includes(q)));
       const container=document.getElementById("problems");container.replaceChildren();
-      document.getElementById("count").textContent=`${filtered.length} matching problems; showing ${Math.min(shown,filtered.length)}.`;
-      for (const p of filtered.slice(0,shown)) {
-        const card=node("article",undefined,"problem");card.append(node("h2",`${p.task} · ${p.bucket} · ${p.id}`));
+      const hierarchy=groupPiles(filtered), pileCount=hierarchy.reduce((n,b)=>n+b.piles.length,0);
+      document.getElementById("count").textContent=`${filtered.length} matching problems in ${pileCount} piles; showing ${Math.min(shown,pileCount)} piles.`;
+      let remaining=shown;
+      for (const group of hierarchy) {
+        if (!remaining) break;
+        const bucketSection=node("section",undefined,"bucket-group");
+        bucketSection.append(node("h2",buckets.find(b=>b.id===group.bucket)?.label || group.bucket));
+        container.append(bucketSection);
+        for (const pile of group.piles.slice(0,remaining)) {
+          const pileSection=node("details",undefined,"pile-group");
+          pileSection.open=true;
+          pileSection.append(node("summary",`Pile ${pile.id} · ${pile.tasks.length} tasks`));
+          bucketSection.append(pileSection);
+          for (const p of pile.tasks) {
+        const card=node("details",undefined,"problem");
+        card.append(node("summary",`${p.task} · ${p.source?.task_id || p.id}`));
         const images=node("div",undefined,"images");
         for (const [i,image] of (p.initial_images || []).entries()) {
           const f=node("figure"),img=node("img");img.loading="lazy";img.alt=`Initial ${image.camera || "scene"} for ${p.id}`;
@@ -131,9 +159,12 @@ async function start() {
         card.append(node("p",`Observed unsuccessful rollouts: ${measured.length ? failures : "unmeasured"}. Feasibility vs policy failure attribution: ${p.failure_attribution_status || "unmeasured"}. Visibility / reach: ${p.tags?.visibility ?? "unmeasured"} / ${p.tags?.reach ?? "unmeasured"}.`));
         json(card,"Tags / provenance / measurement and failure evidence",p);
         json(card,"Raw measured groups (invalid actions, policy vs feasibility failures)",groupFor(p));
-        container.append(card);
+        pileSection.append(card);
+          }
+        }
+        remaining=Math.max(0,remaining-group.piles.length);
       }
-      document.getElementById("more").hidden=shown>=filtered.length;
+      document.getElementById("more").hidden=shown>=pileCount;
     }
     for (const id of ["bucket","task","search"]) document.getElementById(id).addEventListener("input",()=>{shown=24;render();});
     document.getElementById("more").addEventListener("click",()=>{shown+=24;render();});
@@ -144,4 +175,4 @@ if (typeof document !== "undefined") {
   document.getElementById("refresh").addEventListener("click",()=>location.reload());
   start();
 }
-if (typeof module !== "undefined") module.exports={wilson,aggregate};
+if (typeof module !== "undefined") module.exports={wilson,aggregate,groupPiles};

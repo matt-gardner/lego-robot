@@ -1,6 +1,6 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
-const {wilson,aggregate} = require("../src/so101/dashboard/buckets.js");
+const {wilson,aggregate,groupPiles} = require("../src/so101/dashboard/buckets.js");
 const vm = require("node:vm");
 const fs = require("node:fs");
 test("four successes do not imply certain success or calibration",()=>{
@@ -19,6 +19,18 @@ test("mixed group yield differs from pooled half-success",()=>{
   assert.equal(cells[0].n,8);
   assert.equal(cells[0].mixed,0);
   assert.equal(cells[1].mixed,1);
+});
+test("hierarchy groups target tasks by exact scene within each bucket",()=>{
+  const grouped=groupPiles([
+    {id:"a",bucket:"native3",source:{scene_id:"pile1"}},
+    {id:"b",bucket:"native3",source:{scene_id:"pile1"}},
+    {id:"c",bucket:"native3",source:{scene_id:"pile2"}},
+    {id:"d",bucket:"native5",source:{scene_id:"pile1"}},
+  ]);
+  assert.equal(grouped.length,2);
+  assert.equal(grouped[0].piles.length,2);
+  assert.deepEqual(grouped[0].piles[0].tasks.map(p=>p.id),["a","b"]);
+  assert.equal(grouped[1].piles[0].tasks[0].id,"d");
 });
 test("page enumerates unmeasured tasks and binds initial images to snapshot",async()=>{
   class Element {
@@ -48,6 +60,9 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   await new Promise(resolve=>setImmediate(resolve));
   assert.match(elements.get("status").textContent,/SCREENING ONLY/);
   assert.match(elements.get("count").textContent,/2 matching problems/);
+  assert.equal(elements.get("problems").children.length,1);
+  assert.equal(elements.get("problems").children[0].children[1].className,"pile-group");
+  assert.equal(elements.get("problems").children[0].children[1].children[1].className,"problem");
   const all=[];
   function collect(e){all.push(e);for(const child of e.children || [])collect(child);}
   collect(elements.get("problems"));
