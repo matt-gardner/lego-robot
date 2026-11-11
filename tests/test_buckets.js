@@ -1,6 +1,6 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
-const {wilson,aggregate,groupPiles} = require("../src/so101/dashboard/buckets.js");
+const {wilson,aggregate,groupPiles,targetBox} = require("../src/so101/dashboard/buckets.js");
 const vm = require("node:vm");
 const fs = require("node:fs");
 test("four successes do not imply certain success or calibration",()=>{
@@ -8,6 +8,11 @@ test("four successes do not imply certain success or calibration",()=>{
   assert.ok(ci[0]<0.52 && ci[0]>0.50);
   assert.ok(ci[1]<=1);
   assert.equal(wilson(0,0),null);
+});
+test("target boxes are image-bound measurements, never guessed",()=>{
+  assert.deepEqual(targetBox({width:320,height:240,target_bbox_xyxy:[12,20,100,150]}),[12,20,100,150]);
+  assert.equal(targetBox({width:320,height:240,target_bbox_status:"not_visible"}),null);
+  assert.throws(()=>targetBox({width:320,height:240,target_bbox_xyxy:[0,0,500,50]}),/Invalid/);
 });
 test("mixed group yield differs from pooled half-success",()=>{
   const cells=aggregate([
@@ -50,7 +55,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     manifest:{snapshot_id:"snapshot"},
     problems:{buckets:[{id:"b",population_total:2,tasks:[{task:"push",population_total:1},{task:"place",population_total:1}]},
         {id:"corpus:old",population_total:1,tasks:[{task:"grasp",population_total:1}]}],
-      problems:[{id:"first",bucket:"b",task:"push",initial_images:[{camera:"wrist"}]},
+      problems:[{id:"first",bucket:"b",task:"push",initial_images:[{camera:"wrist",width:320,height:240,target_bbox_xyxy:[12,20,100,150]}]},
         {id:"second",bucket:"b",task:"place",initial_images:[]},
         {id:"old",bucket:"corpus:old",task:"grasp",source:{kind:"legacy"},initial_images:[]}]},
     calibration:{protocol:{rollouts_per_group:4},groups:[{problem_id:"first",assistance:0,attempts:4,successes:4}]},
@@ -72,6 +77,8 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   collect(elements.get("problems"));
   assert.ok(all.some(e=>e.textContent==="Pile 1"));
   assert.ok(all.some(e=>e.textContent==="push · Target"));
+  assert.ok(all.some(e=>e["aria-label"]==="Visible target bounding box from renderer segmentation"));
+  assert.ok(all.some(e=>e.x===12 && e.y===20 && e.width===88 && e.height===130));
   assert.ok(all.some(e=>e.src==="api/buckets/image?problem=first&index=0&snapshot=snapshot"));
   assert.ok(all.some(e=>e.textContent==="Initial scene images not published."));
   assert.ok(all.some(e=>e.textContent==="Unmeasured: no valid rollout counts published."));

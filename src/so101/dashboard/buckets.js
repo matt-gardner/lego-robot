@@ -36,6 +36,39 @@ function groupPiles(problems) {
     bucket, piles:[...piles].map(([id,tasks])=>({id,tasks})),
   }));
 }
+function targetBox(image) {
+    const box=image.target_bbox_xyxy ?? image.provenance?.target_bbox_xyxy;
+    if (box == null) return null;
+    if (!Array.isArray(box) || box.length!==4 || !box.every(Number.isFinite) ||
+        box[0]<0 || box[1]<0 || box[2]>image.width || box[3]>image.height ||
+        box[2]<=box[0] || box[3]<=box[1]) throw new Error("Invalid published target bounding box");
+    return box;
+  }
+  function taskImage(problem,image,index,snapshot) {
+    const figure=node("figure",undefined,"task-image"),frame=node("div",undefined,"target-frame");
+    const img=node("img");img.loading="lazy";img.alt=`${problem.task} target in initial pile`;
+    img.src=`api/buckets/image?problem=${encodeURIComponent(problem.id)}&index=${index}&snapshot=${encodeURIComponent(snapshot)}`;
+    img.addEventListener("error",()=>{frame.replaceChildren(node("p","Task image unavailable / failed integrity check","missing"));});
+    frame.append(img);
+    let caption;
+    try {
+      const box=targetBox(image);
+      if (box) {
+        const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg"),rect=document.createElementNS(ns,"rect");
+        svg.setAttribute("viewBox",`0 0 ${image.width} ${image.height}`);
+        svg.setAttribute("aria-label","Visible target bounding box from renderer segmentation");
+        for (const [key,value] of Object.entries({x:box[0],y:box[1],width:box[2]-box[0],height:box[3]-box[1],fill:"none",stroke:"#ffdd00","stroke-width":2,"vector-effect":"non-scaling-stroke"})) rect.setAttribute(key,value);
+        svg.append(rect);frame.append(svg);
+        caption="Target bounding box · visible segmentation";
+      } else {
+        const state=image.target_bbox_status ?? image.provenance?.target_bbox_status;
+        const pixels=image.target_visible_pixels ?? image.provenance?.initial_visible_target_pixels;
+        caption=state==="not_visible" || pixels===0 ? "Target not visible in this camera · no box" : "Target bounding box not measured yet";
+      }
+    } catch(error) {caption=error.message;}
+    figure.append(frame,node("figcaption",caption));
+    return figure;
+  }
 function node(tag, text, cls) {
   const e = document.createElement(tag);
   if (text !== undefined) e.textContent = text;
@@ -177,6 +210,10 @@ async function start() {
         const dimensions=p.tags?.target?.part_dimensions_m;
         const targetLabel=target ? `Object ${Number(target[1])+1}` : "Target";
         card.append(node("summary",`${p.task} · ${targetLabel}${dimensions ? " · "+dimensions.map(x=>(x*1000).toFixed(1)).join(" × ")+" mm" : ""}`));
+        for (const [index,image] of (p.initial_images || []).entries()) {
+          card.append(taskImage(p,image,index,data.manifest.snapshot_id));
+        }
+        if (!p.initial_images?.length) card.append(node("p","Task image not published yet","missing"));
         card.append(node("p",`Feasibility: ${p.feasibility?.status || "unmeasured"}. Low policy success does not prove infeasibility or solvability.`));
         const measured=groupFor(p);
         stats(card,measured);
@@ -200,4 +237,4 @@ if (typeof document !== "undefined") {
   document.getElementById("refresh").addEventListener("click",()=>location.reload());
   start();
 }
-if (typeof module !== "undefined") module.exports={wilson,aggregate,groupPiles};
+if (typeof module !== "undefined") module.exports={wilson,aggregate,groupPiles,targetBox};

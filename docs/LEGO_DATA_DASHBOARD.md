@@ -62,6 +62,14 @@ reference acceptance as **not model pass rate** and zero policy rollouts as no
 policy rates measured yet. A new pool publishes its own population/protocol and
 empty groups until measured, never recycled old-pool screening outcomes.
 
+Each task image can publish `target_bbox_xyxy` in image pixels
+`[xmin,ymin,xmax_exclusive,ymax_exclusive]`, `target_visible_pixels` and
+`target_bbox_status` (visible/not_visible/unmeasured), directly or in image
+provenance. Boxes must be measured from exact target-geometry segmentation for
+the hash-bound RGB image and actual dimensions. The task inspector overlays
+these boxes at responsive image scale; absent/zero-visible targets show explicit
+unmeasured/not-visible states, not guessed or amodal boxes.
+
 Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
 browsing, feedback and activation, not collection or part qualification.
 
