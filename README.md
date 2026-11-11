@@ -1026,6 +1026,12 @@ steps. Results explicitly record their horizon and screening scope; do not pool
 short-horizon screening with full-horizon measurements or treat it as proof that
 a task cannot succeed later. Explicit plans without `--calibrate-assistance`
 can measure assisted levels first.
+`--binary-search` measures the 0.95 assistance ceiling first, then bisects each
+problem's assistance interval toward 25--75% success, with up to `--search-rounds`
+measurements per problem. Failure at the measured ceiling is reported as an
+unresolved assistance bracket, never task infeasibility. `--resume` retains
+completed and partial samples only when the initial policy, input hashes,
+horizon, repeat count, batch size and paired seeds match.
 `--calibrate-assistance` stops additional levels for a problem after 16 or more
 repeats show 25--75% success, or all pass without assistance. Unmeasured levels
 remain explicitly unmeasured, and all-pass problems are marked too easy, not

@@ -29,6 +29,22 @@ def success_interval(successes, total):
     return [max(0., centre - radius), min(1., centre + radius)]
 
 
+def binary_assistance_step(state, assistance, successes, total, max_rounds):
+    state["rounds"] += 1
+    rate = successes / total
+    if .25 <= rate <= .75:
+        return None, "measured-mixed-outcomes"
+    if rate < .25:
+        state["lower"] = max(state["lower"], assistance)
+        if assistance == .95:
+            return None, "no-mixed-level-at-maximum-assistance"
+    else:
+        state["upper"] = min(state["upper"], assistance)
+    if state["rounds"] >= max_rounds or state["upper"] - state["lower"] < .01:
+        return None, "unresolved-within-search-budget"
+    return (state["lower"] + state["upper"]) / 2, None
+
+
 def probe(args):
     if args.native_references is not None and args.native_pool is None:
         raise ValueError("Native reference qualification requires its exact native pool")
@@ -90,8 +106,14 @@ def probe(args):
         raise ValueError("Inference batch must contain at least one rollout")
     if args.horizon <= 0:
         raise ValueError("Probe horizon must be positive")
-    if args.output.exists():
+    if args.binary_search and (not args.initial_only or not args.native_only or args.calibrate_assistance):
+        raise ValueError("Binary search requires fixed initial/native policy and no explicit-plan calibration")
+    if args.binary_search and args.search_rounds < 1:
+        raise ValueError("Binary search requires at least one measured round")
+    if args.output.exists() and not args.resume:
         raise FileExistsError("Probe output already exists; reconcile before restarting")
+    if args.resume and (not args.initial_only or not args.output.exists()):
+        raise ValueError("Resume requires an existing initial-policy measurement file")
     controller = EntityPolicy(args.checkpoint, "cuda", True)
     trainable_parameters(controller, "all")
     controller.policy.eval()
@@ -109,14 +131,33 @@ def probe(args):
     result["assistance_decisions"] = {}
     result["unmeasured_levels"] = []
     result["policy_sha256_before"] = before_policy
+    if args.resume:
+        previous = json.loads(args.output.read_text())
+        if (previous["complete"] or previous["optimizer"] is not None
+                or previous["policy_sha256_before"] != before_policy
+                or any(previous[key] != result[key] for key in
+                       ("input_sha256", "repeats", "parallel_rollouts", "horizon", "seed"))):
+            raise ValueError("Resume changes the measured population, policy, horizon or sampling protocol")
+        result = previous
+        result["assistance_decisions"] = {}
+        result["unmeasured_levels"] = []
+    result["search_strategy"] = "binary-search" if args.binary_search else "explicit-plan"
     atomic_json(args.output, result)
     sources = list(dict.fromkeys(row["source"] for row in plan))
+    if args.binary_search:
+        queue = [{**next(row for row in plan if row["source"] == source), "assistance": .95}
+                 for source in sources]
+        result["binary_search_bounds"] = {
+            source: {"lower": 0., "upper": .95, "rounds": 0} for source in sources
+        }
+    else:
+        queue = list(plan)
     sims = []
     try:
         for _ in range(args.batch_rollouts):
             sims.append(create_simulation(args.model_root, backend="gpu-pathtrace", samples=16))
         loaded_step = None
-        for row in plan:
+        for row in queue:
             if args.calibrate_assistance and row["source"] in result["assistance_decisions"]:
                 result["unmeasured_levels"].append(row)
                 continue
@@ -134,15 +175,27 @@ def probe(args):
                 gc.collect()
             elif not args.initial_only and loaded_step is not None:
                 raise FileNotFoundError("Training checkpoint disappeared after a probe loaded it")
-            observations = []
-            group = {**row, "policy_step": policy_step, "initial_checkpoint": str(args.checkpoint),
-                     "rollouts": observations}
-            result["groups"].append(group)
+            matches = [group for group in result["groups"]
+                       if all(group[key] == row[key] for key in ("task", "source", "assistance"))]
+            if len(matches) > 1:
+                raise ValueError("Resumed measurements duplicate a problem/assistance group")
+            group = matches[0] if matches else {
+                **row, "policy_step": policy_step, "initial_checkpoint": str(args.checkpoint), "rollouts": [],
+            }
+            observations = group["rollouts"]
+            if (group["policy_step"] != policy_step or len(observations) > args.repeats
+                    or [item["seed"] for item in observations] != [
+                        args.seed + sources.index(row["source"]) * 10000 + repeat
+                        for repeat in range(len(observations))
+                    ]):
+                raise ValueError("Resumed group changes policy iteration or paired rollout seeds")
+            if not matches:
+                result["groups"].append(group)
             episode = available[row["source"]]
             bounds = dict(split["expert_bounds"][row["task"]])
             if "native_reference" in episode.metadata:
                 bounds["optimal_steps"] = len(load_reference_rows(episode))
-            for start in range(0, args.repeats, args.batch_rollouts):
+            for start in range(len(observations), args.repeats, args.batch_rollouts):
                 seeds = [args.seed + sources.index(row["source"]) * 10000 + repeat
                          for repeat in range(start, min(start + args.batch_rollouts, args.repeats))]
                 trajectories = (
@@ -162,6 +215,20 @@ def probe(args):
                                   "policy_step": policy_step, "assistance": row["assistance"],
                                   "successes": successes, "total": len(observations),
                                   "success_interval_95": group["success_interval_95"]}), flush=True)
+            if args.binary_search:
+                level, status = binary_assistance_step(
+                    result["binary_search_bounds"][row["source"]], row["assistance"],
+                    group["successes"], group["total"], args.search_rounds,
+                )
+                if level is not None:
+                    queue.append({**row, "assistance": level})
+                else:
+                    result["assistance_decisions"][row["source"]] = {
+                        "status": status, "assistance": row["assistance"],
+                        "successes": group["successes"], "total": group["total"],
+                        "success_interval_95": group["success_interval_95"],
+                    }
+                atomic_json(args.output, result)
             if args.calibrate_assistance:
                 status = (
                     "too-easy-without-assistance" if row["assistance"] == 0
@@ -182,6 +249,9 @@ def probe(args):
                 native.close()
             sim.close()
     result["complete"] = True
+    if args.binary_search:
+        measured = {(row["source"], row["assistance"]) for row in result["groups"]}
+        result["unmeasured_levels"] = [row for row in plan if (row["source"], row["assistance"]) not in measured]
     if args.calibrate_assistance:
         for source in sources:
             result["assistance_decisions"].setdefault(
@@ -210,6 +280,11 @@ def main():
     parser.add_argument("--seed", type=int, default=2551000)
     parser.add_argument("--horizon", type=int, default=300,
                         help="Maximum policy steps; shorter runs are screening, not full-horizon qualification")
+    parser.add_argument("--binary-search", action="store_true",
+                        help="Measure the maximum assistance first, then bisect toward 25--75%% success")
+    parser.add_argument("--search-rounds", type=int, default=6)
+    parser.add_argument("--resume", action="store_true",
+                        help="Continue matching initial-policy measurements without repeating completed samples")
     probe(parser.parse_args())
 
 
