@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import time
 
 import mujoco
 import numpy as np
@@ -168,6 +169,7 @@ def admit_render(output):
 
 
 def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contract):
+    started = time.monotonic()
     profile = json.loads(profile_path.read_bytes())
     problem = load_problem(entry, tasks[0]["task_id"])
     reset_problem(sim, problem)
@@ -216,6 +218,7 @@ def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contr
         identity = hashlib.sha256(source.encode()).hexdigest()
         receipt = {
             "problem_id": identity, "episode_source": source, **contract,
+            "task_type": task["task_type"],
             "capture_implementation_sha256": contract["implementation_sha256"]["photoreal_task_images.py"],
             "target_instance_id": target, "image_file": destination.name, "sha256": image_sha,
             "width": profile["width"], "height": profile["height"], "camera": "external",
@@ -227,6 +230,7 @@ def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contr
             "segmentation_file": str((scene_output / "segmentation.npz").relative_to(output)),
             "appearance_receipt": str((scene_output / "pathtrace" / "receipt.json").relative_to(output)),
             "target_annotations": role_annotations(sim.model, sim.data, task, segmentation),
+            "capture_wall_seconds": time.monotonic() - started,
             "scene_sha256": rendered["scene_sha256"], **target_annotation(mask),
         }
         rows.append(receipt)
@@ -260,10 +264,16 @@ def capture_pool(pool_path, output, profile_path=DEFAULT_PROFILE, limit_scenes=N
     atomic_json(contract_path, contract)
     coverage = Counter()
     completed, rendered_states = 0, 0
-    selected_tasks = sum(
-        len(json.loads((Path(entry["root"]) / "problem.json").read_bytes())["tasks"])
-        for entry in pool["scenes"]
-    )
+    population = Counter()
+    for entry in pool["scenes"]:
+        scene = json.loads((Path(entry["root"]) / "problem.json").read_bytes())
+        population.update((str(scene["tags"]["piece_count"]), task["task_type"]) for task in scene["tasks"])
+    selected_tasks = sum(population.values())
+    atomic_json(meta / "population.json", {
+        **contract, "selected_tasks": selected_tasks, "selected_scenes": len(pool["scenes"]),
+        "buckets": [{"piece_count": key[0], "task": key[1], "tasks": count}
+                    for key, count in sorted(population.items())],
+    })
     for index, entry in enumerate(pool["scenes"]):
         if limit_scenes is not None and index >= limit_scenes:
             break
@@ -281,7 +291,7 @@ def capture_pool(pool_path, output, profile_path=DEFAULT_PROFILE, limit_scenes=N
                 row = json.loads(path.read_bytes())
                 if row["pool_sha256"] != pool_sha or file_hash(output / row["image_file"]) != row["sha256"]:
                     raise ValueError("Completed image receipt or asset changed")
-                coverage[(str(scene["tags"]["piece_count"]), row["target_bbox_status"])] += 1
+                coverage[(str(scene["tags"]["piece_count"]), row["task_type"], row["target_bbox_status"])] += 1
             completed += len(tasks)
             continue
         problem = load_problem(entry, tasks[0]["task_id"])
@@ -307,12 +317,19 @@ def capture_pool(pool_path, output, profile_path=DEFAULT_PROFILE, limit_scenes=N
                     rendered_states += 1
                 completed += len(rows)
                 for row in rows:
-                    coverage[(str(scene["tags"]["piece_count"]), row["target_bbox_status"])] += 1
+                    coverage[(str(scene["tags"]["piece_count"]), row["task_type"], row["target_bbox_status"])] += 1
                 status = {
                     **contract, "completed_tasks": completed, "selected_tasks": selected_tasks,
                     "selected_scenes": len(pool["scenes"]), "new_rendered_states": rendered_states,
-                    "coverage": [{"piece_count": key[0], "status": key[1], "tasks": count}
-                                 for key, count in sorted(coverage.items())],
+                    "coverage": [
+                        {"piece_count": key[0], "task": key[1], "status": status, "tasks": (
+                            count - sum(coverage[(key[0], key[1], measured)]
+                                        for measured in ("visible", "not_visible"))
+                            if status == "unmeasured" else coverage[(key[0], key[1], status)]
+                        )}
+                        for key, count in sorted(population.items())
+                        for status in ("visible", "not_visible", "unmeasured")
+                    ],
                 }
                 atomic_json(meta / "progress.json", status)
                 print(json.dumps(status), flush=True)
