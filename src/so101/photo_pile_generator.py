@@ -120,8 +120,21 @@ def verify_scene(output: Path) -> dict:
 
 def generate_scene(source: Path, output: Path, *, count: int, seed: int,
                    check_stop=lambda: None, progress=lambda value: None,
-                   sampling: str = "original") -> dict:
+                   sampling: str = "original", color_mode: str = "original") -> dict:
     xml, original, placements = prepare_model(source, count, seed, sampling)
+    if color_mode not in ("original", "single", "few", "many"):
+        raise ValueError("Unknown photo-pile color mode")
+    if color_mode != "original":
+        tree = ET.fromstring(xml)
+        palette = (".8 .04 .04 1", ".04 .48 .12 1", ".04 .2 .8 1",
+                   ".95 .72 .04 1", ".93 .34 .04 1", ".38 .39 .4 1")
+        color_rng = np.random.default_rng(np.random.SeedSequence([seed, 913]))
+        palette = [palette[i] for i in color_rng.permutation(len(palette))]
+        limit = {"single": 1, "few": 2, "many": len(palette)}[color_mode]
+        for index, body in enumerate(tree.findall("worldbody/body")):
+            for geom in body.findall("geom"):
+                geom.set("rgba", palette[index % limit])
+        xml = ET.tostring(tree, encoding="unicode")
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)
     if model.nbody != count + 1 or model.nq != count * 7 or model.nv != count * 6:
@@ -204,6 +217,7 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
         "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "piece_count": count, "seed": seed, "initial_placements": placements,
         "sampling": sampling,
+        "color_mode": color_mode,
         "replayed_from_initial_xml": False, "restored_original_integration_state": False,
         "initialization": "Fresh sequential low-height drops; pending pieces parked/reset until insertion",
         "qualification": "Photo-demo convex visual hulls; not native cavity, clutch, RL or SFT qualification",

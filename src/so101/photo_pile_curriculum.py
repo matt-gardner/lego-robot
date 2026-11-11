@@ -9,13 +9,16 @@ import logging
 import os
 from pathlib import Path
 import signal
+import shutil
 import threading
 import time
+from tempfile import TemporaryDirectory
 
 from so101.cloud_checkpoint import atomic_json
 from so101.photo_pile_generator import RejectedPile, generate_scene
 from so101.photo_pile_tasks import build_problem
 from so101.pile_pool import publish_pool
+from so101.pile_task_runtime import load_problem
 from so101.pile_task_generator import resource_check
 from so101.robot_sim import MODEL_ROOT
 
@@ -34,13 +37,14 @@ def validate_stages(stages: tuple[int, ...], quota: int, maximum_attempts: int) 
 def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
         quota: int = 10, maximum_attempts: int = 100, seed: int = 20261112,
         model_root: Path = MODEL_ROOT, stopping: threading.Event | None = None,
-        sampling: str = "original") -> None:
+        sampling: str = "original", prior_root: Path | None = None) -> None:
     validate_stages(stages, quota, maximum_attempts)
     stopping = stopping or threading.Event()
     root.mkdir(parents=True, exist_ok=True)
     config = {"stages": list(stages), "quota": quota, "maximum_attempts": maximum_attempts,
               "seed": seed, "source": str(source.resolve()), "model_root": str(model_root.resolve()),
               "sampling": sampling,
+              "prior_root": str(prior_root.resolve()) if prior_root else None,
               "source_sha256": hashlib.sha256((source / "model.xml").read_bytes()).hexdigest(),
               "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     with (root / ".curriculum.lock").open("a") as lock:
@@ -74,6 +78,23 @@ def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
                 scenes, tasks = bucket / "piles", bucket / "tasks"
                 scenes.mkdir(parents=True, exist_ok=True)
                 tasks.mkdir(exist_ok=True)
+                if prior_root is not None:
+                    for admission in sorted((prior_root / f"pieces-{count}" / "tasks").glob(
+                        "scene_*/admission.json"
+                    )):
+                        destination = tasks / f"scene_carried_{admission.parent.name}"
+                        if destination.exists():
+                            continue
+                        entry = json.loads(admission.read_text())
+                        problem = json.loads((admission.parent / "problem.json").read_text())
+                        for task in problem["tasks"]:
+                            load_problem(entry, task["task_id"])
+                        with TemporaryDirectory(prefix=".carry-", dir=tasks) as temporary:
+                            staging = Path(temporary) / "scene"
+                            shutil.copytree(admission.parent, staging)
+                            entry["root"] = str(destination.resolve())
+                            atomic_json(staging / "admission.json", entry)
+                            staging.rename(destination)
                 for sequence in range(maximum_attempts):
                     check_stop()
                     admitted = list(tasks.glob("scene_*/admission.json"))
@@ -91,8 +112,10 @@ def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
                             atomic_json(root / "status.json",
                                         {"status": "paused", "reason": str(error)})
                             stopping.wait(5)
-                    candidate_seed = seed + count * 10000 + sequence
-                    attempt = {"piece_count": count, "sequence": sequence, "seed": candidate_seed}
+                    candidate_seed = seed + count * 10000 + sequence + (1000 if prior_root else 0)
+                    color_mode = ("single", "few", "many")[len(admitted) % 3]
+                    attempt = {"piece_count": count, "sequence": sequence, "seed": candidate_seed,
+                               "color_mode": color_mode}
 
                     def progress(value):
                         atomic_json(root / "status.json",
@@ -103,7 +126,7 @@ def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
                         if not pile.exists():
                             generate_scene(source, pile, count=count, seed=candidate_seed,
                                            check_stop=check_stop, progress=progress,
-                                           sampling=sampling)
+                                           sampling=sampling, color_mode=color_mode)
                         check_stop()
                         entry = build_problem(pile, tasks / f"scene_{sequence:09d}", model_root)
                         attempt.update(status="complete", entry=entry)
@@ -147,6 +170,7 @@ def main() -> None:
     parser.add_argument("--maximum-attempts", type=int, default=100)
     parser.add_argument("--model-root", type=Path, default=MODEL_ROOT)
     parser.add_argument("--sampling", choices=("original", "common-basic-v1"), default="original")
+    parser.add_argument("--prior-root", type=Path)
     args = parser.parse_args()
     os.nice(19)
     logging.basicConfig(level=logging.INFO)
@@ -155,7 +179,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
     run(args.root, args.source, stages=tuple(args.stages), quota=args.quota,
         maximum_attempts=args.maximum_attempts, model_root=args.model_root, stopping=stopping,
-        sampling=args.sampling)
+        sampling=args.sampling, prior_root=args.prior_root)
 
 
 if __name__ == "__main__":

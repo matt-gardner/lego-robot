@@ -131,6 +131,20 @@ exact retained photo-model hash and was checked against catalog visual vertices.
 Part identities and sampling profile are recorded on new scenes; existing
 scene/task receipts are not rewritten.
 
+Larger-stage scenes cycle through single-color, two-color and six-color
+palettes by **accepted scene count**, so rejection streaks cannot skip a color
+stratum. Each piece remains a separate target for all four task types (for
+example, 30 pieces yield 120 tasks). Task descriptors include height rank and
+higher overlapping world-AABB candidates to distinguish top/buried candidates.
+These are geometric proxies, not measured wrist-camera visibility or proof
+that a buried piece is graspable without clearing other pieces. Trainer rollouts
+must establish actual solvability/difficulty.
+
+`--prior-root <previous-progression-root>` carries previously admitted task
+scenes into a new versioned progression without regenerating them. Their
+identities and source data remain unchanged and they count toward the same
+ten-scene quota; prior roots are never modified.
+
 ## Optional CPU path tracing
 
 `so101.pathtrace_pile` consumes a pinned `scene.json` world-space PLY

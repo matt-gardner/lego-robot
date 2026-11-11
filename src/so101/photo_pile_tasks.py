@@ -118,6 +118,15 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
             stationarity_metric="surface-speed-v2",
         )
         mujoco.mj_forward(model, sim.data)
+        bounds = {}
+        for name in names:
+            body_id = model.body(name).id
+            geoms = np.flatnonzero(model.geom_bodyid == body_id)
+            aabb = model.geom_aabb[geoms]
+            rotation = sim.data.geom_xmat[geoms].reshape(-1, 3, 3)
+            centers = sim.data.geom_xpos[geoms] + np.einsum("nij,nj->ni", rotation, aabb[:, :3])
+            half = np.einsum("nij,nj->ni", np.abs(rotation), aabb[:, 3:])
+            bounds[name] = ((centers - half).min(axis=0), (centers + half).max(axis=0))
         instances, tasks = [], []
         for name in names:
             body = model.body(name).id
@@ -129,6 +138,21 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
                                for g in np.flatnonzero(model.geom_bodyid == body)],
             })
             position = sim.data.xipos[body].tolist()
+            lower, upper = bounds[name]
+            overlying = [
+                other for other in names if other != name
+                and sim.data.xipos[model.body(other).id, 2] > position[2] + .001
+                and np.all(np.minimum(upper[:2], bounds[other][1][:2])
+                           > np.maximum(lower[:2], bounds[other][0][:2]))
+            ]
+            target_tags = {
+                "vertical_center_m": position[2],
+                "height_rank_from_top": 1 + sum(
+                    int(sim.data.xipos[model.body(other).id, 2] > position[2]) for other in names),
+                "overlying_aabb_candidates": overlying,
+                "depth_stratum_proxy": "buried_candidate" if overlying else "top_candidate",
+                "depth_method": "higher center plus overlapping world AABBs; not measured visibility",
+            }
             for kind in ("view", "grasp", "push", "place"):
                 goal = {"dwell_steps": 10}
                 if kind == "view":
@@ -146,8 +170,12 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
                     "goal": goal, "grader_version": GRADER_VERSION,
                     "instruction": f"{kind.upper()} the piece identified by instance {name}.",
                     "solvability": "unmeasured",
+                    "target_tags": target_tags,
                 })
         tags = {"piece_count": len(names), "collision_profile": PROFILE,
+                "color_mode": receipt.get("color_mode", "original"),
+                "unique_color_count": len({tuple(model.geom_rgba[model.body_geomadr[
+                    model.body(name).id]]) for name in names}),
                 "policy_difficulty_measured": False, "initial_visibility_measured": False}
         scene = {
             "schema_version": 1, "scene_id": scene_id, "scene_family_id": family,

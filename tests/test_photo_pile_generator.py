@@ -45,7 +45,7 @@ def test_fresh_twenty_settles_without_source_saved_state(photo_source, tmp_path)
     output = tmp_path / "scene"
     stages = []
     receipt = generator.generate_scene(
-        photo_source, output, count=20, seed=20261111, progress=stages.append)
+        photo_source, output, count=20, seed=20261111, progress=stages.append, color_mode="single")
     verified = generator.verify_scene(output)
     assert receipt == verified
     assert [stage["inserted"] for stage in stages] == list(range(1, 21))
@@ -57,6 +57,8 @@ def test_fresh_twenty_settles_without_source_saved_state(photo_source, tmp_path)
     assert model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC
     assert model.opt.noslip_iterations == 20
     assert np.array_equal(model.opt.gravity, [0., 0., -9.81])
+    assert len({tuple(model.geom_rgba[g]) for g in range(model.ngeom)
+                if model.geom_bodyid[g] != 0}) == 1
 
 
 def test_minimum_count_and_source_hash_protection(photo_source):
@@ -102,6 +104,9 @@ def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
     scene = json.loads((root / "scene_000000000" / "problem.json").read_text())
     assert len(scene["tasks"]) == 80
     assert len({task["target_instance_id"] for task in scene["tasks"]}) == 20
+    assert all(1 <= task["target_tags"]["height_rank_from_top"] <= 20 for task in scene["tasks"])
+    assert all("not measured visibility" in task["target_tags"]["depth_method"]
+               for task in scene["tasks"])
     assert scene["provenance"]["receipt_sha256"] == hashlib.sha256(
         (source / "receipt.json").read_bytes()).hexdigest()
     manifest = publish_pool(root)
@@ -134,15 +139,18 @@ def test_progression_rejects_twenty_repeat_and_unbounded_quota():
 
 def test_progression_caps_each_bucket_and_resumes(photo_source, tmp_path, monkeypatch):
     generated = []
+    colors = []
     monkeypatch.setattr(photo_pile_curriculum, "resource_check", lambda root: None)
 
     def generate(source, output, *, count, **kwargs):
         generated.append(count)
+        colors.append(kwargs["color_mode"])
         output.mkdir()
 
     def build(source, output, model_root):
         output.mkdir()
         (output / "admission.json").write_text("{}")
+        (output / "problem.json").write_text('{"tasks": [{"task_id": "test"}]}')
         return {"root": str(output)}
 
     def publish(root):
@@ -155,6 +163,12 @@ def test_progression_caps_each_bucket_and_resumes(photo_source, tmp_path, monkey
     root = tmp_path / "curriculum"
     photo_pile_curriculum.run(root, photo_source, stages=(30, 40), quota=2, maximum_attempts=3)
     assert generated == [30, 30, 40, 40]
+    monkeypatch.setattr(photo_pile_curriculum, "load_problem", lambda *args: None)
+    photo_pile_curriculum.run(tmp_path / "carried", photo_source, stages=(30, 40),
+                              quota=2, maximum_attempts=3, prior_root=root)
+    assert generated == [30, 30, 40, 40]
+    assert len(list((tmp_path / "carried").glob("pieces-*/tasks/scene_*/admission.json"))) == 4
+    assert colors == ["single", "few", "single", "few"]
     assert json.loads((root / "status.json").read_text())["status"] == "complete"
     photo_pile_curriculum.run(root, photo_source, stages=(30, 40), quota=2, maximum_attempts=3)
     assert generated == [30, 30, 40, 40]
