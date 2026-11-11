@@ -99,9 +99,9 @@ def render_job(job):
     import so101.photoreal_task_images as producer
 
     entry, task, output = job["entry"], job["task"], Path(job["output"])
-    admit_render(output)
     meta = output / "_meta"
     meta.mkdir(parents=True, exist_ok=True)
+    admit_render(output)
     contract_path = meta / "contract.json"
     implementation = {
         name: digest(Path(producer.__file__).with_name(name))
