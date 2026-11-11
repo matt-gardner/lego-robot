@@ -100,13 +100,27 @@ translation explicitly.
 
 Each admitted scene has four tasks per target (view, grasp, push, place),
 persistent body/geometry identities, the existing task predicates, and an exact
-robot reset. Published pools use the existing `pile_pool`/`rl_pile_adapter`
+robot reset. New task revisions use `independent-robot-starts-v1`: each task
+samples its own seeded, joint-limit/workspace/collision-checked robot
+configuration, with tool positions at least 5 mm apart within the scene.
+The settled pile is preserved, not re-dropped per task. Task-specific full
+integration snapshots are embedded in the SHA-bound `problem.json`; resetting
+the same task replays exactly the same start across assistance levels.
+These are randomized starts, not intentionally constructed obstacle challenges
+or verified camera-visible starts.
+Published pools use the existing `pile_pool`/`rl_pile_adapter`
 contract, with the photo collision profile explicit in scene tags/provenance.
 Task solvability and initial visibility remain unmeasured; emitting task goals
 is not demonstrating successful policy execution. These pools have no expert
 references and cannot support nonzero gold-prefix assistance until genuine
 successful references are generated and the trainer's replay contract supports
 them. They are not paired SFT recordings.
+
+`python -m so101.photo_pile_tasks --retask-pool <immutable-pool.json> --root
+<new-task-root>` revises existing tasks without generating more piles or
+modifying the source pool. Models, pile states and family IDs are retained;
+scene/task IDs and problem hashes change, invalidating old expert references.
+Renderers must group by actual task reset state, not only scene identity.
 
 After handing the ten-scene 20-piece pool to the trainer, use
 `python -m so101.photo_pile_curriculum --source <original-photo-demo> --root

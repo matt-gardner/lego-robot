@@ -120,6 +120,11 @@ def create_simulation(problem: dict, renderbackend: str = "none") -> PileSimulat
 def reset_problem(sim: PileSimulation, problem: dict) -> None:
     root = problem["root"]
     snapshot = json.loads((root / "integration_state.json").read_text())
+    if "initial_state" in problem["task"]:
+        snapshot = problem["task"]["initial_state"]
+        if (not isinstance(snapshot, dict)
+                or snapshot.get("scene_id") != problem["scene"]["scene_id"]):
+            raise ValueError("Task-specific snapshot belongs to a different scene")
     restore_scene(sim.model, sim.data, snapshot, (root / "model.xml").read_text())
     sim.lifted_once = False
 

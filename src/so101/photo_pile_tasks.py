@@ -5,6 +5,7 @@ import argparse
 import copy
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import xml.etree.ElementTree as ET
@@ -13,7 +14,7 @@ import mujoco
 import numpy as np
 
 from so101.cloud_checkpoint import atomic_json
-from so101.lego_scene import settle_data
+from so101.lego_scene import capture_scene_state, settle_data
 from so101.photo_pile_generator import PROFILE, verify_scene
 from so101.pile_pool import publish_pool
 from so101.pile_task_runtime import GRADER_VERSION, create_simulation, load_problem
@@ -21,6 +22,127 @@ from so101.robot_sim import (
     BeamSimulation, DISTRACTOR_SIZES, MODEL_ROOT, OBJECT_NAMES, SCENE_VERSION,
     TABLE_Z, scene_xml,
 )
+
+START_PROFILE = "independent-robot-starts-v1"
+
+
+def assign_task_starts(sim: BeamSimulation, scene: dict, snapshot: dict, xml: str) -> None:
+    """Sample collision-free arm configurations without moving the settled pile."""
+    model = sim.model
+    specification = mujoco.mjtState.mjSTATE_INTEGRATION
+    baseline = np.asarray(snapshot["integration_state"])
+    home = np.asarray(snapshot["qpos"])[sim.qadr]
+    robot_bodies = set()
+    for joint in sim.joints:
+        body = int(model.jnt_bodyid[joint])
+        robot_bodies.add(body)
+        robot_bodies.update(
+            index for index in range(model.nbody)
+            if model.body_rootid[index] == model.body_rootid[body]
+        )
+    mujoco.mj_setState(model, sim.data, baseline, specification)
+    mujoco.mj_forward(model, sim.data)
+    baseline_contacts = {
+        tuple(sorted((int(c.geom1), int(c.geom2)))) for c in sim.data.contact
+        if c.dist < .002
+    }
+    positions = []
+    scene["provenance"]["task_start_profile"] = START_PROFILE
+    scene["scene_id"] = hashlib.sha256(
+        json.dumps(scene["provenance"], sort_keys=True).encode()).hexdigest()
+    plan = {"scene_id": scene["scene_id"], "catalog_sha256": scene["catalog_sha256"]}
+    for index, task in enumerate(scene["tasks"]):
+        seed = [scene["seed"], index, 731, int(scene["scene_id"][:16], 16)]
+        rng = np.random.default_rng(np.random.SeedSequence(seed))
+        for attempt in range(500):
+            mujoco.mj_setState(model, sim.data, baseline, specification)
+            q = home + rng.uniform(-1., 1., len(home)) * np.array([.65, .4, .45, .45, 1., .15])
+            if np.any(q < sim.limits[:, 0]) or np.any(q > sim.limits[:, 1]):
+                continue
+            sim.data.qpos[sim.qadr] = q
+            sim.data.qvel[sim.dofs] = 0.
+            sim.data.qacc_warmstart[sim.dofs] = 0.
+            sim.data.ctrl[sim.actuators] = q
+            mujoco.mj_forward(model, sim.data)
+            position = sim.data.site_xpos[sim.site].copy()
+            if (not np.isfinite(position).all() or position[2] < .06
+                    or not .07 < position[0] < .34 or abs(position[1]) > .23
+                    or any(np.linalg.norm(position - other) < .005 for other in positions)):
+                continue
+            if any(
+                c.dist < .002
+                and tuple(sorted((int(c.geom1), int(c.geom2)))) not in baseline_contacts
+                and any(int(model.geom_bodyid[g]) in robot_bodies for g in (c.geom1, c.geom2))
+                for c in sim.data.contact
+            ):
+                continue
+            state = capture_scene_state(model, sim.data, xml, plan, status="task-start")
+            task["initial_state"] = state
+            task["start"] = {
+                "profile": START_PROFILE, "seed": seed,
+                "proposal": attempt, "robot_joint_positions": q.tolist(),
+                "tool_position_m": position.tolist(),
+                "construction": "independent bounded joint sampling; collision and workspace checked",
+                "obstacle_challenge_constructed": False,
+            }
+            task["task_id"] = f'{scene["scene_id"]}:{task["target_instance_id"]}:{task["task_type"]}'
+            positions.append(position)
+            break
+        else:
+            raise ValueError(f"No valid distinct robot start for task {index} after 500 proposals")
+    scene["tags"]["task_start_profile"] = START_PROFILE
+    mujoco.mj_setState(model, sim.data, baseline, specification)
+    mujoco.mj_forward(model, sim.data)
+
+
+def retask_scene(entry: dict, output: Path, model_root: Path = MODEL_ROOT) -> dict:
+    """Publish a new task revision, retaining the original pile/model and family."""
+    if output.exists():
+        existing = json.loads((output / "admission.json").read_text())
+        scene = json.loads((output / "problem.json").read_text())
+        if (scene["provenance"].get("parent_problem_sha256")
+                != entry["files_sha256"]["problem.json"]
+                or scene["tags"].get("task_start_profile") != START_PROFILE
+                or scene["generator_sha256"] != hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+                or any(task.get("start", {}).get("profile") != START_PROFILE
+                       for task in scene["tasks"])):
+            raise ValueError("Existing task revision has different provenance")
+        load_problem(existing, scene["tasks"][0]["task_id"])
+        return existing
+    source = Path(entry["root"])
+    scene = json.loads((source / "problem.json").read_text())
+    load_problem(entry, scene["tasks"][0]["task_id"])
+    model = mujoco.MjModel.from_binary_path(str(source / "model.mjb"))
+    force_ranges = model.actuator_forcerange.copy()
+    sim = BeamSimulation(model_root, model=model, render=False,
+                         object_names=tuple(item["instance_id"] for item in scene["instances"]),
+                         distractor_names=(), record_images=False)
+    model.actuator_forcerange[:] = force_ranges
+    try:
+        snapshot = json.loads((source / "integration_state.json").read_text())
+        xml = (source / "model.xml").read_text()
+        scene["provenance"]["parent_problem_sha256"] = entry["files_sha256"]["problem.json"]
+        assign_task_starts(sim, scene, snapshot, xml)
+        scene["generator_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        scene["grader_sha256"] = hashlib.sha256(
+            Path(__file__).with_name("pile_task_runtime.py").read_bytes()).hexdigest()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".retask-", dir=output.parent) as directory:
+            staging = Path(directory) / "scene"
+            shutil.copytree(source, staging)
+            atomic_json(staging / "problem.json", scene)
+            result = {**entry, "scene_id": scene["scene_id"], "root": str(staging.resolve()),
+                      "tags": scene["tags"], "files_sha256": {
+                          name: hashlib.sha256((staging / name).read_bytes()).hexdigest()
+                          for name in entry["files_sha256"]}}
+            checked = create_simulation(load_problem(result, scene["tasks"][0]["task_id"]))
+            checked.close()
+            result["root"] = str(output.resolve())
+            atomic_json(staging / "admission.json", result)
+            staging.rename(output)
+        return result
+    finally:
+        sim.close()
 
 
 def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> dict:
@@ -190,6 +312,8 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
             "grader_sha256": hashlib.sha256(
                 Path(__file__).with_name("pile_task_runtime.py").read_bytes()).hexdigest(),
         }
+        assign_task_starts(sim, scene, snapshot, xml)
+        scene_id = scene["scene_id"]
         with TemporaryDirectory(prefix=".photo-tasks-", dir=output.parent) as directory:
             staging = Path(directory) / "scene"
             staging.mkdir()
@@ -205,16 +329,13 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
                                  for name in ("model.xml", "model.mjb", "integration_state.json",
                                               "scene_plan.json", "problem.json")},
             }
-            checked_types = set()
-            for task in tasks:
+            for task in tasks[:1]:
                 problem = load_problem(entry, task["task_id"])
-                if task["task_type"] in checked_types:
-                    continue
                 restored = create_simulation(problem)
                 try:
-                    if not np.array_equal(restored.data.qpos, sim.data.qpos):
-                        raise ValueError("Robot task reset changed source poses")
-                    if not np.array_equal(restored.data.qvel, sim.data.qvel):
+                    if not np.array_equal(restored.data.qpos, task["initial_state"]["qpos"]):
+                        raise ValueError("Robot task reset changed task-specific poses")
+                    if not np.array_equal(restored.data.qvel, task["initial_state"]["qvel"]):
                         raise ValueError("Robot task reset changed velocities")
                     for target in tasks:
                         if not np.allclose(
@@ -224,7 +345,6 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
                             raise ValueError("Task target differs from reset center of mass")
                 finally:
                     restored.close()
-                checked_types.add(task["task_type"])
             entry["root"] = str(output.resolve())
             atomic_json(staging / "admission.json", entry)
             staging.rename(output)
@@ -250,14 +370,24 @@ def select_scenes(root: Path, count: int, pieces: int) -> list[Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--source-root", type=Path)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--scenes", type=int, default=10)
     parser.add_argument("--pieces", type=int, default=20)
     parser.add_argument("--model-root", type=Path, default=MODEL_ROOT)
+    parser.add_argument("--retask-pool", type=Path)
     args = parser.parse_args()
     if args.scenes <= 0 or args.pieces < 20:
         parser.error("Require a positive scene quota and at least 20 pieces")
+    if args.retask_pool is not None:
+        manifest = json.loads(args.retask_pool.read_text())
+        args.root.mkdir(parents=True, exist_ok=True)
+        for index, entry in enumerate(manifest["scenes"]):
+            retask_scene(entry, args.root / f"scene_{index:09d}", args.model_root)
+        print(json.dumps(publish_pool(args.root)), flush=True)
+        return
+    if args.source_root is None:
+        parser.error("Require --source-root or --retask-pool")
     candidates = sorted(args.source_root.glob("scene_*/receipt.json"))
     sources, identities = [], set()
     for candidate in candidates:

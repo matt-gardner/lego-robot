@@ -104,6 +104,11 @@ def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
     scene = json.loads((root / "scene_000000000" / "problem.json").read_text())
     assert len(scene["tasks"]) == 80
     assert len({task["target_instance_id"] for task in scene["tasks"]}) == 20
+    starts = np.array([task["start"]["tool_position_m"] for task in scene["tasks"]])
+    assert len(np.unique(starts, axis=0)) == 80
+    distances = np.linalg.norm(starts[:, None] - starts[None, :], axis=2)
+    np.fill_diagonal(distances, np.inf)
+    assert distances.min() >= .005
     assert all(1 <= task["target_tags"]["height_rank_from_top"] <= 20 for task in scene["tasks"])
     assert all("not measured visibility" in task["target_tags"]["depth_method"]
                for task in scene["tasks"])
@@ -123,9 +128,35 @@ def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
         sim.data.qpos[:] += .001
         reset_problem(sim, problem)
         assert np.array_equal(sim.data.qpos, original)
+        for item in scene["tasks"]:
+            reset_problem(sim, {**problem, "task": item})
+            assert np.array_equal(sim.data.qpos, item["initial_state"]["qpos"])
+            integration = np.empty(mujoco.mj_stateSize(
+                sim.model, mujoco.mjtState.mjSTATE_INTEGRATION))
+            mujoco.mj_getState(sim.model, sim.data, integration,
+                              mujoco.mjtState.mjSTATE_INTEGRATION)
+            assert np.array_equal(integration, item["initial_state"]["integration_state"])
+            assert np.allclose(sim.position(item["target_instance_id"]),
+                               item["initial_target_position"], atol=1e-10, rtol=0)
+        reset_problem(sim, problem)
+        other = next(item for item in scene["tasks"] if item["task_id"] != task["task_id"])
+        other_problem = {**problem, "task": other}
+        reset_problem(sim, other_problem)
+        assert not np.array_equal(sim.data.qpos, original)
+        assert np.array_equal(sim.data.qpos, other["initial_state"]["qpos"])
+        reset_problem(sim, problem)
+        assert np.array_equal(sim.data.qpos, original)
+        bad = {**task, "initial_state": {**task["initial_state"], "scene_id": "wrong"}}
+        with pytest.raises(ValueError, match="different scene"):
+            reset_problem(sim, {**problem, "task": bad})
     finally:
         sim.close()
     assert photo_pile_tasks.build_problem(source, root / "scene_000000000") == entry
+    revised = photo_pile_tasks.retask_scene(entry, tmp_path / "revised")
+    assert revised["scene_family_id"] == entry["scene_family_id"]
+    assert revised["scene_id"] != entry["scene_id"]
+    for name in ("model.mjb", "model.xml", "integration_state.json"):
+        assert revised["files_sha256"][name] == entry["files_sha256"][name]
 
 
 def test_progression_rejects_twenty_repeat_and_unbounded_quota():
