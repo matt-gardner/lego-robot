@@ -170,6 +170,11 @@ class NativePileSimulation(PathtraceSimulation):
         result = task_success(self.native, self.problem, executed, stable)
         return result["success"], result["stable"]
 
+    def close(self):
+        if hasattr(self, "native"):
+            self.native.close_labels()
+        super().close()
+
     def position(self, name):
         if hasattr(self, "native") and name in self.native.registry:
             return self.native.position(name)
@@ -188,6 +193,8 @@ class NativePileSimulation(PathtraceSimulation):
         return super()._render_wrist_rgb()
 
     def _segmentation_image(self):
+        if self.native_backend == "mujoco":
+            return self.native.segmentation_image()
         self._activate_context()
         return super()._segmentation_image()
 

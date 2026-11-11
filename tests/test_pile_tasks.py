@@ -97,18 +97,45 @@ def test_instance_segmentation_filters_geometry_type_and_never_switches_target(m
     calls = []
     renderer = SimpleNamespace(
         _gl_context=SimpleNamespace(make_current=lambda: None), _mjr_context=object(),
+        width=4, height=4,
         update_scene=lambda *args, **kwargs: None,
         enable_segmentation_rendering=lambda: None,
         disable_segmentation_rendering=lambda: calls.append("disabled"),
         render=lambda: segmentation,
     )
     monkeypatch.setattr(mujoco, "mjr_setBuffer", lambda *_: None)
+    samples = model.vis.quality.offsamples
+
+    def label_renderer(model, **kwargs):
+        assert model.vis.quality.offsamples == 0
+        assert kwargs == {"width": 4, "height": 4}
+        return renderer
+
+    monkeypatch.setattr(mujoco, "Renderer", label_renderer)
     sim = runtime.PileSimulation(model, mujoco.MjData(model), renderer,
                                  {"target": model.body("target").id})
     assert sim.instance_box("target")["box_valid"] is False
     segmentation[3, 3] = [model.geom("target_geom").id, int(mujoco.mjtObj.mjOBJ_GEOM)]
     assert sim.instance_box("target")["visible_pixels"] == 1
     assert calls == ["disabled", "disabled"]
+    assert model.vis.quality.offsamples == samples
+
+
+def test_label_renderer_failure_preserves_rgb_sampling(monkeypatch):
+    model = mujoco.MjModel.from_xml_string("<mujoco/>")
+    samples = model.vis.quality.offsamples
+    sim = runtime.PileSimulation(
+        model, mujoco.MjData(model), SimpleNamespace(width=320, height=240), {})
+
+    def unavailable(model, **kwargs):
+        assert model.vis.quality.offsamples == 0
+        raise RuntimeError("Rendering context unavailable")
+
+    monkeypatch.setattr(mujoco, "Renderer", unavailable)
+    with pytest.raises(RuntimeError, match="Rendering context unavailable"):
+        sim.segmentation_image()
+    assert sim.label_renderer is None
+    assert model.vis.quality.offsamples == samples
 
 
 def test_native_binary_reset_roundtrip_and_file_tampering(tmp_path):

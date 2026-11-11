@@ -15,6 +15,7 @@ from so101.lego_scene import body_surface_speed_bound, restore_scene
 GRADER_VERSION = "native-pile-goals-v1"
 TASKS = ("view", "grasp", "push", "place")
 MAXIMUM_ASSISTANCE_PRELOAD_N = 1.
+LABEL_RENDERER_PROFILE = "native-id-segmentation-no-msaa-v1"
 
 
 def load_problem(entry: dict, task_id: str) -> dict:
@@ -52,18 +53,38 @@ class PileSimulation:
     renderer: mujoco.Renderer | None
     registry: dict[str, int]
     lifted_once: bool = False
+    label_renderer: mujoco.Renderer | None = None
+
+    def close_labels(self) -> None:
+        if self.label_renderer is not None:
+            if self.label_renderer._gl_context is not None:
+                self.label_renderer._gl_context.make_current()
+            self.label_renderer.close()
+            self.label_renderer = None
 
     def close(self) -> None:
+        self.close_labels()
         if self.renderer is not None:
+            if self.renderer._gl_context is not None:
+                self.renderer._gl_context.make_current()
             self.renderer.close()
 
     def position(self, instance: str) -> np.ndarray:
         return self.data.xipos[self.registry[instance]].copy()
 
-    def instance_box(self, instance: str) -> dict:
+    def segmentation_image(self) -> np.ndarray:
         if self.renderer is None:
             raise ValueError("Instance labels require a rendering backend")
-        renderer = self.renderer
+        if self.label_renderer is None:
+            samples = self.model.vis.quality.offsamples
+            try:
+                # Resolving multisampled ID colors can invent other valid object IDs.
+                self.model.vis.quality.offsamples = 0
+                self.label_renderer = mujoco.Renderer(
+                    self.model, height=self.renderer.height, width=self.renderer.width)
+            finally:
+                self.model.vis.quality.offsamples = samples
+        renderer = self.label_renderer
         if renderer._gl_context is None or renderer._mjr_context is None:
             raise ValueError("Renderer context is unavailable")
         renderer._gl_context.make_current()
@@ -74,6 +95,10 @@ class PileSimulation:
             segmentation = renderer.render()
         finally:
             renderer.disable_segmentation_rendering()
+        return segmentation
+
+    def instance_box(self, instance: str) -> dict:
+        segmentation = self.segmentation_image()
         geom_ids = np.flatnonzero(self.model.geom_bodyid == self.registry[instance])
         mask = ((segmentation[:, :, 1] == mujoco.mjtObj.mjOBJ_GEOM)
                 & np.isin(segmentation[:, :, 0], geom_ids))

@@ -214,6 +214,17 @@ OSMesa with `MUJOCO_GL=osmesa`, `LIBGL_ALWAYS_SOFTWARE=1` and
 failure, not grounds for substituting an optical-angle proxy. Construction
 and exact replay do not establish policy feasibility.
 
+Native instance labels use `native-id-segmentation-no-msaa-v1`: a separate
+zero-MSAA segmentation context shared by the native grader and native policy
+entity masks. The policy RGB context and its antialiasing remain unchanged.
+Multisample color resolution can turn edge ID colors into other valid IDs,
+creating sparse remote pixels that drastically enlarge a target box. In a
+16-start EGL audit, disabling MSAA restored all 16 exact CPU labels and
+removed four falsely terminal VIEW starts. This is a label-rendering fix,
+not a change to the goal, geometry, reset, pixel threshold or dwell.
+Earlier multisampled-label results remain historical with their qualification
+caveat; do not silently relabel them or regenerate immutable starts to hide it.
+
 The earlier photo-template progression used
 `python -m so101.photo_pile_curriculum --source <original-photo-demo> --root
 <new-curriculum-root>` for **30, 40, 60 and 90 pieces**, in that order. Each

@@ -16,7 +16,7 @@ from so101 import pile_task_runtime
 from so101.photo_pile_curriculum import validate_stages
 from so101.pile_pool import publish_pool
 from so101.pile_task_runtime import create_simulation, load_problem, reset_problem, task_predicate
-from so101.rl_pile_adapter import load_native_pool
+from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
 
 
 @pytest.fixture
@@ -455,7 +455,24 @@ def test_near_view_uses_native_pixels_and_bbox_boundary(photo_source, tmp_path, 
         problem = load_problem(result, task["task_id"])
         sim = create_simulation(problem, renderbackend="mujoco")
         try:
+            rgb_renderer = sim.renderer
+            rgb_renderer.update_scene(sim.data, camera="wrist_cam")
+            before = rgb_renderer.render()
             label = sim.instance_box(task["target_instance_id"])
+            adapter = NativePileSimulation.__new__(NativePileSimulation)
+            adapter.native_backend = "mujoco"
+            adapter.native = sim
+            adapter.beam_geoms = {task["target_instance_id"]: np.flatnonzero(
+                sim.model.geom_bodyid == sim.registry[task["target_instance_id"]])}
+            adapter.destination_geoms = {}
+            assert np.count_nonzero(adapter.entity_mask(task["target_instance_id"])) == label["visible_pixels"]
+            assert sim.renderer is rgb_renderer
+            assert sim.model.vis.quality.offsamples == 4
+            assert sim.label_renderer._mjr_context.offSamples == 0
+            rgb_renderer._gl_context.make_current()
+            mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, rgb_renderer._mjr_context)
+            rgb_renderer.update_scene(sim.data, camera="wrist_cam")
+            np.testing.assert_array_equal(rgb_renderer.render(), before)
             assert label == task["assistance"]["physical_predicates"]["native_view_label"]
             assert label["visible_pixels"] >= parent["goal"]["minimum_pixels"]
             box = label["box_xyxy"]
