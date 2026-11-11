@@ -68,12 +68,55 @@ class BucketDashboard:
             groups.extend({**group, "dataset_snapshot_id": dataset}
                           for group in publication["calibration"]["groups"])
             buckets.extend(publication["problems"]["buckets"])
-        revision = hashlib.sha256(json.dumps([p["snapshot_id"] for p in datasets]).encode()).hexdigest()
+        admissions = self.admitted_piles()
+        revision = hashlib.sha256(json.dumps(
+            [[p["snapshot_id"] for p in datasets], admissions], sort_keys=True).encode()).hexdigest()
         return {"manifest": {"snapshot_id": revision, "datasets": datasets},
+                "admitted_piles": admissions,
                 "problems": {"problems": problems, "buckets": buckets},
                 "calibration": {"groups": groups, "protocol": {},
                                 "qualification_status": "multiple datasets",
                                 "complete": all(p["calibration"]["complete"] for p in publications)}}
+
+    def admitted_piles(self) -> list:
+        pins = sorted(self.root.glob("pile-previews-v1/*/admission.json"))
+        if len(pins) > 20000:
+            raise ValueError("Too many admitted pile previews")
+        piles = []
+        for pin in pins:
+            sha = pin.parent.name
+            admission = json.loads(self.read(str(pin.relative_to(self.root)), sha))
+            if admission["split"] != "train":
+                raise ValueError("Pile preview crosses TRAIN admission")
+            scene = json.loads(self.curriculum_read(
+                Path(admission["root"]) / "problem.json", admission["files_sha256"]["problem.json"]))
+            images = []
+            for path in sorted(pin.parent.glob("*.json")):
+                if path.name == "admission.json":
+                    continue
+                row = json.loads(self.read(str(path.relative_to(self.root)), limit=1024 * 1024))
+                task = next((t for t in scene["tasks"]
+                             if str(Path(admission["root"]) / "tasks" / t["task_id"]) == row["episode_source"]), None)
+                if (task is None or row["pool_sha256"] != sha
+                        or row["scene_files_sha256"]["problem.json"] != admission["files_sha256"]["problem.json"]
+                        or row["target_instance_id"] != task["target_instance_id"]
+                        or row["problem_id"] != hashlib.sha256(row["episode_source"].encode()).hexdigest()
+                        or row["physics_unchanged"] is not True or row["assistance"] != 0
+                        or row["is_gpu_policy_frame"] is not False):
+                    raise ValueError("Pile preview differs from pinned admission")
+                if Path(row["image_file"]).name != row["image_file"]:
+                    raise ValueError("Pile preview asset escapes receipt directory")
+                validate_annotation(row, row["width"], row["height"])
+                for annotation in row.get("target_annotations", []):
+                    validate_annotation(annotation, row["width"], row["height"])
+                images.append({**row, "renderer": row["backend"], "root_relative": True,
+                               "path": str(path.parent.relative_to(self.root) / row["image_file"])})
+            piles.append({"id": "admission:" + sha, "admission_sha256": sha,
+                          "scene_id": scene["scene_id"], "tags": scene["tags"],
+                          "status": "admitted pile preview — not a complete task pool",
+                          "initial_images": images, "dataset_snapshot_id": hashlib.sha256(
+                              json.dumps(images, sort_keys=True).encode()).hexdigest()})
+        return piles
 
     def curriculum_path(self, source: str) -> Path:
         path = Path(source)
@@ -321,7 +364,8 @@ class BucketDashboard:
 
     def image(self, problem_id: str, index: int, snapshot_id: str | None = None) -> tuple[bytes, str]:
         snapshot = self.snapshot()
-        problems = [row for row in snapshot["problems"]["problems"] if row["id"] == problem_id]
+        problems = [row for row in [*snapshot["problems"]["problems"], *snapshot.get("admitted_piles", [])]
+                    if row["id"] == problem_id]
         if len(problems) != 1 or index < 0:
             raise ValueError("Unknown bucket problem/image")
         revision = problems[0].get("dataset_snapshot_id", snapshot["manifest"].get("snapshot_id"))

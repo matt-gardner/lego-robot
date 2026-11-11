@@ -30,6 +30,14 @@ measured problem's task, canonical source and scene hash. The shared protocol,
 progress and groups are preserved; unmeasured pools remain unmeasured. Rates
 describe only the sampled problems, not the entire enumerated pool.
 
+Independent newly admitted piles appear separately from complete task pools.
+The reader discovers `pile-previews-v1/<admission SHA>/admission.json`, validates
+the pin and scene problem hash, and shows an explicit pending state until an
+atomic task receipt and original PNG arrive in that directory. Receipt pool SHA
+means admission SHA in this channel, not a complete pool. These previews never
+add task populations or policy groups, and are served through the same bounded,
+hash-checked image endpoint with an `admission:<SHA>` identity.
+
 `--bucket-curriculum-root` defaults to the existing read-only
 `/mnt/data/lego-curriculum` mount. The generator's atomic
 `current-task-pools.json` (`kind: lego-current-task-pools`, `schema_version: 1`,

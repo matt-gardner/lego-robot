@@ -261,3 +261,47 @@ def test_prefixed_http_page_missing_publication_and_exact_image(tmp_path):
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def test_admitted_pile_is_separate_from_task_inventory(tmp_path):
+    curriculum = tmp_path / "curriculum"
+    curriculum.mkdir()
+    scene = {"scene_id": "new-scene", "tags": {"piece_count": 40}, "tasks": [
+        {"task_id": "view", "target_instance_id": "brick_0"},
+    ]}
+    body = json.dumps(scene).encode()
+    (curriculum / "problem.json").write_bytes(body)
+    admission = {"root": str(curriculum), "split": "train",
+                 "files_sha256": {"problem.json": hashlib.sha256(body).hexdigest()}}
+    admission_bytes = json.dumps(admission).encode()
+    sha = hashlib.sha256(admission_bytes).hexdigest()
+    dashboard = tmp_path / "dashboard"
+    directory = dashboard / "pile-previews-v1" / sha
+    directory.mkdir(parents=True)
+    (directory / "admission.json").write_bytes(admission_bytes)
+    publish(dashboard, {"kind": "lego-data-buckets", "schema_version": 1,
+                        "snapshot_id": "empty", "problems": [], "groups": []})
+    # Use the same multi-dataset response shape as the live service.
+    channel = dashboard / "publications" / "base"
+    channel.mkdir(parents=True)
+    (channel / "current.json").write_bytes((dashboard / "current.json").read_bytes())
+    browser = BucketDashboard(dashboard, curriculum)
+    first = browser.snapshot()
+    assert first["problems"]["problems"] == []
+    assert first["admitted_piles"][0]["initial_images"] == []
+    image = b"\x89PNG\r\n\x1a\nadmitted"
+    (directory / "image.png").write_bytes(image)
+    source = str(curriculum / "tasks" / "view")
+    receipt = {"pool_sha256": sha, "episode_source": source,
+               "problem_id": hashlib.sha256(source.encode()).hexdigest(),
+               "target_instance_id": "brick_0", "scene_files_sha256": admission["files_sha256"],
+               "physics_unchanged": True, "assistance": 0, "is_gpu_policy_frame": False,
+               "image_file": "image.png", "sha256": hashlib.sha256(image).hexdigest(),
+               "backend": "mitsuba-llvm_ad_rgb", "width": 10, "height": 10,
+               "target_bbox_status": "not_visible", "target_bbox_xyxy": None, "target_visible_pixels": 0}
+    (directory / "task.json").write_text(json.dumps(receipt))
+    snapshot = browser.snapshot()
+    pile = snapshot["admitted_piles"][0]
+    assert browser.image(pile["id"], 0, pile["dataset_snapshot_id"]) == (image, "image/png")
+    assert snapshot["manifest"]["snapshot_id"] != first["manifest"]["snapshot_id"]
+    assert snapshot["calibration"]["groups"] == []

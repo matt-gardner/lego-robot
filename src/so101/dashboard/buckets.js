@@ -140,6 +140,24 @@ async function start() {
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const problems=data.problems.problems.filter(p=>p.source?.kind!=="legacy");
     const groups=data.calibration.groups;
+    const admissions=document.getElementById("admitted-piles");
+    if(data.admitted_piles?.length) {
+      admissions.append(node("h2","Newly admitted piles · not complete task pools"));
+      const grid=node("div",undefined,"pile-grid");admissions.append(grid);
+      for(const pile of data.admitted_piles) {
+        const card=node("article",undefined,"pile-group");
+        card.append(node("h3",`${pile.tags.piece_count} pieces · admitted pile`));
+        if(pile.initial_images.length) {
+          const image=node("img");image.loading="lazy";image.alt="Admitted pile preview";
+          image.style="width:100%;height:auto";
+          image.src=`api/buckets/image?problem=${encodeURIComponent(pile.id)}&index=0&snapshot=${encodeURIComponent(pile.dataset_snapshot_id)}`;
+          image.addEventListener("error",()=>image.replaceWith(node("p","Pile preview unavailable / failed integrity check","missing")));
+          card.append(image);
+        } else card.append(node("p","Pile preview not rendered yet","missing"));
+        card.append(node("p","Admission only · no task completion or policy success claimed."));
+        grid.append(card);
+      }
+    }
     const buckets=(data.problems.buckets || []).filter(b=>!b.id.startsWith("corpus:"));
     const pilot=data.calibration.qualification_status !== "qualified";
     status.textContent=`${pilot ? "SCREENING ONLY — not calibrated qualification" : "Measurement status: "+(data.calibration.qualification_status || "Unqualified / unspecified")}. ${problems.length} published problems. ${data.calibration.complete ? "Measurement plan complete" : "Measurements in progress"}.`;
