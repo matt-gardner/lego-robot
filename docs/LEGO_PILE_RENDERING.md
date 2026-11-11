@@ -171,6 +171,22 @@ publication verifies exact full-state replay. Static contacts are not proof of
 stable dynamic grasping or task success. Unavailable parents and unmet parent
 quotas are recorded explicitly; existing inputs are never overwritten.
 
+For all current GRASP parents, `scripts/generate_grasp_assistance.py --pointer
+<current-task-pools.json> --extra-root <additional-ordinary-task-root> --output
+<new-batch-root> --inventory-only` freezes and hashes the selected pools plus
+any newly admitted ordinary scenes not yet in the selector. Additional roots
+may be repeated. Original task IDs are deduplicated; assisted children are
+excluded. Resume with `--output <same-batch-root> --workers 2`, without the
+source-selection arguments. The runner constructs one immutable twenty-state
+family per original parent and checkpoints each outcome. `status.json` reports
+the full population, published families, unavailable constructions and unexpected
+errors separately; `admissions.json` indexes the successful admissions when
+finished. A per-parent timeout is an unresolved computation, not a proof of
+infeasibility. A `STOP` file stops submission after active parents finish.
+Only one coordinator may own a batch. Immutable model files are hard-linked on
+the same filesystem, avoiding a full model copy per parent; cross-filesystem
+publication explicitly falls back to copying. Training intake remains separate.
+
 #### Historical stage-distance construction
 
 The older construction below is retained for reproducing historical results,
@@ -381,7 +397,9 @@ not merely because task descriptors belong to the same scene.
 It exports compiled visual vertices and normals
 once into binary world-space PLYs, groups them by body/material, and uses the pinned
 `pile_pathtrace_v1` CPU recipe. MuJoCo segmentation is captured separately at the
-same resolution and mono camera (average of both eye transforms). Sampled
+same resolution and mono camera (average of both eye transforms), using a
+dedicated zero-MSAA context with the exact external camera. RGB retains its
+original MSAA setting and its context is restored after label capture. Sampled
 pixel-center Mitsuba primary rays must agree with the segmentation within 1%;
 the actual sampled count and mismatch are recorded, not a calibration claim.
 Unsupported geometry/materials and task-dependent reset differences fail explicitly.

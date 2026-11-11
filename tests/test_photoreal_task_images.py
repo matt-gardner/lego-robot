@@ -7,7 +7,9 @@ import numpy as np
 import pytest
 
 from so101.pathtrace_pile import DEFAULT_PROFILE, render_pathtrace
-from so101.photoreal_task_images import export_scene, group_task_resets, mono_camera, world_mesh, write_ply
+from so101.photoreal_task_images import (
+    capture_external_labels, export_scene, group_task_resets, mono_camera, world_mesh, write_ply,
+)
 from so101.task_image_roles import role_annotations
 
 
@@ -102,8 +104,14 @@ def test_actual_export_matches_segmentation_and_rejects_wrong_camera(tmp_path):
         np.testing.assert_allclose(
             geometry_camera["origin"], np.mean([eye.pos for eye in renderer.scene.camera], axis=0),
         )
-        renderer.enable_segmentation_rendering()
-        segmentation = renderer.render().copy()
+        rgb = renderer.render().copy()
+        samples = model.vis.quality.offsamples
+        segmentation = capture_external_labels(
+            SimpleNamespace(model=model, data=data, renderer=renderer), camera,
+        )
+        assert model.vis.quality.offsamples == samples
+        np.testing.assert_array_equal(renderer.render(), rgb)
+        assert np.any(segmentation[:, :, 0] == 1)
     np.savez_compressed(tmp_path / "segmentation.npz", segmentation=segmentation)
     scene_path = export_scene(SimpleNamespace(model=model, data=data), source,
                               tmp_path / "export", geometry_camera)

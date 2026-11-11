@@ -168,6 +168,27 @@ def admit_render(output):
         raise RuntimeError("CPU rendering paused: less than 2 GiB memory headroom available")
 
 
+def capture_external_labels(sim, camera):
+    samples = sim.model.vis.quality.offsamples
+    try:
+        sim.model.vis.quality.offsamples = 0
+        renderer = mujoco.Renderer(
+            sim.model, height=sim.renderer.height, width=sim.renderer.width,
+        )
+    finally:
+        sim.model.vis.quality.offsamples = samples
+    try:
+        with renderer:
+            renderer._gl_context.make_current()
+            mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, renderer._mjr_context)
+            renderer.update_scene(sim.data, camera=camera)
+            renderer.enable_segmentation_rendering()
+            return renderer.render().copy()
+    finally:
+        sim.renderer._gl_context.make_current()
+        mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, sim.renderer._mjr_context)
+
+
 def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contract,
                        variant="llvm_ad_rgb"):
     started = time.monotonic()
@@ -187,11 +208,7 @@ def render_reset_group(sim, entry, tasks, state_sha, output, profile_path, contr
     scene_output.mkdir(parents=True, exist_ok=True)
     raster = sim.renderer.render().copy()
     Image.fromarray(raster).save(scene_output / "mujoco-rgb.png")
-    sim.renderer.enable_segmentation_rendering()
-    try:
-        segmentation = sim.renderer.render().copy()
-    finally:
-        sim.renderer.disable_segmentation_rendering()
+    segmentation = capture_external_labels(sim, camera)
     np.savez_compressed(scene_output / "segmentation.npz", segmentation=segmentation)
     export = scene_output / "export"
     if export.exists():
