@@ -180,6 +180,40 @@ for `current-task-pools.json` or qualification for paired SFT recordings.
 They must not be mixed into original randomized-start evaluation or treated
 as historical gold-prefix assistance.
 
+#### Near-terminal sampling
+
+`--near-terminal [--parents-per-type 4]` selects the separate
+`near-terminal-v1` recipe. It samples GRASP at measured 0.5/1/2/5 mm below
+the original lift threshold, and PUSH at the same distances outside the
+original destination tolerance. PUSH refines the robot pose in joint space,
+not the piece position, so contact refinement cannot erase the requested
+goal gap. Holding alignment includes all collidable fixed-jaw geometry,
+including the rounded tips, rather than only the flat jaw face.
+
+VIEW uses native 320x240 wrist-camera segmentation, requiring the original
+minimum pixel count and measured bbox-centre radius excess of approximately
+0.005/0.01/0.02/0.04 beyond the original radius. Its distance units are
+normalized image radius, not millimetres or optical-axis angle; achieved
+values and pixel labels are recorded and rechecked after exact reset.
+Raster quantization allows at most 0.0025 error from the requested VIEW gap;
+metric gap error is limited to 0.01 mm, and every admitted gap is positive.
+Original release, speed, support and dwell requirements remain unchanged.
+
+PLACE retains the existing two lower-stage held starts as explicitly labeled
+`place-lower-control-v2` controls, not near-terminal claims. The optional
+parent quota counts only distinct parents with at least two valid variants;
+it stops sampling a task type once its quota is met, without claiming that
+all original parents were attempted or covered. Failed attempts remain
+explicit. Use a new output directory; never overwrite or merge overlapping
+pilot/full inputs. The recipe is recorded in provenance and child metadata;
+the existing v2 runtime contract still applies.
+
+Native VIEW construction requires a CPU software OpenGL backend, for example
+OSMesa with `MUJOCO_GL=osmesa`, `LIBGL_ALWAYS_SOFTWARE=1` and
+`LP_NUM_THREADS=1`. Missing rendering libraries are an explicit environment
+failure, not grounds for substituting an optical-angle proxy. Construction
+and exact replay do not establish policy feasibility.
+
 The earlier photo-template progression used
 `python -m so101.photo_pile_curriculum --source <original-photo-demo> --root
 <new-curriculum-root>` for **30, 40, 60 and 90 pieces**, in that order. Each

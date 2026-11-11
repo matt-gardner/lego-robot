@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import threading
 
@@ -382,6 +383,92 @@ def test_direct_assistance_links_parent_without_a_trajectory(photo_source, tmp_p
     held = pile_task_assistance.distance_label("place", "transport", .1, "held_target_to_destination_xy", "m")
     assert approach["remaining_stage_count"] > held["remaining_stage_count"]
     assert held["remaining_stages"] == ["transport", "lower", "release", "dwell"]
+
+
+def test_near_terminal_starts_measure_native_goal_gaps(photo_source, tmp_path, monkeypatch):
+    source = tmp_path / "fresh"
+    generator.generate_scene(photo_source, source, count=20, seed=20261111)
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    entry = photo_pile_tasks.build_problem(source, tasks / "scene")
+    original_bytes = (Path(entry["root"]) / "problem.json").read_bytes()
+    parents = json.loads(original_bytes)["tasks"]
+    selected = [next(task["task_id"] for task in parents if task["task_type"] == kind)
+                for kind in ("grasp", "push")]
+
+    def reject_step(*args, **kwargs):
+        raise AssertionError("Near-terminal construction must not execute a trajectory")
+
+    monkeypatch.setattr(mujoco, "mj_step", reject_step)
+    result = pile_task_assistance.generate(
+        entry, tmp_path / "near" / "scene", task_ids=selected, near_terminal=True)
+    revised = json.loads((Path(result["root"]) / "problem.json").read_bytes())
+    assert (Path(entry["root"]) / "problem.json").read_bytes() == original_bytes
+    assert revised["provenance"]["sampling_recipe"] == "near-terminal-v1"
+    assert {task["task_type"] for task in revised["tasks"]} == {"grasp", "push"}
+    for kind in ("grasp", "push"):
+        children = [task for task in revised["tasks"] if task["task_type"] == kind]
+        assert len(children) == 4
+        for task in children:
+            parent = next(parent for parent in parents if parent["task_id"] == task["parent_task_id"])
+            assert task["goal"] == parent["goal"]
+            assert task["initial_target_position"] == parent["initial_target_position"]
+            assert task["assistance"]["sampling_recipe"] == "near-terminal-v1"
+            requested = task["assistance"]["requested_goal_gap"]["value"]
+            assert requested in (.0005, .001, .002, .005)
+            problem = load_problem(result, task["task_id"])
+            sim = create_simulation(problem)
+            try:
+                position = sim.position(task["target_instance_id"])
+                if kind == "grasp":
+                    actual = parent["initial_target_position"][2] + parent["goal"]["lift_m"] - position[2]
+                else:
+                    actual = (np.linalg.norm(position[:2] - parent["goal"]["destination_xy"])
+                              - parent["goal"]["tolerance_m"])
+                assert actual > 0
+                assert actual == pytest.approx(requested, abs=.00001)
+                assert task["assistance"]["distance"]["within_stage"]["value"] == pytest.approx(actual)
+                assert not task_predicate(sim, problem)
+            finally:
+                sim.close()
+
+
+@pytest.mark.skipif(os.environ.get("MUJOCO_GL") != "osmesa", reason="Requires native CPU OSMesa rendering")
+def test_near_view_uses_native_pixels_and_bbox_boundary(photo_source, tmp_path, monkeypatch):
+    source = tmp_path / "fresh"
+    generator.generate_scene(photo_source, source, count=20, seed=20261111)
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    entry = photo_pile_tasks.build_problem(source, tasks / "scene")
+    parents = json.loads((Path(entry["root"]) / "problem.json").read_bytes())["tasks"]
+    parent = next(task for task in parents if task["task_type"] == "view")
+
+    def reject_step(*args, **kwargs):
+        raise AssertionError("Native VIEW boundary construction must not execute a trajectory")
+
+    monkeypatch.setattr(mujoco, "mj_step", reject_step)
+    result = pile_task_assistance.generate(
+        entry, tmp_path / "near-view" / "scene", task_ids=[parent["task_id"]], near_terminal=True)
+    children = json.loads((Path(result["root"]) / "problem.json").read_bytes())["tasks"]
+    assert len(children) == 4
+    for task in children:
+        problem = load_problem(result, task["task_id"])
+        sim = create_simulation(problem, renderbackend="mujoco")
+        try:
+            label = sim.instance_box(task["target_instance_id"])
+            assert label == task["assistance"]["physical_predicates"]["native_view_label"]
+            assert label["visible_pixels"] >= parent["goal"]["minimum_pixels"]
+            box = label["box_xyxy"]
+            excess = np.linalg.norm((np.array(box[:2]) + box[2:]) / 2 - .5) - parent["goal"]["center_radius"]
+            assert excess > 0
+            assert excess == pytest.approx(task["assistance"]["requested_goal_gap"]["value"], abs=.0025)
+            distance = task["assistance"]["distance"]["within_stage"]
+            assert distance["metric"] == "native_bbox_center_radius_excess"
+            assert distance["value"] == pytest.approx(excess)
+            assert not task_predicate(sim, problem)
+            assert task["goal"] == parent["goal"]
+        finally:
+            sim.close()
 
 
 def test_progression_caps_each_bucket_and_resumes(photo_source, tmp_path, monkeypatch):
