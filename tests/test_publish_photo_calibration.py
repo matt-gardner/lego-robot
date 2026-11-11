@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -124,6 +125,18 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
 @pytest.mark.parametrize("kind", ["photo", "native"])
 def test_unassisted_partial_results_publish_without_expert_collection(tmp_path, kind):
     pool, _, output, references, _ = inputs(tmp_path)
+    if kind == "native":
+        manifest = json.loads(pool.read_text())
+        entry = manifest["scenes"][0]
+        scene_path = Path(entry["root"]) / "problem.json"
+        scene = json.loads(scene_path.read_text())
+        scene["tasks"][0].update(parent_task_id="parent", assistance={
+            "kind": "direct-task-distance-v2", "distance": {"remaining_stage_count": 2},
+        })
+        scene_path.write_text(json.dumps(scene))
+        entry["files_sha256"]["problem.json"] = hashlib.sha256(scene_path.read_bytes()).hexdigest()
+        pool.write_text(json.dumps(manifest))
+        references["pool_sha256"] = hashlib.sha256(pool.read_bytes()).hexdigest()
     measurements = tmp_path / "measurements.json"
     row = {"task": "grasp", "source": references["attempts"][0]["source"],
            "policy_step": 0, "assistance": 0, "success_interval_95": [0., .8],
@@ -137,6 +150,9 @@ def test_unassisted_partial_results_publish_without_expert_collection(tmp_path, 
     assert snapshot["problems"]["problems"][0]["source"]["kind"] == kind
     assert snapshot["manifest"]["progress"]["reference_complete"] is None
     assert snapshot["calibration"]["groups"][0]["attempts"] == 1
+    if kind == "native":
+        assert snapshot["calibration"]["groups"][0]["parent_task_id"] == "parent"
+        assert snapshot["problems"]["problems"][0]["tags"]["task_assistance"]["kind"] == "direct-task-distance-v2"
     row["rollouts"].append({"success": True, "invalid_action_error": None, "seed": 118})
     measurements.write_text(json.dumps(value))
     publish(pool, None, output, measurements, source_kind=kind, measurement_series_id="unassisted")

@@ -1032,6 +1032,10 @@ and repeatable `--photo-pool` / `--native-pool` immutable manifests. It mirrors
 every 20 seconds and publishes each growing result file as an additive series,
 without requiring expert references or replacing prior measurements. It exits
 after the driver's final refresh, and surfaces driver/publication failures.
+Direct distance-start variants retain `parent_task_id` and the complete
+`task_assistance` construction/distance metadata in loaded episodes and published
+problem tags and groups. Their numeric prefix assistance can be zero while their
+starting state is assisted; keep their population separate from original starts.
 
 For assistance calibration on new photo piles, use `--native-only --initial-only`
 with `--native-pool` and `--native-references`. This rejects legacy problem sources,

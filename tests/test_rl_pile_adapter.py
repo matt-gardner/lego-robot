@@ -193,6 +193,26 @@ def native_pool(tmp_path, monkeypatch):
         sim.close()
 
 
+def test_native_pool_retains_direct_distance_parent_and_start_metadata(native_pool):
+    manifest, _ = native_pool
+    content = json.loads(manifest.read_text())
+    entry = content["scenes"][0]
+    path = Path(entry["root"]) / "problem.json"
+    scene = json.loads(path.read_text())
+    task = scene["tasks"][0]
+    task.update(parent_task_id="original-task", assistance={
+        "kind": "direct-task-distance-v2",
+        "distance": {"remaining_stage_count": 2, "within_stage": {"value": .02, "units": "m"}},
+    })
+    path.write_text(json.dumps(scene))
+    entry["files_sha256"]["problem.json"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(content))
+    episode = load_native_pool(manifest, set())[task["task_type"]][0]
+    assert episode.metadata["parent_task_id"] == task["parent_task_id"]
+    assert episode.metadata["task_assistance"] == task["assistance"]
+    assert "native_reference" not in episode.metadata
+
+
 def test_native_adapter_exact_reset_com_action_grading_and_no_legacy_object_lookup(native_pool, monkeypatch):
     manifest, original = native_pool
     pool = load_native_pool(manifest, set())

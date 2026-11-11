@@ -91,6 +91,9 @@ def load_native_pool(path: Path, excluded_families: set[str]) -> dict[str, list[
                 {"task": task["task_type"], "target": task["target_instance_id"],
                  "native_entry": entry, "native_task_id": task["task_id"],
                  "scene_family_id": entry["scene_family_id"],
+                 **({"parent_task_id": task["parent_task_id"],
+                     "task_assistance": task["assistance"]}
+                    if "parent_task_id" in task else {}),
                  "reference_available": False},
             ))
     if not all(episodes.values()):
