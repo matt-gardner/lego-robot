@@ -24,6 +24,9 @@ function aggregate(groups) {
 function pileIdentity(problem) {
   return problem.source?.scene_id || problem.pile_id || problem.scene_id || problem.id;
 }
+function bucketLabel(value) {
+  return value.replace(/^current:/,"").replace(/-/g," ");
+}
 function groupPiles(problems) {
   const buckets = new Map();
   for (const problem of problems) {
@@ -234,7 +237,7 @@ async function start() {
         const rollouts=aggregate(tp.flatMap(groupFor)).reduce((n,c)=>n+c.n,0);
         coverage.append(node("p",`${task}: ${measured.length}/${tp.length} problems · ${rollouts} rollouts`));
       }
-      row.append(node("td",b?.label || id),node("td",String(ps.length)),chart,coverage,
+      row.append(node("td",bucketLabel(b?.label || id)),node("td",String(ps.length)),chart,coverage,
         node("td",`${ps.filter(p=>p.initial_images?.length).length}/${ps.length}`));
           row.addEventListener("click",()=>{
             document.getElementById("bucket").value=id;
@@ -242,7 +245,7 @@ async function start() {
             shown=24;saveFilters();render();
           });
           overview.append(row);
-      const opt=node("option",id);opt.value=id;document.getElementById("bucket").append(opt);
+      const opt=node("option",bucketLabel(b?.label || id));opt.value=id;document.getElementById("bucket").append(opt);
     }
     document.getElementById("populations").append(overview);
     for (const task of [...new Set(problems.map(p=>p.task))].sort()) {const o=node("option",task);o.value=task;document.getElementById("task").append(o);}
@@ -267,7 +270,7 @@ async function start() {
         if (!remaining) break;
         const bucketSection=node("details",undefined,"bucket-group");
         rememberDetails(bucketSection,`bucket-open:${group.bucket}`,true);
-        const label=(buckets.find(b=>b.id===group.bucket)?.label || group.bucket).replace(/^native:/,"").replace(/-/g," ");
+        const label=bucketLabel(buckets.find(b=>b.id===group.bucket)?.label || group.bucket).replace(/^native:/,"");
         bucketSection.append(node("summary",`${label} · ${group.piles.length} piles`));
         const grid=node("div",undefined,"pile-grid");
         bucketSection.append(grid);
