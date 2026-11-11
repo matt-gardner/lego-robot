@@ -39,9 +39,10 @@ Retained `measurement_series` entries contain independent `series_id`, `label`,
 `protocol`, `groups`, `progress`, `complete`, `provenance` and optional scopes.
 `current_measurement_series_id` selects the compatibility top-level groups;
 `latest_measurement_series_id` identifies a successor without replacing history.
-The browser offers a remembered series selector per dataset. Switching replaces
-that dataset's chart and modal measurements, never pools groups from different
-series. All series groups are validated against the exact selected task sources.
+All retained series for the exact selected pool are aggregated together in the
+chart and task measurements, as requested by Matt. The mirrored top-level groups
+are not counted a second time. Original series IDs and protocols remain attached
+to each group for provenance. All groups are validated against selected sources.
 
 Tasks are read immediately from each admitted pile's hash-pinned `problem.json`,
 without waiting for a complete pool or rendered preview. Active generator

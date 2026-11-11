@@ -314,6 +314,17 @@ class BucketDashboard:
                     "measurement_series", "current_measurement_series_id", "latest_measurement_series_id"):
             if key in candidate["manifest"]:
                 manifest[key] = candidate["manifest"][key]
+        if series:
+            combined = [{**group, "measurement_series_id": s["series_id"],
+                         "protocol": s["protocol"]}
+                        for s in series for group in s["groups"]]
+            publication["calibration"] = {
+                **candidate["calibration"], "groups": combined,
+                "complete": all(s["complete"] for s in series),
+            }
+            manifest["progress"] = {**manifest.get("progress", {}),
+                                    "policy_rollouts": sum(g["attempts"] for g in combined)}
+            manifest["complete"] = publication["calibration"]["complete"]
         manifest["snapshot_id"] = hashlib.sha256(
             (manifest["snapshot_id"] + candidate["manifest"]["snapshot_id"]).encode()).hexdigest()
 
