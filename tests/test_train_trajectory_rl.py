@@ -1214,7 +1214,10 @@ def test_flow_replay_transfers_after_sampling_without_changing_random_draws(monk
         assert torch.equal(replayed, result)
 
 
-def test_batched_rollouts_preserve_independent_noise_histories_and_early_termination(monkeypatch, tmp_path):
+@pytest.mark.parametrize("store_decisions", [True, False])
+def test_batched_rollouts_preserve_independent_noise_histories_and_early_termination(
+    monkeypatch, tmp_path, store_decisions,
+):
     from collections import deque
     import so101.train_trajectory_rl as trainer
     from so101.control_model.flow_rl import independent_noise_like, sample_flow_path
@@ -1268,13 +1271,13 @@ def test_batched_rollouts_preserve_independent_noise_histories_and_early_termina
     controller = Controller()
     expected = [
         trainer.rollout(simulation(), controller, episode, seed, 9, 4,
-                        bounds, True, 0., .1, record_path_noise=True)
+                        bounds, store_decisions, 0., .1, record_path_noise=True)
         for seed in (2, 3, 4)
     ]
     sizes.clear()
     actual = trainer.rollout_group(
         [simulation() for _ in range(3)], controller, episode, [2, 3, 4],
-        9, 4, bounds, 0., .1, True,
+        9, 4, bounds, 0., .1, True, store_decisions=store_decisions,
     )
     assert sizes == [3, 1, 1]
     assert [item.steps for item in actual] == [2, 9, 2]

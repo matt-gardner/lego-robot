@@ -994,14 +994,47 @@ With `--calibrate-assistance --batch-rollouts --group-size 4`, synchronous
 calibration retries the **same problem**: four passes reduce assistance; four
 failures increase it; only mixed groups contribute training gradients.
 Each attempt updates a task-type assistance EMA (`--assistance-ema-alpha 0.2`);
-new problems start from that EMA. Native reference-free problems do not support
-gold-prefix assistance: reaching an assistance bound triggers problem
-replacement. `--max-group-attempts-per-task` bounds total sampling attempts per
-task/update, including calibration retries. A single policy alternates rollout
-generation and optimization on the GPU; there are no background rollout workers,
-queued stale policies, or extra model copies. All gradients within an update use
+new problems start from that EMA unless `--initial-curriculum` supplies explicit
+per-problem starting assistance. That JSON maps each task to a nonempty list of
+`{"source": "TRAIN/episode/path", "assistance": 0.25}` records and restricts
+sampling to those frozen TRAIN sources without changing held-out validation.
+`--training-tasks grasp push place` restricts update sampling while retaining the
+same four-task frozen validation; omitted tasks can be measured by the probe.
+Native reference-free problems do not support gold-prefix assistance.
+`--max-group-attempts-per-task` bounds total sampling attempts per task/update,
+including calibration retries; exhausting it raises rather than silently skipping
+an unfinished problem, including at assistance bounds. A single training policy
+alternates rollout generation and optimization on the GPU. All gradients within an update use
 the policy that sampled those groups, preserving strict cache/action replay
 checks. The per-task EMA and normal training RNG are saved in full checkpoints.
+An independent `python -m so101.probe_trajectory_rl` process can run one probing
+rollout at a time alongside training. Supply `--checkpoint`, `--collection`,
+`--split`, `--plan`, `--training-output`, `--output`, and `--model-root`.
+The plan is a list of task/source/assistance records. Each problem/assistance
+combination receives at least 16 repeats and a Wilson 95% success interval.
+The probe pins the latest atomically published full-model snapshot per combination
+(or the initial SFT before the first checkpoint), records its iteration, and never
+mixes measurements across policy versions or constructs an optimizer. These are
+lagged difficulty estimates, not training rollouts or automatic bucket admission.
+For assistance calibration on new photo piles, use `--native-only --initial-only`
+with `--native-pool` and `--native-references`. This rejects legacy problem sources,
+pins the untouched initial policy, pairs rollout seeds across assistance levels,
+and verifies the policy digest is unchanged. `--batch-rollouts 4` batches inference
+without retaining training decisions; the default remains one serial probe.
+`--calibrate-assistance` stops additional levels for a problem after 16 or more
+repeats show 25--75% success, or all pass without assistance. Unmeasured levels
+remain explicitly unmeasured, and all-pass problems are marked too easy, not
+qualified training targets. Use 32 repeats to refine uncertain estimates.
+
+Generate reference overlays with `python -m so101.collect_pile_references
+--pool <immutable-pool.json> --model-root <model> --output <fresh-directory>`.
+Attempts are balanced across scene families and default to 20 per task type.
+The collector executes numeric policy actions, restores the exact integration
+state, replays every action, and admits a reference only when the native dwell
+grader succeeds at the end and maximum replay qpos error is at most 1e-7.
+Scripted IK failures and failed predicates are reported, not called infeasible.
+The completed overlay binds the original pool, scene files and action hashes;
+it never changes the producer's reference-free capabilities or immutable scenes.
 Before selecting training buckets, `python -m so101.calibrate_trajectory_rl`
 performs inference only on the final SFT checkpoint, with no optimizer.
 Supply `--checkpoint`, `--collection`, the existing frozen `--split`,

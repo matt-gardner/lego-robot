@@ -1,6 +1,7 @@
 """Use native pile resets and goals with the existing robot/policy action contract."""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,6 +12,52 @@ from so101.pile_task_runtime import PileSimulation, load_problem, reset_problem,
 from so101.rl_renderer import PathtraceSimulation
 from so101.robot_sim import BeamSimulation
 from so101.simulation_corpus import CorpusEpisode, TASKS
+
+
+def load_reference_rows(episode: CorpusEpisode) -> list[dict]:
+    reference = episode.metadata.get("native_reference")
+    if reference is None:
+        raise ValueError("Reference-free native tasks do not support gold-prefix assistance")
+    content = Path(reference["frames"]).read_bytes()
+    if hashlib.sha256(content).hexdigest() != reference["frames_sha256"]:
+        raise ValueError("Native reference actions changed after qualification")
+    rows = json.loads(content)
+    if len(rows) < 2:
+        raise ValueError("Native reference needs at least two actions")
+    for row in rows:
+        action = np.asarray(row["action"], dtype=float)
+        if action.shape != (6,) or not np.isfinite(action).all():
+            raise ValueError("Native reference action is not six finite policy coordinates")
+    return rows
+
+
+def attach_native_references(
+    episodes: dict[str, list[CorpusEpisode]], path: Path, *, pool_sha256: str,
+) -> None:
+    manifest = json.loads(path.read_text())
+    if (manifest.get("schema_version") != 1
+            or manifest.get("kind") != "pile-expert-references"
+            or manifest.get("success_condition") != "terminal-native-dwell-v1"
+            or manifest.get("pool_sha256") != pool_sha256
+            or manifest.get("complete") is not True):
+        raise ValueError("Native reference manifest is not a completed qualification")
+    by_source = {str(episode.source): episode for rows in episodes.values() for episode in rows}
+    seen = set()
+    for reference in manifest["references"]:
+        source = reference["source"]
+        if source in seen or source not in by_source:
+            raise ValueError("Reference duplicates a problem or crosses the selected native pool")
+        seen.add(source)
+        episode = by_source[source]
+        error = reference["maximum_qpos_error"]
+        if (reference["accepted"] is not True or reference["replay_success"] is not True
+                or not np.isfinite(error) or not 0 <= error <= 1e-7
+                or reference["task"] != episode.task
+                or reference["scene_files_sha256"] != episode.metadata["native_entry"]["files_sha256"]):
+            raise ValueError("Native reference lacks successful, bound exact-reset replay evidence")
+        episode.metadata["native_reference"] = reference
+        load_reference_rows(episode)
+        episode.metadata["reference_available"] = True
 
 
 def load_native_pool(path: Path, excluded_families: set[str]) -> dict[str, list[CorpusEpisode]]:

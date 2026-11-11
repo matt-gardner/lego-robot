@@ -4,6 +4,29 @@ from __future__ import annotations
 import math
 
 
+def select_curriculum(training, specification):
+    """Resolve an explicit starting pool against the frozen training split."""
+    if set(specification) != set(training):
+        raise ValueError("Initial curriculum must specify every training task")
+    selected, assistance = {}, {}
+    for task, rows in specification.items():
+        available = {str(episode.source): episode for episode in training[task]}
+        if not rows:
+            raise ValueError(f"Initial curriculum has no problems for {task}")
+        selected[task] = []
+        for row in rows:
+            source, value = row["source"], row["assistance"]
+            if source not in available:
+                raise ValueError(f"Curriculum problem is outside frozen TRAIN: {source}")
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= .95:
+                raise ValueError(f"Invalid initial curriculum assistance: {source}")
+            if source in assistance:
+                raise ValueError(f"Duplicate initial curriculum problem: {source}")
+            selected[task].append(available[source])
+            assistance[source] = value
+    return selected, assistance
+
+
 class AssistanceCalibration:
     def __init__(self, state: dict, *, alpha: float = .2, increment: float = .05):
         if not 0 < alpha <= 1 or not 0 < increment <= 1:

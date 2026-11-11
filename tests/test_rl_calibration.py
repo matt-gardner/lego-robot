@@ -1,8 +1,26 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 from so101.cloud_checkpoint import validate_state
-from so101.rl_calibration import AssistanceCalibration
+from so101.rl_calibration import AssistanceCalibration, select_curriculum
+
+
+def test_initial_curriculum_rejects_held_out_sources_and_selects_assistance():
+    episode = SimpleNamespace(source="train/problem")
+    training = {"push": [episode]}
+    selected, assistance = select_curriculum(
+        training, {"push": [{"source": "train/problem", "assistance": .5}]},
+    )
+    assert selected == training
+    assert assistance == {"train/problem": .5}
+    with pytest.raises(ValueError, match="outside frozen TRAIN"):
+        select_curriculum(training, {"push": [{"source": "heldout/problem", "assistance": .5}]})
+    with pytest.raises(ValueError, match="every training task"):
+        select_curriculum(training, {})
+    with pytest.raises(ValueError, match="Invalid"):
+        select_curriculum(training, {"push": [{"source": "train/problem", "assistance": float("nan")}]})
 
 
 def test_task_ema_shares_feedback_across_problems_but_not_tasks_and_resumes():

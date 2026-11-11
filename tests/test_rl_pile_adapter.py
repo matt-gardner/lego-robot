@@ -11,12 +11,66 @@ import torch
 
 from so101.lego_scene import capture_scene_state
 from so101.pile_task_runtime import GRADER_VERSION
-from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
+from so101.rl_pile_adapter import (
+    NativePileSimulation, attach_native_references, load_native_pool, load_reference_rows,
+)
 from so101.robot_sim import BeamSimulation, MODEL_ROOT, scene_xml
-from so101.simulation_corpus import TASKS
-from so101.train_trajectory_rl import rollout
+from so101.simulation_corpus import CorpusEpisode, TASKS
+from so101.train_trajectory_rl import replay_gold_prefix, rollout
 from so101.train_trajectory_rl import refresh_difficulty_pools
 from so101.rl_difficulty import DifficultyController
+
+
+def test_native_reference_overlay_binds_actions_scene_and_replay_evidence(tmp_path):
+    episode = CorpusEpisode(tmp_path / "task", {
+        "task": "place", "native_entry": {"files_sha256": {"model.mjb": "original"}},
+        "reference_available": False,
+    })
+    frames = tmp_path / "actions.json"
+    frames.write_text(json.dumps([{"action": [0.] * 6}, {"action": [1.] * 6}]))
+    reference = {
+        "source": str(episode.source), "task": "place", "accepted": True,
+        "replay_success": True, "maximum_qpos_error": 0.,
+        "frames": str(frames), "frames_sha256": hashlib.sha256(frames.read_bytes()).hexdigest(),
+        "scene_files_sha256": episode.metadata["native_entry"]["files_sha256"],
+    }
+    manifest = tmp_path / "references.json"
+    value = {"schema_version": 1, "kind": "pile-expert-references",
+             "success_condition": "terminal-native-dwell-v1",
+             "pool_sha256": "pool",
+             "complete": True, "references": [reference]}
+    manifest.write_text(json.dumps(value))
+    attach_native_references({"place": [episode]}, manifest, pool_sha256="pool")
+    assert episode.metadata["reference_available"]
+    assert len(load_reference_rows(episode)) == 2
+    frames.write_text("[]")
+    with pytest.raises(ValueError, match="changed"):
+        load_reference_rows(episode)
+    reference["scene_files_sha256"] = {"model.mjb": "different"}
+    manifest.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="bound exact-reset"):
+        attach_native_references({"place": [episode]}, manifest, pool_sha256="pool")
+
+
+def test_native_prefix_updates_native_lift_history_without_granting_success(tmp_path):
+    frames = tmp_path / "actions.json"
+    frames.write_text(json.dumps([{"action": [0.] * 6}] * 4))
+    episode = CorpusEpisode(tmp_path, {
+        "native_entry": {}, "native_reference": {
+            "frames": str(frames), "frames_sha256": hashlib.sha256(frames.read_bytes()).hexdigest(),
+        },
+    })
+    heights = iter([0., .04, .01])
+    grades = []
+    sim = SimpleNamespace(
+        position=lambda target: [0., 0., next(heights)],
+        bounded_policy_action=lambda action: (action, None),
+        step=lambda goal, phase: None,
+        native_success=lambda executed, stable: grades.append((executed, stable)),
+    )
+    count, maximum_lift = replay_gold_prefix(sim, episode, "target", .5)
+    assert count == 2 and maximum_lift == .04
+    assert grades == [(0, 0), (0, 0)]
 
 
 @pytest.fixture

@@ -27,7 +27,7 @@ from so101.control_model.jerk_regularizer import (
     prefix_backward_batch,
 )
 from so101.jerk_reference import ReferenceJerkMargins
-from so101.rl_calibration import AssistanceCalibration
+from so101.rl_calibration import AssistanceCalibration, select_curriculum
 from so101.control_model.modeling_entity_smolvla import (
     FrozenObservation,
     save_entity_checkpoint,
@@ -45,7 +45,7 @@ from so101.cloud_checkpoint import atomic_json
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
 from so101.resume_rng import plan_device_rng, restore_device_rng
 from so101.rl_renderer import create_simulation
-from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
+from so101.rl_pile_adapter import NativePileSimulation, load_native_pool, load_reference_rows
 from so101.rl_difficulty import DifficultyController, HarderDataRequests
 from so101.simulation_corpus import CorpusEpisode, TASKS, episode_actions, expert_bounds, load_corpus
 
@@ -134,11 +134,9 @@ def replay_gold_prefix(
 ) -> tuple[int, float]:
     if fraction <= 0:
         return 0, 0.
-    if "native_entry" in episode.metadata:
-        raise ValueError("Reference-free native tasks do not support gold-prefix assistance")
-    rows = [
-        json.loads(line)
-        for line in (episode.source / "frames.jsonl").read_text().splitlines()
+    native = "native_entry" in episode.metadata
+    rows = load_reference_rows(episode) if native else [
+        json.loads(line) for line in (episode.source / "frames.jsonl").read_text().splitlines()
     ]
     prefix_steps = min(
         int(len(rows) * fraction),
@@ -149,6 +147,8 @@ def replay_gold_prefix(
     for row in rows[:prefix_steps]:
         goal, _ = sim.bounded_policy_action(row["action"])
         sim.step(goal, "trajectory_rl_gold_prefix")
+        if native:
+            sim.native_success(0, 0)
         maximum_lift = max(
             maximum_lift,
             float(sim.position(target)[2] - initial_z),
@@ -464,7 +464,9 @@ def _rollout_on_sim(
     curriculum_bounds = dict(bounds)
     curriculum_bounds["optimal_steps"] = max(
         1.,
-        bounds["optimal_steps"] * (1 - start_proximity),
+        len(load_reference_rows(episode)) - prefix_steps
+        if "native_reference" in episode.metadata
+        else bounds["optimal_steps"] * (1 - start_proximity),
     )
     if fixed_horizon and (executed < horizon or wrong_object):
         success = False
@@ -577,13 +579,15 @@ def rollout_group(
     noise_scale: float,
     record_path_noise: bool,
     capture_path: Path | None = None,
+    *,
+    store_decisions: bool = True,
 ) -> list[Trajectory]:
     if len(sims) != len(seeds):
         raise ValueError("Batched rollouts require one independent simulator per trajectory")
     iterators = [
         _rollout(
             sim, copy.copy(controller), episode, seed, horizon, action_steps,
-            bounds, True, start_proximity, noise_scale,
+            bounds, store_decisions, start_proximity, noise_scale,
             capture_path if index == 0 else None,
             record_path_noise=record_path_noise, independent_rng=True,
         )
@@ -613,7 +617,8 @@ def rollout_group(
                 combined_inputs = batch_inputs([request.inputs for request in requests])
                 replay_inputs = (
                     to_device(combined_inputs, "cpu")
-                    if getattr(controller.policy.model, "rl_train_full_model", False) else None
+                    if store_decisions and getattr(controller.policy.model, "rl_train_full_model", False)
+                    else None
                 )
                 def capture(pad, cache):
                     for row, request in enumerate(requests):
@@ -625,7 +630,7 @@ def rollout_group(
                     combined_inputs,
                     noise_scale, first.active_shape, record_noise=record_path_noise,
                     generators=generators,
-                    capture=capture,
+                    capture=capture if store_decisions else None,
                 )
             following = {}
             for row, index in enumerate(indices):
@@ -1624,6 +1629,23 @@ def train(args: argparse.Namespace) -> None:
         (output / "data_split.json").write_text(json.dumps(
             split_payload, indent=2
         ))
+    initial_assistance = {}
+    curriculum_path = getattr(args, "initial_curriculum", None)
+    if curriculum_path is not None:
+        content = curriculum_path.read_bytes()
+        specification = json.loads(content)
+        contract = {"sha256": hashlib.sha256(content).hexdigest(),
+                    "specification": specification}
+        if args.resume and split_payload.get("initial_curriculum") != contract:
+            raise ValueError("Initial curriculum changed or was added after the run started")
+        training, initial_assistance = select_curriculum(training, specification)
+        split_payload["initial_curriculum"] = contract
+        split_payload["training"] = {
+            task: [str(item.source) for item in values] for task, values in training.items()
+        }
+        atomic_json(output / "data_split.json", split_payload)
+    elif "initial_curriculum" in split_payload:
+        raise ValueError("Cannot remove the frozen initial curriculum on resume")
     auxiliary_view = None
     auxiliary_path = getattr(args, "auxiliary_view_manifest", None)
     if auxiliary_path is not None:
@@ -2048,7 +2070,7 @@ def train(args: argparse.Namespace) -> None:
             boundary_gradient_sum = torch.zeros_like(jerk_gradient_sum) if boundary_enabled else None
             group_rows = []
             problems: list[tuple[str, dict[str, Any] | None]] = [
-                (task, None) for task in TASKS
+                (task, None) for task in getattr(args, "training_tasks", TASKS)
             ]
             solved_problem = sample_solved_problem(solved_problems, rng, step) if calibration is None else None
             if solved_problem is not None:
@@ -2137,7 +2159,10 @@ def train(args: argparse.Namespace) -> None:
                         if "native_entry" in episode.metadata:
                             curriculum_max = 0.
                         if pending_problem is None:
-                            start_proximity = calibration.start(task, curriculum_max / 2, curriculum_max)
+                            initial = initial_assistance.get(str(episode.source), curriculum_max / 2)
+                            start_proximity = calibration.start(task, initial, curriculum_max)
+                            if str(episode.source) in initial_assistance:
+                                start_proximity = initial
                     jerk_profile = (jerk_references.summary(episode.source, start_proximity)
                                     if jerk_references is not None else None)
                     if jerk_references is not None and reference_jerk_fallback:
@@ -2190,7 +2215,7 @@ def train(args: argparse.Namespace) -> None:
                         )
                         pending_problem = (
                             (episode, following)
-                            if outcome != "mixed" and following != start_proximity else None
+                            if outcome != "mixed" else None
                         )
                         print(json.dumps({
                             "event": "assistance_calibration", "task": task, "source": str(episode.source),
@@ -2200,6 +2225,11 @@ def train(args: argparse.Namespace) -> None:
                             "task_assistance_ema": calibration.state["tasks"][task]["ema"],
                             "retry_same_problem": pending_problem is not None,
                         }), flush=True)
+                        if pending_problem is not None and attempts >= args.max_group_attempts_per_task:
+                            raise RuntimeError(
+                                f"Assistance retry budget exhausted for {task} {episode.source}; "
+                                "refusing to skip the unfinished problem"
+                            )
                     if (difficulty is not None and solved_problem is None
                             and step >= args.curriculum_start_step):
                         difficulty_event = difficulty.record(
@@ -2670,6 +2700,8 @@ def main() -> None:
         ),
     )
     parser.add_argument("--steps", type=int, default=25)
+    parser.add_argument("--training-tasks", choices=TASKS, nargs="+", default=list(TASKS),
+                        help="Tasks sampled for updates; frozen validation still covers all tasks.")
     parser.add_argument("--group-size", type=int, default=8)
     parser.add_argument("--mixed-success-only", action=argparse.BooleanOptionalAction, default=True,
                         help="Discard all-pass/all-fail groups before every learning gradient; "
@@ -2677,6 +2709,8 @@ def main() -> None:
     parser.add_argument("--calibrate-assistance", action=argparse.BooleanOptionalAction, default=False,
                         help="Calibrate four-rollout groups synchronously with a per-task assistance EMA.")
     parser.add_argument("--assistance-ema-alpha", type=float, default=.2)
+    parser.add_argument("--initial-curriculum", type=Path,
+                        help="Explicit TRAIN-only problem pool and initial assistance by task.")
     parser.add_argument("--rgb-renderer", choices=("mujoco", "cpu-pathtrace", "gpu-pathtrace"),
                         default="mujoco",
                         help="Policy RGB backend; GPU path tracing requires CUDA/OptiX, with no CPU fallback.")
