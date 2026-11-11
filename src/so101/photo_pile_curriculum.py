@@ -15,7 +15,7 @@ import time
 from tempfile import TemporaryDirectory
 
 from so101.cloud_checkpoint import atomic_json
-from so101.photo_pile_generator import RejectedPile, generate_scene
+from so101.photo_pile_generator import RejectedPile, generate_scene, pin_catalog, verify_scene
 from so101.photo_pile_tasks import build_problem
 from so101.pile_pool import publish_pool
 from so101.pile_task_runtime import load_problem
@@ -27,9 +27,9 @@ LOGGER = logging.getLogger(__name__)
 
 
 def validate_stages(stages: tuple[int, ...], quota: int, maximum_attempts: int) -> None:
-    if (not stages or stages[0] <= 20 or stages[-1] > 90
+    if (not stages or stages[0] < 20 or stages[-1] > 90
             or any(a >= b for a, b in zip(stages, stages[1:]))):
-        raise ValueError("Stages must strictly increase above 20, up to 90 pieces")
+        raise ValueError("Stages must strictly increase from at least 20, up to 90 pieces")
     if not 1 <= quota <= 10 or maximum_attempts < quota:
         raise ValueError("Require 1..10 scenes per stage and an adequate attempt budget")
 
@@ -37,15 +37,25 @@ def validate_stages(stages: tuple[int, ...], quota: int, maximum_attempts: int) 
 def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
         quota: int = 10, maximum_attempts: int = 100, seed: int = 20261112,
         model_root: Path = MODEL_ROOT, stopping: threading.Event | None = None,
-        sampling: str = "original", prior_root: Path | None = None) -> None:
+        sampling: str = "original", prior_root: Path | None = None,
+        catalog_path: Path | None = None) -> None:
     validate_stages(stages, quota, maximum_attempts)
     stopping = stopping or threading.Event()
     root.mkdir(parents=True, exist_ok=True)
+    if sampling == "catalog-diverse-v1":
+        if catalog_path is None:
+            raise ValueError("Diverse sampling requires a catalog")
+        catalog_path = pin_catalog(catalog_path, root / "catalog")
     config = {"stages": list(stages), "quota": quota, "maximum_attempts": maximum_attempts,
               "seed": seed, "source": str(source.resolve()), "model_root": str(model_root.resolve()),
               "sampling": sampling,
+              "catalog_sha256": hashlib.sha256(catalog_path.read_bytes()).hexdigest() if catalog_path else None,
               "prior_root": str(prior_root.resolve()) if prior_root else None,
               "source_sha256": hashlib.sha256((source / "model.xml").read_bytes()).hexdigest(),
+              "generator_sha256": hashlib.sha256(
+                  Path(__file__).with_name("photo_pile_generator.py").read_bytes()).hexdigest(),
+              "task_builder_sha256": hashlib.sha256(
+                  Path(__file__).with_name("photo_pile_tasks.py").read_bytes()).hexdigest(),
               "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     with (root / ".curriculum.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -126,7 +136,17 @@ def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
                         if not pile.exists():
                             generate_scene(source, pile, count=count, seed=candidate_seed,
                                            check_stop=check_stop, progress=progress,
-                                           sampling=sampling, color_mode=color_mode)
+                                           sampling=sampling, color_mode=color_mode,
+                                           catalog_path=catalog_path)
+                        else:
+                            receipt = verify_scene(pile)
+                            expected = {"piece_count": count, "seed": candidate_seed,
+                                        "sampling": sampling}
+                            if catalog_path is not None:
+                                expected["catalog_sha256"] = config["catalog_sha256"]
+                            if any(receipt.get(key) != value for key, value in expected.items()):
+                                raise ValueError("Existing pile differs from curriculum configuration")
+                            attempt["color_mode"] = receipt["color_mode"]
                         check_stop()
                         entry = build_problem(pile, tasks / f"scene_{sequence:09d}", model_root)
                         attempt.update(status="complete", entry=entry)
@@ -156,6 +176,7 @@ def run(root: Path, source: Path, *, stages: tuple[int, ...] = (30, 40, 60, 90),
                     })
                     return
                 print(json.dumps({"status": "stage_complete", "pieces": count, **manifest}), flush=True)
+                check_stop()
             atomic_json(root / "status.json", {"status": "complete", **config})
         except InterruptedError as error:
             atomic_json(root / "status.json", {"status": "stopped", "reason": str(error)})
@@ -168,8 +189,10 @@ def main() -> None:
     parser.add_argument("--stages", type=int, nargs="+", default=[30, 40, 60, 90])
     parser.add_argument("--quota", type=int, default=10)
     parser.add_argument("--maximum-attempts", type=int, default=100)
+    parser.add_argument("--seed", type=int, default=20261112)
     parser.add_argument("--model-root", type=Path, default=MODEL_ROOT)
-    parser.add_argument("--sampling", choices=("original", "common-basic-v1"), default="original")
+    parser.add_argument("--sampling", choices=("original", "common-basic-v1", "catalog-diverse-v1"), default="original")
+    parser.add_argument("--catalog", type=Path)
     parser.add_argument("--prior-root", type=Path)
     args = parser.parse_args()
     os.nice(19)
@@ -179,7 +202,8 @@ def main() -> None:
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
     run(args.root, args.source, stages=tuple(args.stages), quota=args.quota,
         maximum_attempts=args.maximum_attempts, model_root=args.model_root, stopping=stopping,
-        sampling=args.sampling, prior_root=args.prior_root)
+        sampling=args.sampling, prior_root=args.prior_root, catalog_path=args.catalog,
+        seed=args.seed)
 
 
 if __name__ == "__main__":

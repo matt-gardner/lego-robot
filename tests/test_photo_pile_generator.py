@@ -210,13 +210,75 @@ def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
     assert native_revision["scene_family_id"] == entry["scene_family_id"]
 
 
-def test_progression_rejects_twenty_repeat_and_unbounded_quota():
+def test_progression_allows_twenty_and_rejects_invalid_order_and_unbounded_quota():
     validate_stages((30, 40, 60, 90), 10, 100)
-    for stages in ((20, 30), (40, 30), (30, 30), (30, 100), ()):
+    validate_stages((20,), 10, 100)
+    for stages in ((19, 30), (40, 30), (30, 30), (30, 100), ()):
         with pytest.raises(ValueError, match="Stages"):
             validate_stages(stages, 10, 100)
     with pytest.raises(ValueError, match="1..10"):
         validate_stages((30, 40), 11, 100)
+
+
+def test_diverse_catalog_pins_assets_and_samples_distinct_families(photo_source, tmp_path, monkeypatch):
+    source_xml = (photo_source / "model.xml").read_text().replace(
+        "<worldbody>", '<asset><material name="table_material" rgba=".5 .5 .5 1"/></asset><worldbody>'
+    ).replace('<geom type="plane"', '<geom material="table_material" type="plane"')
+    (photo_source / "model.xml").write_text(source_xml)
+    source_receipt = json.loads((photo_source / "receipt.json").read_bytes())
+    source_receipt["model_xml_sha256"] = hashlib.sha256(source_xml.encode()).hexdigest()
+    (photo_source / "receipt.json").write_text(json.dumps(source_receipt))
+    root = tmp_path / "catalog-source"
+    root.mkdir()
+    entries = []
+    for index in range(35):
+        xml = (
+            '<mujoco><compiler angle="radian"/><worldbody><body name="part">'
+            '<freejoint name="free"/><geom name="shape" type="box" '
+            'size=".004 .004 .004" mass=".002"/></body></worldbody></mujoco>'
+        )
+        name = f"part_{index}.xml"
+        (root / name).write_text(xml)
+        entries.append({
+            "part_id": str(index), "family": ("brick", "plate", "tile", "slope", "round")[index % 5],
+            "status": "verified", "description": "Synthetic basic part",
+            "decoration": "undecorated", "ldraw_org": ["Part UPDATE 2026-01"],
+            "dimensions_m": [.008, .008, .008], "mjcf": name,
+            "assets": [{"path": name, "sha256": hashlib.sha256(xml.encode()).hexdigest()}],
+            "qualification": {"collision_geom_count": 1},
+            "geometry": {"frame_ldraw_to_mujoco": [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]],
+                         "metres_per_ldu": .0004},
+        })
+    excluded = {**entries[0], "part_id": "excluded", "description": "Duplo Brick"}
+    report = {"schema_version": 1, "catalog_id": "test-diversity", "parts": entries + [excluded]}
+    manifest = root / "catalog.json"
+    manifest.write_text(json.dumps(report))
+    pinned = generator.pin_catalog(manifest, tmp_path / "pinned")
+    assert len(json.loads(pinned.read_bytes())["parts"]) == 35
+    _, original, placements = generator.prepare_model(
+        photo_source, 20, 42, "catalog-diverse-v1", pinned)
+    identities = [obj["part_id"] for obj in placements]
+    assert len(set(identities)) == 20
+    assert {entries[int(identity)]["family"] for identity in identities} == {
+        "brick", "plate", "tile", "slope", "round"}
+    assert generator.prepare_model(photo_source, 20, 42, "catalog-diverse-v1", pinned)[2] == placements
+    assert generator.prepare_model(photo_source, 20, 43, "catalog-diverse-v1", pinned)[2] != placements
+    assert original["catalog_sha256"] == hashlib.sha256(pinned.read_bytes()).hexdigest()
+    (root / "part_0.xml").write_text("changed source")
+    assert generator.pin_catalog(manifest, pinned.parent) == pinned
+    clock = iter([0.])
+    monkeypatch.setattr(generator.time, "process_time", lambda: next(clock, 150.))
+    receipt = generator.generate_scene(
+        photo_source, tmp_path / "diverse", count=20, seed=42,
+        sampling="catalog-diverse-v1", catalog_path=pinned, color_mode="many")
+    assert receipt["profile"] == generator.CATALOG_PROFILE
+    assert receipt["unique_part_count"] == 20
+    assert receipt["stationarity"]["maximum_final_speed"] <= .0005
+    assert receipt["maximum_insertion_penetration_m"] <= .005
+    assert generator.verify_scene(tmp_path / "diverse") == receipt
+    model = mujoco.MjModel.from_xml_path(str(tmp_path / "diverse" / "model.xml"))
+    colors = [tuple(model.geom_rgba[model.body_geomadr[body]]) for body in range(1, model.nbody)]
+    assert any(first != second for first, second in zip(colors, colors[6:]))
 
 
 def test_progression_caps_each_bucket_and_resumes(photo_source, tmp_path, monkeypatch):

@@ -167,6 +167,10 @@ Each pile samples 20 distinct part IDs, balancing across available coarse
 families (bricks, plates, tiles, slopes, round, Technic, minifigure and other).
 The selected quantities, shapes, arrangement and colors vary by seed; this is
 not a popularity estimate.
+After choosing each part, its color is sampled independently from the scene's
+seeded palette (one, two or six allowed colors). Colors are not tied to part
+identity or assigned by cycling through piece indices; monochrome scenes
+intentionally share one sampled color.
 
 Eligibility requires verified, undecorated official parts, 4--65 mm maximum
 extent, at least 2 mm on every axis and at most 200 collision geoms per part.
@@ -176,11 +180,16 @@ and CPU-cost filters, not an authoritative catalog scale or graspability label.
 Native catalog triangle-prism contacts and inertials are retained, **not**
 replaced with whole-part convex hulls. Surface shells are not closed-volume
 solid decomposition or clutch qualification. Native scenes use sparse
-Jacobians, pyramidal contact cones and a 512 MiB constraint arena rather than
-the old photo-hull solver allocation. The existing final physical
+Jacobians, pyramidal contact cones, no extra no-slip solver pass and a 512 MiB constraint arena rather than
+the old photo-hull solver allocation. Native surface contacts use a CPU budget
+of 30 seconds per piece and wall safety cap of 120 seconds per piece; the
+photo-hull budgets remain 6 and 24 seconds per piece. The existing final physical
 acceptance remains unchanged; every accepted pile immediately receives four
 tasks per piece with independent, exactly replayable robot starts. A batch is
 capped at ten accepted piles and 100 attempts, with no automatic larger stage.
+Native drops use the highest support with overlapping projected geometry bounds,
+not the highest point anywhere in the pile. This avoids dropping a piece from
+the height of an unrelated tall piece on the other side of the scene.
 
 Larger-stage scenes cycle through single-color, two-color and six-color
 palettes by **accepted scene count**, so rejection streaks cannot skip a color

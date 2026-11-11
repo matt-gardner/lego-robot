@@ -15,7 +15,7 @@ import numpy as np
 
 from so101.cloud_checkpoint import atomic_json
 from so101.lego_scene import capture_scene_state, settle_data
-from so101.photo_pile_generator import PROFILE, verify_scene
+from so101.photo_pile_generator import CATALOG_PROFILE, PROFILE, verify_scene
 from so101.pile_pool import publish_pool
 from so101.pile_task_runtime import GRADER_VERSION, create_simulation, load_problem
 from so101.robot_sim import (
@@ -192,7 +192,7 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
             load_problem(entry, task["task_id"])
         return entry
     receipt = verify_scene(source)
-    if receipt.get("profile") != PROFILE or receipt["restored_original_integration_state"]:
+    if receipt.get("profile") not in (PROFILE, CATALOG_PROFILE) or receipt["restored_original_integration_state"]:
         raise ValueError("Tasks require a verified fresh photo-profile pile")
     photo = ET.parse(source / "model.xml").getroot()
     robot = ET.fromstring(scene_xml(model_root, SCENE_VERSION))
@@ -240,7 +240,7 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
     if size is None:
         size = ET.SubElement(robot, "size")
     size.attrib.clear()
-    size.set("memory", "256M")
+    size.set("memory", "512M" if receipt["profile"] == CATALOG_PROFILE else "256M")
     xml = ET.tostring(robot, encoding="unicode")
     model = mujoco.MjModel.from_xml_string(xml)
     names = tuple(obj["instance_id"] for obj in receipt["objects"])
@@ -262,7 +262,7 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
             "source": str(source.resolve()),
             "receipt_sha256": hashlib.sha256((source / "receipt.json").read_bytes()).hexdigest(),
             "source_model_sha256": receipt["model_xml_sha256"],
-            "translation_m": origin.tolist(), "profile": PROFILE,
+            "translation_m": origin.tolist(), "profile": receipt["profile"],
             "robot_integration": "source poses translated onto robot table, then full dynamic settling",
         }
         scene_id = hashlib.sha256(json.dumps(provenance, sort_keys=True).encode()).hexdigest()
@@ -330,7 +330,8 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
                     "solvability": "unmeasured",
                     "target_tags": target_tags,
                 })
-        tags = {"piece_count": len(names), "collision_profile": PROFILE,
+        tags = {"piece_count": len(names), "collision_profile": receipt["profile"],
+                "unique_piece_count": len({obj["part_id"] for obj in receipt["objects"]}),
                 "color_mode": receipt.get("color_mode", "original"),
                 "unique_color_count": len({tuple(model.geom_rgba[model.body_geomadr[
                     model.body(name).id]]) for name in names}),
@@ -342,7 +343,7 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
             "capabilities": {"reset": "mujoco-integration-v1",
                              "target_labels": "instance-segmentation-v1",
                              "expert_references": False, "sft_qualified": False},
-            "qualification": "Photo visual-hull tasks, not native-cavity or demonstrated policy success",
+            "qualification": receipt["qualification"],
             "physics_version": mujoco.__version__,
             "generator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "grader_sha256": hashlib.sha256(

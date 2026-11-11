@@ -1,4 +1,4 @@
-"""Generate fresh 20+ piece piles from the retained photo-demo model templates."""
+"""Generate fresh 20+ piece piles from photo templates or a pinned verified catalog."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import shutil
 import signal
 import threading
 import time
@@ -20,7 +21,9 @@ import mujoco
 import numpy as np
 
 from so101.cloud_checkpoint import atomic_json
-from so101.lego_scene import restore_scene, settle_data
+from so101.lego_curriculum import load_catalog
+from so101.lego_parts_catalog import catalog_read_lock
+from so101.lego_scene import assemble_scene, restore_scene, settle_data
 from so101.pile_task_generator import resource_check
 
 
@@ -28,6 +31,114 @@ LOGGER = logging.getLogger(__name__)
 PROFILE = "photo-demo-visual-hull-v1"
 PHOTO_TEMPLATE_SHA256 = "ae154b5b6c938c8b55867dea647338de1eb52aec4d3ca6ee8ce5ab1117e64543"
 PHOTO_PART_IDS = ("3001", "3002", "3003", "3004", "3020", "3022", "3700", "3702")
+CATALOG_PROFILE = "catalog-native-surface-piles-v1"
+
+
+def pin_catalog(manifest: Path, destination: Path) -> Path:
+    pinned = destination / "catalog.json"
+    if pinned.exists():
+        load_catalog(pinned)
+        return pinned
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with catalog_read_lock(manifest):
+        raw = manifest.read_bytes()
+        report = json.loads(raw)
+        entries = catalog_candidates(report)
+        with TemporaryDirectory(prefix=".catalog-", dir=destination.parent) as directory:
+            staging = Path(directory) / "catalog"
+            staging.mkdir()
+            for entry in entries:
+                for asset in entry["assets"]:
+                    relative = Path(asset["path"])
+                    if relative.is_absolute() or ".." in relative.parts:
+                        raise ValueError("Catalog asset escapes snapshot")
+                    target = staging / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(manifest.parent / relative, target)
+            atomic_json(staging / "catalog.json", {
+                **report, "parts": entries,
+                "parent_manifest_sha256": hashlib.sha256(raw).hexdigest(),
+                "selection_profile": "catalog-diverse-v1",
+            })
+            load_catalog(staging / "catalog.json")
+            staging.rename(destination)
+    return pinned
+
+
+def catalog_candidates(report: dict) -> list[dict]:
+    excluded = ("duplo", "modulex", "quatro", "mursten", "assembly", "electric",
+                "cloth", "flexible", "sticker")
+    return [
+        part for part in report["parts"]
+        if part["status"] == "verified"
+        and part.get("decoration") == "undecorated"
+        and any(value.startswith("Part UPDATE") for value in part.get("ldraw_org", []))
+        and not any(word in part["description"].lower() for word in excluded)
+        and part["family"] in (
+            "brick", "plate", "tile", "slope", "round", "technic", "minifigure", "other")
+        and .004 <= max(part["dimensions_m"]) <= .065
+        and min(part["dimensions_m"]) >= .002
+        and part["qualification"]["collision_geom_count"] <= 200
+    ]
+
+
+def prepare_catalog_model(tree: ET.Element, manifest: Path, count: int, seed: int):
+    catalog = load_catalog(manifest)
+    entries = catalog_candidates(json.loads(manifest.read_bytes()))
+    if len(entries) < count:
+        raise ValueError("Diverse piles require at least one distinct eligible part per piece")
+    rng = np.random.default_rng(seed)
+    families = {}
+    for entry in entries:
+        families.setdefault(entry["family"], []).append(entry)
+    chosen = []
+    while len(chosen) < count:
+        for family in rng.permutation(sorted(families)):
+            candidates = families[family]
+            if candidates and len(chosen) < count:
+                chosen.append(candidates.pop(int(rng.integers(len(candidates)))))
+    rng.shuffle(chosen)
+    world = tree.find("worldbody")
+    for body in list(world.findall("body")):
+        world.remove(body)
+    assets = tree.find("asset")
+    if assets is not None:
+        for asset in assets.findall("mesh"):
+            assets.remove(asset)
+    compiler = tree.find("compiler")
+    if compiler is None:
+        compiler = ET.SubElement(tree, "compiler")
+    compiler.set("angle", "radian")
+    size = tree.find("size")
+    if size is None:
+        size = ET.SubElement(tree, "size")
+    size.attrib.clear()
+    size.set("memory", "512M")
+    option = tree.find("option")
+    option.set("jacobian", "sparse")
+    option.set("cone", "pyramidal")
+    option.set("noslip_iterations", "0")
+    objects = []
+    for index, entry in enumerate(chosen):
+        radius = .07 * math.sqrt(float(rng.random()))
+        angle, yaw = rng.uniform(-math.pi, math.pi, 2)
+        objects.append({
+            "instance_id": f"brick_{index}", "part_id": entry["part_id"],
+            "position_relative_to_scene_m": [
+                radius * math.cos(angle), radius * math.sin(angle), .04 + .025 * index],
+            "yaw_rad": float(yaw), "color": "gray",
+        })
+    plan = {"catalog_sha256": catalog.manifest_sha256, "catalog_id": catalog.catalog_id,
+            "status": "proposed", "objects": objects}
+    xml = assemble_scene(ET.tostring(tree, encoding="unicode"), catalog, plan,
+                         scene_origin_m=(0., 0., 0.))
+    placements = [
+        {"instance_id": obj["instance_id"], "part_id": obj["part_id"],
+         "position": obj["position_relative_to_scene_m"],
+         "quaternion": [math.cos(obj["yaw_rad"] / 2), 0., 0., math.sin(obj["yaw_rad"] / 2)]}
+        for obj in objects
+    ]
+    return xml, placements, catalog.manifest_sha256
 
 
 class RejectedPile(ValueError):
@@ -35,7 +146,8 @@ class RejectedPile(ValueError):
 
 
 def prepare_model(source: Path, count: int, seed: int,
-                  sampling: str = "original") -> tuple[str, dict, list[dict]]:
+                  sampling: str = "original", catalog_path: Path | None = None
+                  ) -> tuple[str, dict, list[dict]]:
     if not 20 <= count <= 90:
         raise ValueError("Photo piles must contain between 20 and 90 pieces")
     original = json.loads((source / "receipt.json").read_text())
@@ -43,6 +155,11 @@ def prepare_model(source: Path, count: int, seed: int,
     if hashlib.sha256(source_xml.encode()).hexdigest() != original["model_xml_sha256"]:
         raise ValueError("Photo source model does not match its receipt")
     tree = ET.fromstring(source_xml)
+    if sampling == "catalog-diverse-v1":
+        if catalog_path is None:
+            raise ValueError("Diverse sampling requires a pinned catalog")
+        xml, placements, catalog_sha = prepare_catalog_model(tree, catalog_path, count, seed)
+        return xml, {**original, "catalog_sha256": catalog_sha}, placements
     world = tree.find("worldbody")
     if world is None:
         raise ValueError("Photo model has no worldbody")
@@ -120,8 +237,9 @@ def verify_scene(output: Path) -> dict:
 
 def generate_scene(source: Path, output: Path, *, count: int, seed: int,
                    check_stop=lambda: None, progress=lambda value: None,
-                   sampling: str = "original", color_mode: str = "original") -> dict:
-    xml, original, placements = prepare_model(source, count, seed, sampling)
+                   sampling: str = "original", color_mode: str = "original",
+                   catalog_path: Path | None = None) -> dict:
+    xml, original, placements = prepare_model(source, count, seed, sampling, catalog_path)
     if color_mode not in ("original", "single", "few", "many"):
         raise ValueError("Unknown photo-pile color mode")
     if color_mode != "original":
@@ -131,9 +249,11 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
         color_rng = np.random.default_rng(np.random.SeedSequence([seed, 913]))
         palette = [palette[i] for i in color_rng.permutation(len(palette))]
         limit = {"single": 1, "few": 2, "many": len(palette)}[color_mode]
-        for index, body in enumerate(tree.findall("worldbody/body")):
+        for body, placement in zip(tree.findall("worldbody/body"), placements):
+            color = palette[int(color_rng.integers(limit))]
+            placement["color_rgba"] = [float(value) for value in color.split()]
             for geom in body.findall("geom"):
-                geom.set("rgba", palette[index % limit])
+                geom.set("rgba", color)
         xml = ET.tostring(tree, encoding="unicode")
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)
@@ -144,8 +264,8 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
     parked = data.qpos.copy()
     started = time.monotonic()
     cpu_started = time.process_time()
-    cpu_budget = 6. * count
-    wall_budget = 24. * count
+    cpu_budget = (30. if sampling == "catalog-diverse-v1" else 6.) * count
+    wall_budget = (120. if sampling == "catalog-diverse-v1" else 24.) * count
     drop_interval = .15
     settling_seconds = .5 * count
 
@@ -164,6 +284,8 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
         mujoco.mj_forward(model, data)
         active_top = 0.
         own_bottom = math.inf
+        own_bounds = []
+        active_bounds = []
         for geom in range(model.ngeom):
             body = int(model.geom_bodyid[geom])
             if body == 0 or body > index + 1:
@@ -173,8 +295,22 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
                 own_bottom = min(own_bottom, lower)
             else:
                 active_top = max(active_top, upper)
+            if sampling == "catalog-diverse-v1":
+                rotation = data.geom_xmat[geom].reshape(3, 3)
+                center = data.geom_xpos[geom] + rotation @ model.geom_aabb[geom, :3]
+                half = np.abs(rotation) @ model.geom_aabb[geom, 3:]
+                (own_bounds if body == index + 1 else active_bounds).append(
+                    (center - half, center + half))
         if not math.isfinite(own_bottom):
             raise ValueError("Photo piece has no collision geometry")
+        if sampling == "catalog-diverse-v1":
+            own_lower = np.min([bounds[0] for bounds in own_bounds], axis=0)
+            own_upper = np.max([bounds[1] for bounds in own_bounds], axis=0)
+            active_top = max((
+                float(upper[2]) for lower, upper in active_bounds
+                if np.all(np.minimum(own_upper[:2], upper[:2])
+                          > np.maximum(own_lower[:2], lower[:2]))
+            ), default=0.)
         data.qpos[index * 7 + 2] = active_top - own_bottom + .0001
         placement["insertion_position"] = data.qpos[index * 7:index * 7 + 3].tolist()
         deadline = data.time + drop_interval
@@ -216,21 +352,31 @@ def generate_scene(source: Path, output: Path, *, count: int, seed: int,
             raise
         raise RejectedPile(str(error)) from error
     receipt.update({
-        "profile": PROFILE, "source": str(source),
+        "profile": CATALOG_PROFILE if sampling == "catalog-diverse-v1" else PROFILE,
+        "source": str(source),
         "source_model_sha256": original["model_xml_sha256"],
         "source_receipt_sha256": hashlib.sha256((source / "receipt.json").read_bytes()).hexdigest(),
         "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "piece_count": count, "seed": seed, "initial_placements": placements,
         "sampling": sampling,
         "color_mode": color_mode,
+        "color_sampling": "independent-per-instance-v1" if color_mode != "original" else "source-template",
         "replayed_from_initial_xml": False, "restored_original_integration_state": False,
         "initialization": "Collective low-height drops; only pending pieces parked/reset until insertion",
-        "generation_recipe": "collective-low-drop-v1",
+        "generation_recipe": (
+            "collective-local-support-v1" if sampling == "catalog-diverse-v1"
+            else "collective-low-drop-v1"),
         "drop_interval_simulated_seconds": drop_interval,
         "final_settling_budget_simulated_seconds": settling_seconds,
         "cpu_budget_seconds": cpu_budget, "wall_budget_seconds": wall_budget,
         "cpu_seconds": time.process_time() - cpu_started,
-        "qualification": "Photo-demo convex visual hulls; not native cavity, clutch, RL or SFT qualification",
+        "catalog_path": str(catalog_path) if catalog_path else None,
+        "catalog_manifest_sha256": original["catalog_sha256"],
+        "unique_part_count": len({p["part_id"] for p in placements}),
+        "qualification": (
+            "Verified catalog triangle-prism surfaces; pile acceptance is not solid-volume, clutch, RL or SFT qualification"
+            if sampling == "catalog-diverse-v1" else
+            "Photo-demo convex visual hulls; not native cavity, clutch, RL or SFT qualification"),
         "maximum_insertion_penetration_m": maximum_penetration,
         "wall_seconds": time.monotonic() - started,
     })
