@@ -163,7 +163,8 @@ def test_unassisted_partial_results_publish_without_expert_collection(tmp_path, 
         publish(pool, None, output, measurements, source_kind=kind, measurement_series_id="unassisted")
 
 
-def test_mirror_publishes_growing_results_once_per_update(tmp_path, monkeypatch):
+@pytest.mark.parametrize("distance_start", [False, True])
+def test_mirror_publishes_growing_results_once_per_update(tmp_path, monkeypatch, distance_start):
     pool, _, output, references, _ = inputs(tmp_path)
     local = tmp_path / "recovery"
     local.mkdir()
@@ -171,6 +172,8 @@ def test_mirror_publishes_growing_results_once_per_update(tmp_path, monkeypatch)
     path = local / "results-3-initial.json"
     result = {"input_sha256": {"native_pool": references["pool_sha256"]},
               "optimizer": None, "groups": [{"assistance": 0, "rollouts": []}]}
+    if distance_start:
+        result["plan"] = [{"task_assistance": {"kind": "direct-task-distance-v2"}}]
     path.write_text(json.dumps(result))
     args = SimpleNamespace(known_hosts=tmp_path / "hosts", key=tmp_path / "key",
                            host="ubuntu@example", remote="/remote", local=local,
@@ -188,7 +191,8 @@ def test_mirror_publishes_growing_results_once_per_update(tmp_path, monkeypatch)
     assert refresh(args, published) is True
     publications = [command for command in commands if "so101.publish_photo_calibration" in command]
     assert len(publications) == 2
-    assert publications[-1][publications[-1].index("--measurement-series-id") + 1] == "unassisted-job-3-initial"
+    prefix = "distance" if distance_start else "unassisted"
+    assert publications[-1][publications[-1].index("--measurement-series-id") + 1] == f"{prefix}-job-3-initial"
 
 
 def test_new_measurement_series_retains_prior_counts_without_pooling_or_duplicate_updates(tmp_path):

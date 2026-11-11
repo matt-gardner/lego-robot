@@ -35,12 +35,18 @@ def refresh(args, published):
                 raise ValueError("Unassisted mirror received training or assisted measurements")
             _, pieces, suffix = path.stem.split("-", 2)
             series_suffix = suffix if kind == "photo" else f"{pieces}-{suffix}"
+            distance_start = any(
+                row.get("task_assistance", {}).get("kind") == "direct-task-distance-v2"
+                for row in result.get("plan", [])
+            )
+            prefix = "distance" if distance_start else "unassisted"
+            label = "Direct distance-start pilot" if distance_start else "Zero assistance"
             command = [
                 sys.executable, "-m", "so101.publish_photo_calibration",
                 "--pool", str(pool), "--source-kind", kind, "--measurements", str(path),
                 "--output", str(args.output), "--publication-id", f"{kind}-{pool_sha}",
-                "--measurement-series-id", f"unassisted-{args.job_id}-{series_suffix}",
-                "--measurement-series-label", f"Zero assistance, {pieces} pieces ({suffix})",
+                "--measurement-series-id", f"{prefix}-{args.job_id}-{series_suffix}",
+                "--measurement-series-label", f"{label}, {pieces} pieces ({suffix})",
             ]
             subprocess.run(command, cwd=Path(__file__).resolve().parents[1], check=True,
                            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
