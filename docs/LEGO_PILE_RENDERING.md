@@ -135,7 +135,7 @@ manifest paths, hashes and populations. Dashboard readers use this explicit
 selection, not modification times or recursive discovery of historical subsets.
 Pending previews must not reuse images from superseded task/reset identities.
 
-After handing the ten-scene 20-piece pool to the trainer, use
+The earlier photo-template progression used
 `python -m so101.photo_pile_curriculum --source <original-photo-demo> --root
 <new-curriculum-root>` for **30, 40, 60 and 90 pieces**, in that order. Each
 stage stops accepting after ten robot-integrated task scenes; it does not
@@ -148,7 +148,8 @@ each stage's immutable manifest/checksum, count and quota. The same STOP,
 idle-priority and resource limits apply. New task roots stay separate from
 frozen measurement pools and historical datasets.
 
-For Matt's simple/common-piece preference, add `--sampling common-basic-v1`.
+The historical `--sampling common-basic-v1` option is retained for reproducibility,
+not new production: its eight-type palette was too narrow.
 It assigns 90% of each pile (rounded) to ordinary bricks/plates
 3001, 3002, 3003, 3004, 3020 and 3022, with the remainder split between
 Technic bricks 3700 and 3702. Selection within each group is seeded and allows
@@ -157,6 +158,29 @@ not measured sales/set-frequency popularity. The mapping is restricted to the
 exact retained photo-model hash and was checked against catalog visual vertices.
 Part identities and sampling profile are recorded on new scenes; existing
 scene/task receipts are not rewritten.
+
+New production restarts at **20 pieces** with `--stages 20 --sampling
+catalog-diverse-v1 --catalog <current/catalog.json>`, in a separate curriculum
+root. The runner copies an eligible catalog subset and its checksummed assets
+under the catalog reader lock, then uses that immutable snapshot for the batch.
+Each pile samples 20 distinct part IDs, balancing across available coarse
+families (bricks, plates, tiles, slopes, round, Technic, minifigure and other).
+The selected quantities, shapes, arrangement and colors vary by seed; this is
+not a popularity estimate.
+
+Eligibility requires verified, undecorated official parts, 4--65 mm maximum
+extent, at least 2 mm on every axis and at most 200 collision geoms per part.
+Description exclusions remove Duplo/Modulex/Quatro/Mursten, assemblies,
+electrical, cloth, flexible and sticker entries. These are explicit workspace
+and CPU-cost filters, not an authoritative catalog scale or graspability label.
+Native catalog triangle-prism contacts and inertials are retained, **not**
+replaced with whole-part convex hulls. Surface shells are not closed-volume
+solid decomposition or clutch qualification. Native scenes use sparse
+Jacobians, pyramidal contact cones and a 512 MiB constraint arena rather than
+the old photo-hull solver allocation. The existing final physical
+acceptance remains unchanged; every accepted pile immediately receives four
+tasks per piece with independent, exactly replayable robot starts. A batch is
+capped at ten accepted piles and 100 attempts, with no automatic larger stage.
 
 Larger-stage scenes cycle through single-color, two-color and six-color
 palettes by **accepted scene count**, so rejection streaks cannot skip a color
@@ -301,7 +325,7 @@ refer to the selected inventory, not the superseded original population.
 
 `scripts/render_pile_first.py --root <initial-photo-external-v2> --data
 <lego_curriculum>` checks the current immutable pools and atomic
-`photo-task-progression-collective-v1/pieces-*/tasks/scene_*/admission.json`
+`{photo-task-progression-collective-v1,catalog-diverse-20-v1}/pieces-*/tasks/scene_*/admission.json`
 records before every frame. Every admitted pile gets one representative
 exact-task-reset image before any additional task images. Newly arriving piles
 preempt task expansion at the next frame boundary.

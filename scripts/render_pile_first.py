@@ -25,7 +25,10 @@ def receipt_path(output, entry, task):
 
 def discover(data, output):
     pools = read(data / "current-task-pools.json")["pools"]
-    stages = data / "photo-task-progression-collective-v1"
+    admission_roots = (
+        data / "photo-task-progression-collective-v1",
+        data / "catalog-diverse-20-v1",
+    )
     entries = []
     seen = set()
     for row in pools:
@@ -38,7 +41,9 @@ def discover(data, output):
         for entry in pool["scenes"]:
             entries.append((entry, output / row["sha256"], row["sha256"], "selected"))
             seen.add(entry["scene_id"])
-    for admission in sorted(stages.glob("pieces-*/tasks/scene_*/admission.json")):
+    admissions = sorted(path for root in admission_roots
+                        for path in root.glob("pieces-*/tasks/scene_*/admission.json"))
+    for admission in admissions:
         entry = read(admission)
         if entry["scene_id"] in seen:
             continue
