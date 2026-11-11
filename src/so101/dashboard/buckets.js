@@ -122,6 +122,16 @@ async function start() {
       status.textContent=`${problems.length} published problems. Phase: ${progress.phase || "unknown"}. Expert references: ${progress.reference_accepted ?? "unknown"} accepted / ${progress.reference_attempts ?? "unknown"} attempts (not model pass rate). Policy calibration: ${progress.policy_calibration_status || "unknown"}; ${progress.policy_rollouts ?? "unknown"} policy rollouts.`;
       if (progress.policy_rollouts===0) status.textContent+=" No policy pass rates measured yet.";
     }
+    if(data.manifest.datasets) {
+      status.textContent=`${problems.length} problems across ${data.manifest.datasets.length} published datasets. `+
+        data.manifest.datasets.map(d=>{
+          const p=d.progress;
+          return p ? `${d.label || d.dataset_id || "Dataset"}: policy ${p.policy_calibration_status}; ${p.policy_rollouts} rollouts; expert references ${p.reference_accepted}/${p.reference_attempts} (not model pass rate)` :
+            `${d.label || d.dataset_id || "Dataset"}: ${d.measurement_status || "unmeasured"}`;
+        }).join(". ");
+    }
+    if(data.manifest.measurement_scopes) status.textContent+=" "+
+      Object.values(data.manifest.measurement_scopes).map(s=>`${s.label}: ${s.policy_rollouts} policy rollouts (${s.status})`).join(". ");
     document.getElementById("provenance").textContent=JSON.stringify({manifest:data.manifest,protocol:data.calibration.protocol},null,2);
     const sourcePath=s=>typeof s==="object" ? s?.path : s;
     const groupFor=p=>groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index);
@@ -178,10 +188,11 @@ async function start() {
         bucketSection.append(grid);
         container.append(bucketSection);
         for (const [pileIndex,pile] of group.piles.slice(0,remaining).entries()) {
-          const pileSection=node("details",undefined,"pile-group");
+          const pileSection=node("article",undefined,"pile-group");
           const representative=pile.tasks.find(p=>p.initial_images?.length) || pile.tasks[0];
           const scene=representative.tags?.scene || {};
-          const summary=node("summary"), preview=node("div",undefined,"pile-preview");
+          const summary=node("button",undefined,"pile-card"), preview=node("div",undefined,"pile-preview");
+          summary.type="button";
           const image=representative.initial_images?.[0];
           if (image) {
           const img=node("img");img.loading="lazy";img.alt=`Initial pile ${pileIndex+1}`;
@@ -202,8 +213,16 @@ async function start() {
           ].filter(Boolean);
           for (const description of descriptions) tags.append(node("span",description));
           summary.append(tags);
+          if(image) summary.append(node("small",`Renderer: ${image.renderer || image.backend || "unspecified"}`));
           pileSection.append(summary);
           grid.append(pileSection);
+          const taskContent=node("div");
+          summary.addEventListener("click",()=>{
+            const dialog=document.getElementById("pile-dialog");
+            document.getElementById("pile-title").textContent=`${label} · Pile ${pileIndex+1} · ${pile.tasks.length} tasks`;
+            document.getElementById("pile-tasks").replaceChildren(taskContent);
+            dialog.showModal();
+          });
           for (const p of pile.tasks) {
         const card=node("details",undefined,"problem");
         const target=(p.tags?.target_instance_id || p.source?.task_id || "").match(/(?:object|brick)_(\d+)/);
@@ -221,7 +240,7 @@ async function start() {
         card.append(node("p",`Observed unsuccessful rollouts: ${measured.length ? failures : "unmeasured"}. Feasibility vs policy failure attribution: ${p.failure_attribution_status || "unmeasured"}. Visibility / reach: ${p.tags?.visibility ?? "unmeasured"} / ${p.tags?.reach ?? "unmeasured"}.`));
         json(card,"Tags / provenance / measurement and failure evidence",p);
         json(card,"Raw measured groups (invalid actions, policy vs feasibility failures)",groupFor(p));
-        pileSection.append(card);
+        taskContent.append(card);
           }
         }
         remaining=Math.max(0,remaining-group.piles.length);
@@ -231,9 +250,25 @@ async function start() {
     for (const id of ["bucket","task","search"]) document.getElementById(id).addEventListener("input",()=>{shown=24;render();});
     document.getElementById("more").addEventListener("click",()=>{shown+=24;render();});
     render();
+    if(typeof setInterval!=="undefined") setInterval(async()=>{
+      if(document.getElementById("pile-dialog").open) return;
+      try {
+        const latest=await fetch("api/buckets");
+        const publication=await latest.json();
+        if(!latest.ok) throw new Error(publication.error || `HTTP ${latest.status}`);
+        if(publication.manifest.snapshot_id!==data.manifest.snapshot_id) location.reload();
+      } catch(error) {status.textContent=`Publication refresh failed: ${error.message}`;}
+    },20000);
   } catch(error) {status.textContent=`Bucket publication unavailable: ${error.message}`;}
 }
 if (typeof document !== "undefined") {
+  document.getElementById("pile-close").addEventListener("click",()=>document.getElementById("pile-dialog").close());
+  document.getElementById("pile-dialog").addEventListener("click",event=>{
+    if(event.target===document.getElementById("pile-dialog")) {
+      const bounds=event.target.getBoundingClientRect();
+      if(event.clientX<bounds.left||event.clientX>bounds.right||event.clientY<bounds.top||event.clientY>bounds.bottom) event.target.close();
+    }
+  });
   document.getElementById("refresh").addEventListener("click",()=>location.reload());
   start();
 }

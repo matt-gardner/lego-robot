@@ -21,7 +21,35 @@ class BucketDashboard:
         return body
 
     def snapshot(self) -> dict:
-        pointer = json.loads(self.read("current.json", limit=1024 * 1024))
+        pointers = sorted(self.root.glob("publications/*/current.json"))
+        if not pointers:
+            return self.publication("current.json")
+        if len(pointers) > 100:
+            raise ValueError("Too many bucket publications")
+        publications = [self.publication(str(path.relative_to(self.root))) for path in pointers]
+        problems, groups, buckets, datasets, identities = [], [], [], [], set()
+        for publication in publications:
+            manifest = publication["manifest"]
+            dataset = manifest["snapshot_id"]
+            datasets.append(manifest)
+            for problem in publication["problems"]["problems"]:
+                if problem["id"] in identities:
+                    raise ValueError("Duplicate problem across bucket publications")
+                identities.add(problem["id"])
+                problems.append({**problem, "dataset_snapshot_id": dataset,
+                                 "snapshot_directory": publication["snapshot_directory"]})
+            groups.extend({**group, "dataset_snapshot_id": dataset}
+                          for group in publication["calibration"]["groups"])
+            buckets.extend(publication["problems"]["buckets"])
+        revision = hashlib.sha256(json.dumps([p["snapshot_id"] for p in datasets]).encode()).hexdigest()
+        return {"manifest": {"snapshot_id": revision, "datasets": datasets},
+                "problems": {"problems": problems, "buckets": buckets},
+                "calibration": {"groups": groups, "protocol": {},
+                                "qualification_status": "multiple datasets",
+                                "complete": all(p["calibration"]["complete"] for p in publications)}}
+
+    def publication(self, pointer_path: str) -> dict:
+        pointer = json.loads(self.read(pointer_path, limit=1024 * 1024))
         relative = pointer["path"]
         manifest = json.loads(self.read(relative, pointer["sha256"]))
         if manifest.get("schema_version") != 1 or manifest.get("kind") != "lego-data-buckets":
@@ -59,7 +87,7 @@ class BucketDashboard:
         if index >= len(images):
             raise ValueError("Unknown bucket problem/image")
         image = images[index]
-        relative = Path(snapshot["snapshot_directory"]) / image["path"]
+        relative = Path(problems[0].get("snapshot_directory", snapshot.get("snapshot_directory", ""))) / image["path"]
         body = self.read(str(relative), image["sha256"], limit=8 * 1024 * 1024)
         if body.startswith(b"\x89PNG\r\n\x1a\n"):
             return body, "image/png"

@@ -44,6 +44,8 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     replaceChildren(...children){this.children=children;}
     setAttribute(key,value){this[key]=value;}
     addEventListener(key,fn){this.listeners[key]=fn;}
+    showModal(){this.open=true;}
+    close(){this.open=false;}
   }
   const elements=new Map();
   const document={
@@ -71,10 +73,16 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   const pileCard=bucketSection.children[1].children[0];
   assert.equal(pileCard.className,"pile-group");
   assert.ok(!pileCard.open);
-  assert.equal(pileCard.children[1].className,"problem");
+  assert.equal(pileCard.children.length,1);
+  pileCard.children[0].listeners.click();
+  assert.equal(elements.get("pile-dialog").open,true);
+  assert.equal(elements.get("pile-tasks").children[0].children[0].className,"problem");
   const all=[];
   function collect(e){all.push(e);for(const child of e.children || [])collect(child);}
   collect(elements.get("problems"));
+  collect(elements.get("pile-tasks"));
+  bucketSection.children[1].children[1].children[0].listeners.click();
+  collect(elements.get("pile-tasks"));
   assert.ok(all.some(e=>e.textContent==="Pile 1"));
   assert.ok(all.some(e=>e.textContent==="push · Target"));
   assert.ok(all.some(e=>e["aria-label"]==="Visible target bounding box from renderer segmentation"));

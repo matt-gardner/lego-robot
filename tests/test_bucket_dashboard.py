@@ -61,6 +61,24 @@ def test_duplicate_ids_are_not_merged(tmp_path):
         BucketDashboard(tmp_path).snapshot()
 
 
+def test_auto_discovers_independent_publications_and_preserves_images(tmp_path):
+    for name in ("native", "photo"):
+        root = tmp_path / name
+        directory = publish(root, {
+            "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": name,
+            "problems": [{"id": name, "bucket_id": name}], "groups": [],
+            "buckets": [{"id": name}],
+        })
+        pointer = json.loads((root / "current.json").read_text())
+        pointer["path"] = f"{name}/" + pointer["path"]
+        channel = tmp_path / "publications" / name
+        channel.mkdir(parents=True)
+        (channel / "current.json").write_text(json.dumps(pointer))
+    browser = BucketDashboard(tmp_path)
+    assert {p["id"] for p in browser.snapshot()["problems"]["problems"]} == {"native", "photo"}
+    assert len(browser.snapshot()["manifest"]["datasets"]) == 2
+
+
 def test_prefixed_http_page_missing_publication_and_exact_image(tmp_path):
     from so101.rl_dashboard import make_server
 

@@ -62,6 +62,17 @@ reference acceptance as **not model pass rate** and zero policy rollouts as no
 policy rates measured yet. A new pool publishes its own population/protocol and
 empty groups until measured, never recycled old-pool screening outcomes.
 
+Independent datasets publish `publications/<dataset>/current.json` in the same
+shared root, each pointing to a root-relative hash-pinned snapshot. The dashboard
+automatically discovers these pointers on every API read, retains all datasets
+and their protocol/progress, and joins measurements only to exact problem IDs.
+Duplicate problem identities fail explicitly rather than mixing datasets.
+Root `current.json` remains a compatibility fallback only when no dataset pointers
+exist. The browser refreshes publications every 20 seconds unless a pile modal is
+open, preserving inspection; manual Refresh is also available.
+Pile cards open a native dialog with close/Escape/backdrop dismissal instead of
+expanding in the grid.
+
 Each task image can publish `target_bbox_xyxy` in image pixels
 `[xmin,ymin,xmax_exclusive,ymax_exclusive]`, `target_visible_pixels` and
 `target_bbox_status` (visible/not_visible/unmeasured), directly or in image

@@ -10,4 +10,4 @@
 <label>Task <select id="task"><option value="">All tasks</option></select></label>
 <label>Find problem <input id="search" type="search"></label>
 <p id="count"></p><div id="problems"></div><button id="more" hidden>Show more piles</button>
-</main><script src="buckets.js"></script></body></html>
+</main><dialog id="pile-dialog" aria-labelledby="pile-title"><header><h2 id="pile-title"></h2><button id="pile-close" aria-label="Close pile details">Close</button></header><div id="pile-tasks"></div></dialog><script src="buckets.js"></script></body></html>
