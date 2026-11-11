@@ -145,6 +145,8 @@ def test_unassisted_partial_results_publish_without_expert_collection(tmp_path, 
              "optimizer": None, "policy_sha256_before": "initial", "repeats": 1,
              "groups": [row], "complete": False}
     measurements.write_text(json.dumps(value))
+    pending = publish(pool, None, output, source_kind=kind, measurement_series_id="unassisted")
+    assert pending["progress"]["phase"] == "awaiting_policy_measurements"
     publish(pool, None, output, measurements, source_kind=kind, measurement_series_id="unassisted")
     snapshot = BucketDashboard(output).snapshot()
     assert snapshot["problems"]["problems"][0]["source"]["kind"] == kind

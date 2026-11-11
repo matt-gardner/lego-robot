@@ -321,7 +321,9 @@ def publish(pool_path: Path, references_path: Path | None, output: Path,
                 "mixed_group_yield": {"eligible": int(0 < successes < len(observations)), "total": 1},
             })
     progress = {
-        "phase": "policy_assistance_calibration" if measurements is not None else "expert_reference_qualification",
+        "phase": ("policy_assistance_calibration" if measurements is not None
+                  else "expert_reference_qualification" if references is not None
+                  else "awaiting_policy_measurements"),
         "reference_attempts": len(attempts),
         "reference_accepted": len(references["references"]) if references is not None else 0,
         "reference_complete": references["complete"] if references is not None else None,
