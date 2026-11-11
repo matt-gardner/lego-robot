@@ -4,11 +4,12 @@ from __future__ import annotations
 import math
 
 
-def select_curriculum(training, specification):
+def select_curriculum(training, specification, active_tasks=None):
     """Resolve an explicit starting pool against the frozen training split."""
-    if set(specification) != set(training):
+    active = set(training) if active_tasks is None else set(active_tasks)
+    if not active or not active.issubset(training) or set(specification) != active:
         raise ValueError("Initial curriculum must specify every training task")
-    selected, assistance = {}, {}
+    selected, assistance = {task: [] for task in training}, {}
     for task, rows in specification.items():
         available = {str(episode.source): episode for episode in training[task]}
         if not rows:

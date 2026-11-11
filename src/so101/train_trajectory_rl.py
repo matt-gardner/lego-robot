@@ -45,7 +45,9 @@ from so101.cloud_checkpoint import atomic_json
 from so101.rollout_evidence import RolloutRecorder, prune_evidence
 from so101.resume_rng import plan_device_rng, restore_device_rng
 from so101.rl_renderer import create_simulation
-from so101.rl_pile_adapter import NativePileSimulation, load_native_pool, load_reference_rows
+from so101.rl_pile_adapter import (
+    NativePileSimulation, attach_native_references, load_native_pool, load_reference_rows,
+)
 from so101.rl_difficulty import DifficultyController, HarderDataRequests
 from so101.simulation_corpus import CorpusEpisode, TASKS, episode_actions, expert_bounds, load_corpus
 
@@ -1378,6 +1380,44 @@ def sample_solved_problem(
     return eligible[int(rng.integers(len(eligible)))] if eligible else None
 
 
+def load_initial_native_curriculum(pool_paths, reference_paths, validation, training_tasks):
+    if len(pool_paths) != len(reference_paths):
+        raise ValueError("Initial native pools require one exact reference manifest per pool")
+    if not pool_paths:
+        return None, None
+    excluded = {
+        item.metadata.get("scene_family_id", item.metadata.get("initial", {}).get(
+            "scene_family_id", hashlib.sha256(json.dumps([
+                item.metadata.get("initial", {}).get("seed"),
+                item.metadata.get("initial", {}).get("scene_version", 1),
+            ]).encode()).hexdigest(),
+        ))
+        for item in validation
+    }
+    training = {task: [] for task in TASKS}
+    contract = {"training_tasks": list(training_tasks), "pools": []}
+    sources = set()
+    for path, references in zip(pool_paths, reference_paths, strict=True):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        reference_sha = hashlib.sha256(references.read_bytes()).hexdigest()
+        pool = load_native_pool(path, excluded)
+        attach_native_references(pool, references, pool_sha256=digest)
+        contract["pools"].append({
+            "path": str(path), "sha256": digest,
+            "references": str(references), "references_sha256": reference_sha,
+        })
+        for task, rows in pool.items():
+            for episode in rows:
+                if "native_reference" not in episode.metadata:
+                    continue
+                source = str(episode.source)
+                if source in sources:
+                    raise ValueError("Initial native curriculum duplicates a problem across pools")
+                sources.add(source)
+                training[task].append(episode)
+    return training, contract
+
+
 def admit_difficulty_pool(difficulty, pools, excluded_families, training_by_source,
                           key, level, path, digest):
     identity = f"{key}:{level}"
@@ -1566,6 +1606,15 @@ def train(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(args.seed)
     output = args.output
     all_episodes = load_corpus(args.collection)
+    native_paths = getattr(args, "initial_native_pool", None) or []
+    native_references = getattr(args, "initial_native_references", None) or []
+    training_tasks = getattr(args, "training_tasks", TASKS)
+    if (native_paths or native_references) and args.refresh_corpus:
+        raise ValueError("Native-only starting curricula cannot refresh from the legacy corpus")
+    if (native_paths or native_references) and getattr(args, "auxiliary_view_manifest", None) is not None:
+        raise ValueError("Native-only starting curricula cannot append auxiliary legacy view recordings")
+    if (native_paths or native_references) and getattr(args, "initial_curriculum", None) is None:
+        raise ValueError("Native-only training requires an explicit measured initial curriculum")
     resume_state = None
     if args.resume and (output / "latest_state.pt").exists():
         resume_state = torch.load(
@@ -1584,13 +1633,21 @@ def train(args: argparse.Namespace) -> None:
             for values in all_episodes.values()
             for item in values
         }
+        validation = [
+            by_source[source] for source in split_payload["validation"]
+        ]
+        native_training, native_contract = load_initial_native_curriculum(
+            native_paths, native_references, validation, training_tasks,
+        )
+        if split_payload.get("initial_native_inputs") != native_contract:
+            raise ValueError("Initial native inputs or training tasks changed on resume")
+        if native_training is not None:
+            by_source.update((str(item.source), item)
+                             for rows in native_training.values() for item in rows)
         training = {
             task: [by_source[source] for source in sources]
             for task, sources in split_payload["training"].items()
         }
-        validation = [
-            by_source[source] for source in split_payload["validation"]
-        ]
         bounds = split_payload["expert_bounds"]
         if args.refresh_corpus:
             held_out = set(split_payload["validation"])
@@ -1629,6 +1686,12 @@ def train(args: argparse.Namespace) -> None:
         (output / "data_split.json").write_text(json.dumps(
             split_payload, indent=2
         ))
+        native_training, native_contract = load_initial_native_curriculum(
+            native_paths, native_references, validation, training_tasks,
+        )
+        if native_training is not None:
+            training = native_training
+            split_payload["initial_native_inputs"] = native_contract
     initial_assistance = {}
     curriculum_path = getattr(args, "initial_curriculum", None)
     if curriculum_path is not None:
@@ -1638,7 +1701,9 @@ def train(args: argparse.Namespace) -> None:
                     "specification": specification}
         if args.resume and split_payload.get("initial_curriculum") != contract:
             raise ValueError("Initial curriculum changed or was added after the run started")
-        training, initial_assistance = select_curriculum(training, specification)
+        training, initial_assistance = select_curriculum(
+            training, specification, active_tasks=training_tasks,
+        )
         split_payload["initial_curriculum"] = contract
         split_payload["training"] = {
             task: [str(item.source) for item in values] for task, values in training.items()
@@ -2156,7 +2221,8 @@ def train(args: argparse.Namespace) -> None:
                             has_obstacles = bool(episode.metadata.get("obstacles"))
                             assistance_key = curriculum_key(task, has_obstacles)
                             curriculum_max = curriculum_maximum(task, has_obstacles, args)
-                        if "native_entry" in episode.metadata:
+                        if ("native_entry" in episode.metadata
+                                and "native_reference" not in episode.metadata):
                             curriculum_max = 0.
                         if pending_problem is None:
                             initial = initial_assistance.get(str(episode.source), curriculum_max / 2)
@@ -2711,6 +2777,10 @@ def main() -> None:
     parser.add_argument("--assistance-ema-alpha", type=float, default=.2)
     parser.add_argument("--initial-curriculum", type=Path,
                         help="Explicit TRAIN-only problem pool and initial assistance by task.")
+    parser.add_argument("--initial-native-pool", type=Path, action="append",
+                        help="Immutable native pool supplying the measured starting curriculum; repeat for multiple pools.")
+    parser.add_argument("--initial-native-references", type=Path, action="append",
+                        help="Replay-qualified references for each initial native pool, in the same order.")
     parser.add_argument("--rgb-renderer", choices=("mujoco", "cpu-pathtrace", "gpu-pathtrace"),
                         default="mujoco",
                         help="Policy RGB backend; GPU path tracing requires CUDA/OptiX, with no CPU fallback.")

@@ -1000,7 +1000,16 @@ per-problem starting assistance. That JSON maps each task to a nonempty list of
 sampling to those frozen TRAIN sources without changing held-out validation.
 `--training-tasks grasp push place` restricts update sampling while retaining the
 same four-task frozen validation; omitted tasks can be measured by the probe.
-Native reference-free problems do not support gold-prefix assistance.
+For native starting problems, pair repeatable `--initial-native-pool` and
+`--initial-native-references` arguments with `--initial-curriculum`. Only
+replay-qualified native sources are eligible; the explicit curriculum specifies
+exactly the active `--training-tasks`, and inactive tasks receive no training
+samples. Native pool/reference hashes and active tasks are frozen in the split
+and checked on resume. This replaces legacy training sources, not held-out
+validation, and cannot be combined with legacy corpus refresh or auxiliary legacy
+view recordings. Qualified native
+references support their measured starting assistance; reference-free harder
+problems still receive no gold-prefix assistance.
 `--max-group-attempts-per-task` bounds total sampling attempts per task/update,
 including calibration retries; exhausting it raises rather than silently skipping
 an unfinished problem, including at assistance bounds. A single training policy
@@ -1011,7 +1020,7 @@ An independent `python -m so101.probe_trajectory_rl` process can run one probing
 rollout at a time alongside training. Supply `--checkpoint`, `--collection`,
 `--split`, `--plan`, `--training-output`, `--output`, and `--model-root`.
 The plan is a list of task/source/assistance records. Each problem/assistance
-combination receives at least 16 repeats and a Wilson 95% success interval.
+combination receives the requested repeat count and a Wilson 95% success interval.
 The probe pins the latest atomically published full-model snapshot per combination
 (or the initial SFT before the first checkpoint), records its iteration, and never
 mixes measurements across policy versions or constructs an optimizer. These are

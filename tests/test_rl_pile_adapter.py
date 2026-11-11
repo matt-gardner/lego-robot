@@ -18,7 +18,7 @@ from so101.rl_pile_adapter import (
 from so101.robot_sim import BeamSimulation, MODEL_ROOT, scene_xml
 from so101.simulation_corpus import CorpusEpisode, TASKS
 from so101.train_trajectory_rl import replay_gold_prefix, rollout
-from so101.train_trajectory_rl import refresh_difficulty_pools
+from so101.train_trajectory_rl import load_initial_native_curriculum, refresh_difficulty_pools
 from so101.rl_difficulty import DifficultyController
 
 
@@ -32,6 +32,41 @@ def test_reference_selection_balances_families_within_exact_piece_bucket():
             episode("a1", "a", 20), episode("b0", "b", 20), episode("b1", "b", 20)]
     assert [row.source for row in reference_candidates(rows, 3, 20)] == ["a0", "b0", "a1"]
     assert reference_candidates(rows, 4, 3) == []
+
+
+def test_initial_native_intake_pins_inputs_and_excludes_reference_free_tasks(tmp_path, monkeypatch):
+    pool, references = tmp_path / "pool.json", tmp_path / "references.json"
+    pool.write_text("pool")
+    references.write_text("references")
+    qualified = CorpusEpisode(tmp_path / "qualified", {"task": "view"})
+    unqualified = CorpusEpisode(tmp_path / "unqualified", {"task": "view"})
+    admitted = []
+    bindings = []
+
+    def load(path, excluded):
+        admitted.append((path, excluded))
+        return {"view": [qualified, unqualified]}
+
+    def attach(episodes, path, *, pool_sha256):
+        bindings.append((path, pool_sha256))
+        episodes["view"][0].metadata["native_reference"] = {"qualified": True}
+
+    monkeypatch.setattr("so101.train_trajectory_rl.load_native_pool", load)
+    monkeypatch.setattr("so101.train_trajectory_rl.attach_native_references", attach)
+    validation = [SimpleNamespace(metadata={"scene_family_id": "held-out"})]
+    training, contract = load_initial_native_curriculum([pool], [references], validation, ["view"])
+    assert training["view"] == [qualified]
+    assert admitted == [(pool, {"held-out"})]
+    assert bindings == [(references, hashlib.sha256(pool.read_bytes()).hexdigest())]
+    assert contract["training_tasks"] == ["view"]
+    assert contract["pools"][0]["references_sha256"] == hashlib.sha256(references.read_bytes()).hexdigest()
+    references.write_text("changed")
+    _, changed = load_initial_native_curriculum([pool], [references], validation, ["view"])
+    assert contract != changed
+    with pytest.raises(ValueError, match="one exact reference"):
+        load_initial_native_curriculum([pool], [], validation, ["view"])
+    with pytest.raises(ValueError, match="duplicates"):
+        load_initial_native_curriculum([pool, pool], [references, references], validation, ["view"])
 
 
 def test_native_reference_overlay_binds_actions_scene_and_replay_evidence(tmp_path):

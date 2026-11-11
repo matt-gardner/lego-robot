@@ -3,6 +3,7 @@ from copy import deepcopy
 import json
 import hashlib
 import random
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -55,6 +56,64 @@ from so101.control_model.modeling_entity_smolvla import (
     EntityModelConfig, EntityVLAFlowMatching, FrozenObservation, load_entity_checkpoint,
     save_entity_checkpoint,
 )
+
+
+def test_native_initial_curriculum_preserves_validation_and_resumes_without_legacy_fallback(
+        tmp_path, monkeypatch):
+    import so101.train_trajectory_rl as trainer
+
+    pool, references, specification = (tmp_path / name for name in ("pool", "references", "curriculum"))
+    pool.write_text("pool")
+    references.write_text("references")
+    native = CorpusEpisode(tmp_path / "native-view", {"task": "view"})
+    specification.write_text(json.dumps({"view": [{"source": str(native.source), "assistance": .5}]}))
+    legacy = {task: [CorpusEpisode(tmp_path / task, {"task": task})] for task in trainer.TASKS}
+    heldout = CorpusEpisode(tmp_path / "heldout", {"task": "view", "scene_family_id": "heldout-family"})
+    all_episodes = {**legacy, "view": [*legacy["view"], heldout]}
+    monkeypatch.setattr(trainer, "load_corpus", lambda _: all_episodes)
+    monkeypatch.setattr(trainer, "split_corpus", lambda *_: (legacy, [heldout]))
+    monkeypatch.setattr(trainer, "expert_bounds", lambda _: {
+        task: {"optimal_steps": 10., "jerk_p10": 1.} for task in trainer.TASKS
+    })
+    monkeypatch.setattr(trainer, "load_native_pool", lambda path, excluded: {"view": [native]})
+    monkeypatch.setattr(trainer, "attach_native_references",
+                        lambda *_, **__: native.metadata.update(native_reference={"qualified": True}))
+    captured = []
+    with monkeypatch.context() as context:
+        context.setattr(sys, "argv", [
+            "train", "--checkpoint", str(tmp_path / "base"), "--collection", str(tmp_path / "collection"),
+            "--output", str(tmp_path / "run"), "--device", "cpu",
+            "--initial-native-pool", str(pool), "--initial-native-references", str(references),
+            "--initial-curriculum", str(specification), "--training-tasks", "view",
+            "--jerk-regularizer-weight", "0", "--action-boundary-weight", "0",
+        ])
+        context.setattr(trainer, "train", captured.append)
+        trainer.main()
+    args = captured[0]
+
+    class IntakeResolved(Exception):
+        pass
+
+    def controller(*_):
+        raise IntakeResolved
+
+    monkeypatch.setattr(trainer, "EntityPolicy", controller)
+    with pytest.raises(IntakeResolved):
+        trainer.train(args)
+    split = json.loads((args.output / "data_split.json").read_text())
+    assert split["training"] == {task: [str(native.source)] if task == "view" else []
+                                 for task in trainer.TASKS}
+    assert split["validation"] == [str(heldout.source)]
+    args.resume = True
+    with pytest.raises(IntakeResolved):
+        trainer.train(args)
+    assert json.loads((args.output / "data_split.json").read_text()) == split
+    references.write_text("changed")
+    with pytest.raises(ValueError, match="native inputs or training tasks changed"):
+        trainer.train(args)
+    args.auxiliary_view_manifest = tmp_path / "auxiliary"
+    with pytest.raises(ValueError, match="cannot append auxiliary legacy"):
+        trainer.train(args)
 
 
 def test_denoising_backward_does_not_reuse_cropped_suffix_graph() -> None:

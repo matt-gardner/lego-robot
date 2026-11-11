@@ -45,6 +45,20 @@ def test_task_ema_shares_feedback_across_problems_but_not_tasks_and_resumes():
         AssistanceCalibration(state, alpha=.3, increment=.1)
 
 
+def test_initial_curriculum_limits_training_to_explicit_active_tasks():
+    view = SimpleNamespace(source="native/view")
+    training = {"view": [view], "grasp": [SimpleNamespace(source="legacy/grasp")]}
+    selected, assistance = select_curriculum(
+        training, {"view": [{"source": "native/view", "assistance": .5}]},
+        active_tasks=["view"],
+    )
+    assert selected == {"view": [view], "grasp": []}
+    assert assistance == {"native/view": .5}
+    with pytest.raises(ValueError, match="every training task"):
+        select_curriculum(training, {"view": [{"source": "native/view", "assistance": .5}]},
+                          active_tasks=["view", "grasp"])
+
+
 @pytest.mark.parametrize("invalid", [None, "updated", "missing_flag", "missing_groups", "missing_state"])
 def test_empty_adam_requires_explicitly_skipped_complete_history(invalid):
     model = torch.nn.Linear(1, 1)
