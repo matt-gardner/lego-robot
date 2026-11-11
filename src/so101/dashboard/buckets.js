@@ -129,18 +129,37 @@ function bucketChart(parent, series) {
   shape("text",{x:185,y:215,"text-anchor":"middle",fill:"currentColor","font-size":12},"Assistance");
   shape("text",{x:45,y:18,fill:"currentColor","font-size":12},"Success rate");
   const colors=["#54b5ff","#ffbd59","#71db99","#e296ef"];
+  const marks=[];
+  let hovered=null,focused=null;
+  function highlight() {
+    const active=hovered ?? focused;
+    for(const mark of marks) {
+      const selected=active===mark.task,muted=active!==null&&!selected;
+      mark.point.setAttribute("fill",muted ? "#888" : mark.color);
+      mark.point.setAttribute("opacity",muted ? .25 : 1);
+      mark.point.setAttribute("r",selected ? 6 : 4);
+      mark.bar.setAttribute("stroke",muted ? "#888" : mark.color);
+      mark.bar.setAttribute("opacity",muted ? .25 : 1);
+    }
+  }
   series.forEach((s,index)=>{
     const color=colors[index%colors.length];
     for(const c of s.cells) {
       const ci=wilson(c.successes,c.n),x=45+c.assistance*285,y=175-c.successes/c.n*140;
-      shape("line",{x1:x,x2:x,y1:175-ci[0]*140,y2:175-ci[1]*140,stroke:color,"stroke-width":1});
+      const bar=shape("line",{x1:x,x2:x,y1:175-ci[0]*140,y2:175-ci[1]*140,stroke:color,"stroke-width":1});
       const point=shape("circle",{cx:x,cy:y,r:4,fill:color});
+      marks.push({task:s.task,color,point,bar});
       const title=document.createElementNS(ns,"title");
       title.textContent=`${s.task}: ${(c.assistance*100).toFixed(2)}% assistance, ${c.successes}/${c.n} successes (${(100*c.successes/c.n).toFixed(1)}%), ${c.groups} groups`;
       point.append(title);
     }
     const legend=node("span",`${s.task}${s.cells.length ? "" : " (unmeasured)"}`,"chart-legend");
-    legend.style=`color:${color}`;parent.append(legend);
+    legend.style=`color:${color}`;legend.setAttribute("tabindex","0");
+    legend.addEventListener("mouseenter",()=>{hovered=s.task;highlight();});
+    legend.addEventListener("mouseleave",()=>{hovered=null;highlight();});
+    legend.addEventListener("focus",()=>{focused=s.task;highlight();});
+    legend.addEventListener("blur",()=>{focused=null;highlight();});
+    parent.append(legend);
   });
   parent.append(svg,node("small","Points: sampled problems only; bars: descriptive Wilson 95% intervals. No interpolation."));
 }

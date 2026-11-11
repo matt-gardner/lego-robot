@@ -175,10 +175,28 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
       {series_id:"new",label:"New measurements",groups:[{problem_id:"first",assistance:.95,attempts:4,successes:0}]},
     ]}];
   payload.calibration.groups=payload.manifest.datasets[0].measurement_series.flatMap(s=>s.groups);
+  payload.calibration.groups.push({problem_id:"second",assistance:.5,attempts:4,successes:2});
   saved.clear();elements.clear();
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
     {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
   await new Promise(resolve=>setImmediate(resolve));
   const table=elements.get("populations").children[0];
   assert.ok(table.children[1].children[3].children.some(e=>e.textContent==="push: 1/1 problems · 20 rollouts"));
+  const chart=table.children[1].children[2];
+  const pushLegend=chart.children.find(e=>e.textContent==="push");
+  const svg=chart.children.find(e=>e.role==="img");
+  const pushPoint=svg.children.find(e=>e.cx===45+.95*285 && e.r===4);
+  const placePoint=svg.children.find(e=>e.cx===45+.5*285 && e.r===4);
+  const original=placePoint.fill;
+  pushLegend.listeners.mouseenter();
+  assert.equal(pushPoint.r,6);
+  assert.equal(placePoint.fill,"#888");
+  assert.equal(placePoint.opacity,.25);
+  pushLegend.listeners.mouseleave();
+  assert.equal(pushPoint.r,4);
+  assert.equal(placePoint.fill,original);
+  pushLegend.listeners.focus();
+  assert.equal(pushPoint.r,6);
+  pushLegend.listeners.blur();
+  assert.equal(pushPoint.r,4);
 });

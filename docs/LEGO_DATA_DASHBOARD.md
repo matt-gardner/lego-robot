@@ -103,6 +103,8 @@ The primary overview has one row per bucket, with a small chart in a table cell:
 assistance percent on the x axis and success rate on the y axis, both 0–100%.
 Task types have distinct colors; points show measured rates with descriptive
 Wilson intervals and exact numerator/denominator tooltips, without interpolation.
+Hovering or keyboard-focusing a task legend label enlarges its points and grays
+out other tasks' points and intervals; leaving restores the full chart.
 Per-task sampled-problem coverage and rollout counts sit beside the chart.
 Unmeasured buckets retain an explicit missing state instead of zero-valued points.
 Clicking a row filters the pile inspector to its bucket.
