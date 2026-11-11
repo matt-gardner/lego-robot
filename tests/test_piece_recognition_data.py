@@ -3,8 +3,9 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import xml.etree.ElementTree as ET
 
 from so101.piece_recognition_data import (
@@ -13,6 +14,50 @@ from so101.piece_recognition_data import (
 
 
 class RecognitionDataTests(unittest.TestCase):
+    def test_body_lookup_matches_geometry_masks_and_ignores_non_geometry(self):
+        import mujoco
+        import numpy as np
+        from so101.piece_recognition_render import segmented_bodies
+
+        model = SimpleNamespace(ngeom=4, geom_bodyid=np.array([0, 1, 1, 2]))
+        segmentation = np.array([
+            [[0, mujoco.mjtObj.mjOBJ_GEOM], [1, mujoco.mjtObj.mjOBJ_GEOM],
+             [2, mujoco.mjtObj.mjOBJ_GEOM], [3, mujoco.mjtObj.mjOBJ_GEOM]],
+            [[-1, -1], [1, mujoco.mjtObj.mjOBJ_SITE],
+             [4, mujoco.mjtObj.mjOBJ_GEOM], [-1, mujoco.mjtObj.mjOBJ_GEOM]],
+        ], dtype=np.int32)
+        actual = segmented_bodies(model, segmentation)
+        for body in (0, 1, 2):
+            expected = ((segmentation[:, :, 1] == mujoco.mjtObj.mjOBJ_GEOM)
+                        & np.isin(segmentation[:, :, 0],
+                                  np.flatnonzero(model.geom_bodyid == body)))
+            np.testing.assert_array_equal(actual == body, expected)
+
+    def test_label_context_restores_rgb_samples_and_closes_after_failure(self):
+        from so101.piece_recognition_render import label_context
+
+        model = SimpleNamespace(vis=SimpleNamespace(quality=SimpleNamespace(offsamples=4)))
+        renderer = MagicMock()
+        renderer.__enter__.return_value = renderer
+
+        def create(*args, **kwargs):
+            self.assertEqual(model.vis.quality.offsamples, 0)
+            return renderer
+
+        with patch("so101.piece_recognition_render.mujoco.Renderer", side_effect=create):
+            with self.assertRaisesRegex(RuntimeError, "capture failed"):
+                with label_context(model):
+                    self.assertEqual(model.vis.quality.offsamples, 4)
+                    raise RuntimeError("capture failed")
+        renderer.__exit__.assert_called_once()
+        renderer.enable_segmentation_rendering.assert_called_once()
+        with patch("so101.piece_recognition_render.mujoco.Renderer",
+                   side_effect=RuntimeError("context failed")):
+            with self.assertRaisesRegex(RuntimeError, "context failed"):
+                with label_context(model):
+                    self.fail("Context creation should fail")
+        self.assertEqual(model.vis.quality.offsamples, 4)
+
     def test_split_unions_raw_source_retask_and_exact_model_without_class_leakage_fixes(self):
         scenes = [
             {"source": "raw", "group_keys": ["receipt:a", "model:raw"]},

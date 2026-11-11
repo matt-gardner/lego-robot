@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -16,6 +17,35 @@ from so101.capture_pile_task_images import target_annotation
 from so101.lego_scene import restore_scene
 from so101.piece_recognition_data import digest, read_bound, write_new_json
 from so101.rl_renderer import compile_visual_model
+
+
+@contextmanager
+def label_context(model):
+    samples = model.vis.quality.offsamples
+    try:
+        model.vis.quality.offsamples = 0
+        renderer = mujoco.Renderer(model, height=240, width=320)
+    finally:
+        model.vis.quality.offsamples = samples
+    with renderer:
+        renderer.enable_segmentation_rendering()
+        yield renderer
+
+
+def activate(renderer):
+    if renderer._gl_context is None or renderer._mjr_context is None:
+        raise ValueError("Renderer context is unavailable")
+    renderer._gl_context.make_current()
+    mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, renderer._mjr_context)
+
+
+def segmented_bodies(model, segmentation: np.ndarray) -> np.ndarray:
+    geom_ids = segmentation[:, :, 0]
+    valid = ((segmentation[:, :, 1] == mujoco.mjtObj.mjOBJ_GEOM)
+             & (geom_ids >= 0) & (geom_ids < model.ngeom))
+    bodies = np.full(geom_ids.shape, -1, dtype=np.int32)
+    bodies[valid] = model.geom_bodyid[geom_ids[valid]]
+    return bodies
 
 
 def save_image(root: Path, image: np.ndarray) -> dict:
@@ -85,21 +115,20 @@ def render(plan_path: Path, output: Path, views: int = 8, minimum_pixels: int = 
         model.vis.global_.offwidth, model.vis.global_.offheight = 320, 240
         bodies = [model.body(label["body_name"]).id for label in scene["labels"]]
         captures = []
-        with mujoco.Renderer(model, height=240, width=320) as renderer:
+        with (mujoco.Renderer(model, height=240, width=320) as renderer,
+              label_context(model) as labels):
             for view in range(views):
                 camera = camera_for(model, data, bodies, 360 * view / views, -45)
+                activate(renderer)
                 renderer.update_scene(data, camera=camera)
                 rgb = renderer.render().copy()
-                renderer.enable_segmentation_rendering()
-                try:
-                    segmentation = renderer.render().copy()
-                finally:
-                    renderer.disable_segmentation_rendering()
+                activate(labels)
+                labels.update_scene(data, camera=camera)
+                segmentation = labels.render().copy()
+                visible_bodies = segmented_bodies(model, segmentation)
                 targets = []
                 for label, body in zip(scene["labels"], bodies, strict=True):
-                    geoms = np.flatnonzero(model.geom_bodyid == body)
-                    mask = ((segmentation[:, :, 1] == mujoco.mjtObj.mjOBJ_GEOM)
-                            & np.isin(segmentation[:, :, 0], geoms))
+                    mask = visible_bodies == body
                     annotation = target_annotation(mask)
                     status = ("eligible" if annotation["target_visible_pixels"] >= minimum_pixels
                               else "invisible" if not annotation["target_visible_pixels"] else "too_small")
@@ -146,6 +175,7 @@ def render(plan_path: Path, output: Path, views: int = 8, minimum_pixels: int = 
                          "capture_pile_task_images.py", "lego_scene.py", "rl_renderer.py")
         },
         "renderer": "unchanged MuJoCo raster, 320x240, static camera orbit; no dynamics",
+        "label_renderer_profile": "native-id-segmentation-no-msaa-v1",
         "history_semantics": "four static-pile orbit views; boxes refer only to final view",
     }
     write_new_json(output / "images.json", result)

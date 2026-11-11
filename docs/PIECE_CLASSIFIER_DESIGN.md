@@ -1,7 +1,8 @@
-# Piece recognition: prepared SFT feasibility experiment
+# Piece recognition: SFT feasibility experiment
 
 Work `e2246fc2-64c6-4d14-8384-6d7b957cfa37`. Matt's latest direction:
-**prepare a quick SFT experiment across saved piles; do not run it.**
+**run the bounded classification experiment while RL data is being fixed,
+using GPU rendering.**
 This supersedes the earlier standalone ConvNeXt/16-ID proposal.
 
 ## What we will test
@@ -51,6 +52,9 @@ No class-balancing migration of individual test pieces into train.
 
 Render unchanged saved states with existing MuJoCo raster APIs; never settle,
 step or generate a new pile. Annotate every visible piece, not just task targets.
+GPU labels use a dedicated zero-MSAA context
+(`native-id-segmentation-no-msaa-v1`); the original RGB context and model
+MSAA setting are preserved. Multisampled ID colors must not be used for boxes.
 Invisible and <64-visible-pixel targets are counted separately, not trained as
 confident positives. Dataset size is determined by the saved inventory.
 At initial inspection, the raw `photo-piles-*` population had 617 receipts and
@@ -69,9 +73,9 @@ may previously have encountered some piles through robot training; that exposure
 has not been ruled out. Do not claim previously unseen-scene generalization
 without auditing the selected checkpoint's training history.
 
-## Prepared entry points (none executed)
+## Entry points
 
-Run these **only after Matt authorizes execution**, in the repository's isolated
+Run these in the repository's isolated
 simulation/training environments. Do not modify the host `.venv`. `EXPERIMENT`
 is a new named output directory, shared with the eventual GPU host.
 
@@ -84,7 +88,7 @@ PYTHONPATH=src python -m so101.piece_recognition_data \
   --photo-template /mnt/dockyard/lego-robot-data/data/lego-renderer/b887f204-big-pile-compact-settled/model.xml \
   --output "$EXPERIMENT/prepare"
 
-PYTHONPATH=src MUJOCO_GL=osmesa python -m so101.piece_recognition_render \
+PYTHONPATH=src MUJOCO_GL=egl python -m so101.piece_recognition_render \
   --plan "$EXPERIMENT/prepare/plan.json" --output "$EXPERIMENT/render"
 ```
 
@@ -134,12 +138,10 @@ Model choice uses development macro recall; test stays out of optimization.
 
 ## Current boundary
 
-Code preparation is authorized; **rendering, encoding, checkpoint loading,
-training, GPU allocation and RL execution are not**. No live activation is
-required until Matt authorizes running this experiment. Existing catalog,
-renderer, generator, dashboard and trainer surfaces remain owned elsewhere.
-Remaining execution inputs are the selected checkpoint, a new qualified image,
-shared writable experiment path/cache mounts and, if using GPU, connection/job
-arguments. Synthetic feasibility is the first question; real images, calibration,
+The bounded recognition experiment, GPU rendering and training are authorized;
+**RL execution and integration are not**. Existing catalog, renderer, generator
+and dashboard surfaces remain owned elsewhere. Record the selected checkpoint,
+digest-pinned runtime, shared paths/cache mounts and connection/job arguments
+with the execution receipt. Synthetic feasibility is the first question; real images, calibration,
 robust category fallback, joint RL scheduling and robot-task regression tests
 remain subsequent work.
