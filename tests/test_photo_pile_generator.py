@@ -10,6 +10,7 @@ import pytest
 from so101 import photo_pile_generator as generator
 from so101 import photo_pile_tasks
 from so101 import photo_pile_curriculum
+from so101 import pile_task_assistance
 from so101.photo_pile_curriculum import validate_stages
 from so101.pile_pool import publish_pool
 from so101.pile_task_runtime import create_simulation, load_problem, reset_problem, task_predicate
@@ -294,6 +295,68 @@ def test_diverse_catalog_pins_assets_and_samples_distinct_families(photo_source,
     model = mujoco.MjModel.from_xml_path(str(tmp_path / "diverse" / "model.xml"))
     colors = [tuple(model.geom_rgba[model.body_geomadr[body]]) for body in range(1, model.nbody)]
     assert any(first != second for first, second in zip(colors, colors[6:]))
+
+
+def test_direct_assistance_links_parent_without_a_trajectory(photo_source, tmp_path, monkeypatch):
+    source = tmp_path / "fresh"
+    generator.generate_scene(photo_source, source, count=20, seed=20261111)
+    tasks = tmp_path / "original-tasks"
+    tasks.mkdir()
+    entry = photo_pile_tasks.build_problem(source, tasks / "scene_000000000")
+    original_bytes = (Path(entry["root"]) / "problem.json").read_bytes()
+    original = json.loads(original_bytes)
+    parent = next(task for task in original["tasks"] if task["task_type"] == "grasp")
+    parents = {task["task_id"]: task for task in original["tasks"]
+               if task["target_instance_id"] == parent["target_instance_id"]
+               and task["task_type"] in ("grasp", "place", "push")}
+
+    def reject_step(*args, **kwargs):
+        raise AssertionError("Distance variants must not require a setup trajectory")
+
+    monkeypatch.setattr(mujoco, "mj_step", reject_step)
+    result = pile_task_assistance.generate(
+        entry, tmp_path / "assistance" / "scene_000000000", task_ids=list(parents))
+    revised = json.loads((Path(result["root"]) / "problem.json").read_bytes())
+    assert (Path(entry["root"]) / "problem.json").read_bytes() == original_bytes
+    assert revised["scene_family_id"] == original["scene_family_id"]
+    assert revised["scene_id"] != original["scene_id"]
+    assert result["tags"]["task_start_profile"] == pile_task_assistance.PROFILE
+    assert revised["task_families"][0]["parent_task_id"] == parent["task_id"]
+    assert revised["tasks"]
+    assert any(task["initial_task_state"]["lifted_once"] for task in revised["tasks"])
+    assert any(task["task_type"] == "push" and task["assistance"]["distance"]["active_stage"] == "push"
+               for task in revised["tasks"])
+    for task in revised["tasks"]:
+        parent = parents[task["parent_task_id"]]
+        group = next(group for group in revised["task_families"]
+                     if group["parent_task_id"] == parent["task_id"])
+        distance = task["assistance"]["distance"]
+        baseline = group["original_distance"]
+        assert (distance["remaining_stage_count"] < baseline["remaining_stage_count"]
+                or distance["within_stage"]["value"] < baseline["within_stage"]["value"])
+        assert task["goal"] == parent["goal"]
+        assert task["initial_target_position"] == parent["initial_target_position"]
+        assert task["assistance"]["kind"] == pile_task_assistance.PROFILE
+        assert max(task["assistance"]["physical_predicates"]["jaw_normal_forces_n"].values(),
+                   default=0.) < 1.
+        problem = load_problem(result, task["task_id"])
+        sim = create_simulation(problem)
+        try:
+            assert not task_predicate(sim, problem)
+            if not task["initial_task_state"]["lifted_once"]:
+                spoofed = {**task, "initial_task_state": {"lifted_once": True}}
+                with pytest.raises(ValueError, match="physically held"):
+                    reset_problem(sim, {**problem, "task": spoofed})
+            reset_problem(sim, load_problem(entry, parent["task_id"]))
+            assert not sim.lifted_once
+            np.testing.assert_array_equal(sim.position(parent["target_instance_id"]),
+                                          parent["initial_target_position"])
+        finally:
+            sim.close()
+    approach = pile_task_assistance.distance_label("place", "approach", .05, "tool_to_target", "m")
+    held = pile_task_assistance.distance_label("place", "transport", .1, "held_target_to_destination_xy", "m")
+    assert approach["remaining_stage_count"] > held["remaining_stage_count"]
+    assert held["remaining_stages"] == ["transport", "lower", "release", "dwell"]
 
 
 def test_progression_caps_each_bucket_and_resumes(photo_source, tmp_path, monkeypatch):

@@ -127,6 +127,45 @@ def reset_problem(sim: PileSimulation, problem: dict) -> None:
             raise ValueError("Task-specific snapshot belongs to a different scene")
     restore_scene(sim.model, sim.data, snapshot, (root / "model.xml").read_text())
     sim.lifted_once = False
+    progress = problem["task"].get("initial_task_state")
+    if progress is not None:
+        task = problem["task"]
+        assistance = task.get("assistance", {})
+        if (not isinstance(progress, dict) or set(progress) != {"lifted_once"}
+                or type(progress["lifted_once"]) is not bool
+                or not isinstance(assistance, dict) or not task.get("parent_task_id")
+                or assistance.get("kind") != "direct-task-distance-v1"
+                or assistance.get("parent_task_id") != task.get("parent_task_id")):
+            raise ValueError("Invalid assistance initial task-progress state")
+        if progress["lifted_once"]:
+            measured = target_contact_state(sim, task["target_instance_id"])
+            if (task["task_type"] != "place" or not measured["bilateral_grip"]
+                    or measured["table_supported"]):
+                raise ValueError("PLACE progress initialization requires a physically held piece")
+            sim.lifted_once = True
+
+
+def target_contact_state(sim: PileSimulation, target: str) -> dict:
+    body = sim.registry[target]
+    jaws, supported = {}, False
+    table = sim.model.geom("table").id
+    labels = {sim.model.body("gripper").id: "fixed",
+              sim.model.body("moving_jaw_so101_v1").id: "moving"}
+    for index, contact in enumerate(sim.data.contact):
+        if contact.dist > .0001:
+            continue
+        geoms = (int(contact.geom1), int(contact.geom2))
+        bodies = {int(sim.model.geom_bodyid[g]) for g in geoms}
+        if body not in bodies:
+            continue
+        force = np.zeros(6)
+        mujoco.mj_contactForce(sim.model, sim.data, index, force)
+        for endpoint, label in labels.items():
+            if endpoint in bodies and force[0] > 1e-5:
+                jaws[label] = max(jaws.get(label, 0.), float(force[0]))
+        supported |= table in geoms and force[0] > 1e-5
+    return {"jaw_normal_forces_n": jaws, "table_supported": bool(supported),
+            "bilateral_grip": set(jaws) == {"fixed", "moving"}}
 
 
 def task_predicate(sim: PileSimulation, problem: dict) -> bool:
@@ -144,23 +183,9 @@ def task_predicate(sim: PileSimulation, problem: dict) -> bool:
         x1, y1, x2, y2 = label["box_xyxy"]
         return (np.linalg.norm(np.array([(x1 + x2) / 2, (y1 + y2) / 2]) - .5)
                 <= goal["center_radius"])
-    contacts = set()
-    supported = False
-    table = sim.model.geom("table").id
-    for index, contact in enumerate(sim.data.contact):
-        if contact.dist > .0001:
-            continue
-        geoms = (int(contact.geom1), int(contact.geom2))
-        bodies = {int(sim.model.geom_bodyid[geom]) for geom in geoms}
-        if body not in bodies:
-            continue
-        force = np.zeros(6)
-        mujoco.mj_contactForce(sim.model, sim.data, index, force)
-        for name, label in (("gripper", "fixed"), ("moving_jaw_so101_v1", "moving")):
-            if sim.model.body(name).id in bodies and force[0] > 1e-5:
-                contacts.add(label)
-        if table in geoms:
-            supported |= force[0] > 1e-5
+    measured = target_contact_state(sim, target)
+    contacts = set(measured["jaw_normal_forces_n"])
+    supported = measured["table_supported"]
     lift = float(position[2] - task["initial_target_position"][2])
     sim.lifted_once |= lift >= .03
     speed = body_surface_speed_bound(sim.model, sim.data, body)

@@ -139,6 +139,41 @@ manifest paths, hashes and populations. Dashboard readers use this explicit
 selection, not modification times or recursive discovery of historical subsets.
 Pending previews must not reuse images from superseded task/reset identities.
 
+### Parent-linked distance assistance
+
+`python -m so101.pile_task_assistance --admission <original-admission.json>
+--output <new-scene-directory> [--task-id <parent-task-id>]` constructs
+nearer resets directly, without demonstrations, setup trajectories or stepping
+the simulation. Omit `--task-id` to process every original task.
+The output is separate and immutable; original task goals, lift anchors,
+scene-family identity and randomized evaluation remain unchanged.
+
+Each child has `parent_task_id`, a full `initial_state`, and
+`assistance.kind="direct-task-distance-v1"`. `task_families` associates the
+original immutable entry and its measured initial distance with child IDs and
+explicit construction failures. Distance first orders the remaining task
+stages, then the measured distance within the same stage/metric, in metres or
+radians. For PLACE the stages are approach, grip, lift, transport, lower,
+release and dwell: moving an already-held piece near the destination removes
+more remaining work than merely moving an empty gripper toward the pile.
+This is geometric/task-stage distance, not measured policy difficulty or an
+expert-prefix percentage.
+
+Holding starts relocate the target into the robot's jaws and require measured
+bilateral loaded contact without table support. PLACE explicitly initializes
+`initial_task_state.lifted_once`; reset verifies its construction provenance
+and current holding predicate rather than claiming a historical lift.
+PUSH starts relocate the piece next to a contacting robot on the table; these
+are contact-ready states, not a claim of ongoing motion.
+Invalid, already-successful or duplicate states are not admitted. Every child
+must replay its full reset exactly before atomic publication. Failed grasp
+constructions remain unavailable, never metadata-only holding claims.
+
+Distance-assistance admissions are separate trainer inputs, not replacements
+for `current-task-pools.json` or qualification for paired SFT recordings.
+They must not be mixed into original randomized-start evaluation or treated
+as historical gold-prefix assistance.
+
 The earlier photo-template progression used
 `python -m so101.photo_pile_curriculum --source <original-photo-demo> --root
 <new-curriculum-root>` for **30, 40, 60 and 90 pieces**, in that order. Each
