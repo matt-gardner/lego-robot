@@ -66,22 +66,30 @@ const sftSections = [
     metrics: sections.at(-1).metrics.map(metric => metric.key === "gradient_norm"
       ? {...metric, note: "Logged pre-clip gradient norm for supervised training."} : metric)},
 ];
+const runKinds = ["rl", "sft", "recognition"];
+const supervised = kind => kind === "sft" || kind === "recognition";
+const recognitionSections = [
+  {id: "recognition-loss", title: "Recognition-only training loss", note: "No action SFT or RL · training samples", open: true,
+    metrics: [{key: "loss", title: "Recognition loss", phase: "train", task: "all", unit: "", logLog: true,
+      note: "Recognition embedding and category objective. Not comparable to action SFT loss."}]},
+  {...sftSections.at(-1), id: "recognition-health"},
+];
 function readStorage(key) {
   try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
 }
 const finite = value => typeof value === "number" && Number.isFinite(value);
 const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
-const savedSelections = Object.fromEntries(["rl", "sft"].map(kind => {
+const savedSelections = Object.fromEntries(runKinds.map(kind => {
   const value = readStorage(`${kind}-selected-runs`);
   return [kind, Array.isArray(value) && value.every(id => typeof id === "string" && id.length > 0) ? value : null];
 }));
 const savedSections = readStorage("rl-section-open");
-const sectionOpen = Object.fromEntries([...sections, ...sftSections]
+const sectionOpen = Object.fromEntries([...sections, ...sftSections, ...recognitionSections]
   .filter(section => record(savedSections) && typeof savedSections[section.id] === "boolean")
   .map(section => [section.id, savedSections[section.id]]));
 const storedPreferences = readStorage("so101-dashboard-preferences");
 const preferences = record(storedPreferences) && storedPreferences.version === 1 ? storedPreferences : {};
-const tabViews = Object.fromEntries(["rl", "sft"].map(kind => {
+const tabViews = Object.fromEntries(runKinds.map(kind => {
   const view = record(preferences.views) && record(preferences.views[kind]) ? preferences.views[kind] : {};
   return [kind, {
     focus: typeof view.focus === "string" && view.focus.length > 0 ? view.focus : null,
@@ -89,14 +97,14 @@ const tabViews = Object.fromEntries(["rl", "sft"].map(kind => {
       && view.zoom[0] < view.zoom[1] ? view.zoom : null,
   }];
 }));
-const initialKind = preferences.kind === "sft" ? "sft" : "rl";
-const selections = {rl: new Set(savedSelections.rl || []), sft: new Set(savedSelections.sft || [])};
+const initialKind = runKinds.includes(preferences.kind) ? preferences.kind : "rl";
+const selections = Object.fromEntries(runKinds.map(kind => [kind, new Set(savedSelections[kind] || [])]));
 const state = {
   catalog: [], selected: selections[initialKind], runs: new Map(),
   initialized: false, smoothing: finite(preferences.smoothing) && preferences.smoothing >= 0
     && preferences.smoothing <= 95 && preferences.smoothing % 5 === 0 ? preferences.smoothing / 100 : 0,
   paused: false, ...tabViews[initialKind], loading: false, errors: [], charts: [],
-  kind: initialKind, sftInitialized: false,
+  kind: initialKind, sftInitialized: false, recognitionInitialized: false,
 };
 const pct = value => finite(value) ? `${(value * 100).toFixed(1)}%` : "—";
 const num = value => finite(value) ? value.toFixed(3) : "—";
@@ -136,7 +144,7 @@ function updateStepCounters() {
     const phaseAge = finite(remote?.phase_observed_at) ? Date.now() / 1000 - remote.phase_observed_at : null;
     const interval = run?.config?.run_config?.validation_interval;
     const latestStep = run?.latest_train?.step;
-    const evaluationDue = runKind(summary) === "sft" && finite(interval) && interval > 0
+    const evaluationDue = supervised(runKind(summary)) && finite(interval) && interval > 0
       && finite(latestStep) && latestStep > 0 && latestStep % interval === 0
       && (run.latest_eval?.step ?? -1) < latestStep;
     let phase = "running";
@@ -219,7 +227,7 @@ function renderRuns() {
     const swatch = text("span", "", "swatch");
     const latest = run.latest_train?.step ?? "—";
     meta.append(swatch, document.createTextNode(
-      `step ${latest}${state.kind === "sft" ? ` · loss ${num(run.latest_train?.loss)}` : ""} · eval ${pct(run.latest_eval?.success_rate)}`));
+      `step ${latest}${supervised(state.kind) ? ` · loss ${num(run.latest_train?.loss)}` : ""} · eval ${pct(run.latest_eval?.success_rate)}`));
     meta.append(document.createElement("br"), document.createTextNode(
       `${run.archived ? "Archive · " : ""}Log updated ${run.updated_at ? new Date(run.updated_at).toLocaleString() : "unavailable"}`));
     if (run.remote) {
@@ -245,7 +253,7 @@ function renderDetails() {
   $("focus").value = state.focus || "";
   const run = state.runs.get(state.focus);
   const latest = run?.latest_eval;
-  const sft = state.kind === "sft";
+  const sft = supervised(state.kind);
   const cards = [
     ["Latest validation success", pct(latest?.success_rate), latest ? `Step ${latest.step} · unassisted` : "No validation logged"],
     ["Best validation success", pct(run?.best_eval?.success_rate), run?.best_eval ? `Step ${run.best_eval.step}` : "No validation logged"],
@@ -322,7 +330,7 @@ function seriesFor(metric) {
       const visiblePoints = metric.key === "gradient_norm" && finite(gradientStart)
         ? series.points.filter(point => point.step >= gradientStart) : series.points;
       const values = visiblePoints.map(point => {
-        const x = state.kind === "sft" ? point.samples_seen : point.step;
+        const x = supervised(state.kind) ? point.samples_seen : point.step;
         const raw = finite(point[metric.key]) ? point[metric.key] * (metric.percent ? 100 : 1) : null;
         if (!finite(x) || x < 0 || raw === null || (metric.logLog && (raw <= 0 || x <= 0))) {
           previous = null;
@@ -334,7 +342,7 @@ function seriesFor(metric) {
       if (!values.some(point => finite(point.value))) continue;
       result.push({
         label: `${shortName(run)} · ${series.task} · ${series.phase === "eval" ? "validation" : "train"}`,
-        values, color: color(run.id), axis: state.kind === "sft" ? "Training samples seen" : run.axis,
+        values, color: color(run.id), axis: supervised(state.kind) ? "Training samples seen" : run.axis,
         dash: series.phase === "eval" ? [6, 4] : [],
       });
     }
@@ -362,7 +370,7 @@ class Chart {
     this.panel = text("section", "", "panel plot");
     this.canvas = document.createElement("canvas");
     this.canvas.setAttribute("role", "img");
-    this.canvas.setAttribute("aria-label", `${section.querySelector("h2").textContent}: ${metric.title} versus ${section.dataset.kind === "sft" ? "training samples seen" : "optimizer step"}${metric.logLog ? ", both axes logarithmic" : ""}`);
+    this.canvas.setAttribute("aria-label", `${section.querySelector("h2").textContent}: ${metric.title} versus ${supervised(section.dataset.kind) ? "training samples seen" : "optimizer step"}${metric.logLog ? ", both axes logarithmic" : ""}`);
     this.legend = text("div", "", "legend");
     const heading = text("h2", metric.title);
     this.panel.append(heading);
@@ -533,7 +541,7 @@ class Chart {
       if (!values.length) continue;
       const point = values.reduce((best, p) => Math.abs(this.x(p.x) - pixel) < Math.abs(this.x(best.x) - pixel) ? p : best);
       const value = this.metric.scientific ? point.raw.toExponential(2) : point.raw.toFixed(2);
-      const line = text("div", `${series.label} · ${state.kind === "sft" ? `${point.x} samples · ` : ""}step ${point.step}: ${value}${this.metric.unit === "%" ? "%" : ` ${this.metric.unit}`}`);
+      const line = text("div", `${series.label} · ${supervised(state.kind) ? `${point.x} samples · ` : ""}step ${point.step}: ${value}${this.metric.unit === "%" ? "%" : ` ${this.metric.unit}`}`);
       line.style.color = series.color;
       tooltip.append(line);
     }
@@ -546,7 +554,7 @@ class Chart {
 
 function drawCharts() { for (const chart of state.charts) chart.draw(); }
 function render() {
-  for (const kind of ["rl", "sft"]) {
+  for (const kind of runKinds) {
     $(`tab-${kind}`).setAttribute("aria-selected", `${state.kind === kind}`);
     $(`tab-${kind}`).tabIndex = state.kind === kind ? 0 : -1;
   }
@@ -597,16 +605,16 @@ async function refresh() {
       }
       state.initialized = true;
     }
-    if (!state.sftInitialized) {
-      const sftCatalog = state.catalog.filter(run => runKind(run) === "sft");
+    for (const kind of ["sft", "recognition"]) if (!state[`${kind}Initialized`]) {
+      const sftCatalog = state.catalog.filter(run => runKind(run) === kind);
       const existing = new Set(sftCatalog.map(run => run.id));
-      for (const id of selections.sft) if (!existing.has(id)) selections.sft.delete(id);
-      if (!selections.sft.size && savedSelections.sft?.length !== 0) {
+      for (const id of selections[kind]) if (!existing.has(id)) selections[kind].delete(id);
+      if (!selections[kind].size && savedSelections[kind]?.length !== 0) {
         const first = sftCatalog.find(run => !run.archived && run.active === true)
           || sftCatalog.find(run => !run.archived) || sftCatalog[0];
-        if (first) selections.sft.add(first.id);
+        if (first) selections[kind].add(first.id);
       }
-      state.sftInitialized = sftCatalog.length > 0;
+      state[`${kind}Initialized`] = sftCatalog.length > 0;
     }
     await loadDetails();
     const warnings = state.errors.length || chosen().some(run => run.error || run.activity_error);
@@ -632,12 +640,13 @@ async function switchTab(kind) {
   await loadDetails();
   render();
 }
-for (const kind of ["rl", "sft"]) {
+for (const kind of runKinds) {
   $(`tab-${kind}`).addEventListener("click", () => switchTab(kind));
   $(`tab-${kind}`).addEventListener("keydown", event => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const target = event.key === "Home" ? "rl" : event.key === "End" ? "sft" : kind === "rl" ? "sft" : "rl";
+    const target = event.key === "Home" ? runKinds[0] : event.key === "End" ? runKinds.at(-1) :
+      runKinds[(runKinds.indexOf(kind) + (event.key === "ArrowRight" ? 1 : runKinds.length - 1)) % runKinds.length];
     $(`tab-${target}`).focus();
     switchTab(target);
   });
@@ -665,6 +674,7 @@ $("pause").addEventListener("click", () => {
 for (const definition of [
   ...sections.map(section => ({...section, kind: "rl"})),
   ...sftSections.map(section => ({...section, kind: "sft"})),
+  ...recognitionSections.map(section => ({...section, kind: "recognition"})),
 ]) {
   const section = document.createElement("details");
   section.id = `section-${definition.id}`;

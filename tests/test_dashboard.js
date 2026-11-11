@@ -99,6 +99,20 @@ test("prefixed dashboard fetches catalog and run details without touching root A
   assert.ok(page.requests.every(route => route.startsWith("/lego-robot/api/")));
 });
 
+test("recognition runs use a separate tab and sample-matched loss series", async () => {
+  const recognition=run("recognition1","recognition",true);
+  recognition.latest_train.loss=2;
+  const page=await dashboard([run("action1","sft"),recognition]);
+  await page.elements.get("tab-recognition").events.click();
+  assert.equal(page.eval("chosen().map(r=>r.id).join(',')"),"recognition1");
+  assert.equal(page.elements.get("plots").children.find(section=>section.id==="section-recognition-loss").hidden,false);
+  assert.equal(page.elements.get("plots").children.find(section=>section.id==="section-sft-loss").hidden,true);
+  const values=page.eval('seriesFor({key:"loss",phase:"train",task:"all"})');
+  assert.equal(values.length,1);
+  assert.equal(values[0].values[0].x,1280);
+  assert.equal(values[0].values[0].value,2);
+});
+
 test("SFT plots align different batch sizes by logged samples, retaining optimizer steps in tooltips", async () => {
   const page = await dashboard([run("11111111", "sft"), run("22222222", "sft")]);
   await page.elements.get("tab-sft").events.click();

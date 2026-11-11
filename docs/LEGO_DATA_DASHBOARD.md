@@ -1,5 +1,13 @@
 # Workstream 2: Interactive catalog and curriculum dashboard
 
+## Recognition training
+
+The training observatory discovers nested `sft_training.json` logs recursively.
+Logs with kind `piece_recognition_sft` appear in a separate Recognition tab with
+independent selections and recognition loss versus samples seen. Frozen and
+fine-tuned runs retain their relative parent paths. Recognition losses are never
+combined with action SFT or RL; action-evaluation charts are not shown for them.
+
 ## Live data buckets (schema 1)
 
 Distance-assisted child pilots (`tags.task_assistance.kind:

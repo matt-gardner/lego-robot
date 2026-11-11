@@ -11,6 +11,24 @@ import so101.rl_dashboard as rl_dashboard
 from so101.rl_dashboard import RunStore, active_run_outputs, make_server, normalize_log
 
 
+def test_nested_recognition_log_is_not_action_sft_or_rl(tmp_path):
+    directory = tmp_path / "piece-recognition-v1/frozen/run"
+    directory.mkdir(parents=True)
+    (directory / "sft_training.json").write_text(json.dumps({
+        "kind": "piece_recognition_sft",
+        "run_config": {"objective": "recognition-only"},
+        "steps": [{"step": 1, "loss": 6.3, "samples_seen": 4, "learning_rate": 1e-5}],
+        "validation": [],
+    }))
+    store = RunStore(tmp_path)
+    identity, path = next(iter(store.discover().items()))
+    result = store.load(identity, path)
+    assert result["kind"] == "recognition"
+    assert result["latest_train"]["loss"] == 6.3
+    assert result["latest_train"]["samples_seen"] == 4
+    assert result["latest_eval"] is None
+
+
 def training_log(step=1):
     return {
         "algorithm": "trajectory group-relative flow matching",

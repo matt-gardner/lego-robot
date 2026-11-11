@@ -106,7 +106,8 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
     """Keep scalar plot data only; never ship per-frame or parameter data."""
     series: dict[tuple[str, str], list[dict]] = defaultdict(list)
     steps = data.get("steps", [])
-    sft = data.get("kind") == "sft"
+    recognition = data.get("kind") == "piece_recognition_sft"
+    sft = data.get("kind") == "sft" or recognition
     trajectory = not sft and "validation" in data
     axis = "Optimizer step"
     if sft:
@@ -239,7 +240,7 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
     training = series.get(("train", "all"), [])
     validation = series.get(("eval", "all"), [])
     return {
-        "kind": "sft" if sft else "rl",
+        "kind": "recognition" if recognition else "sft" if sft else "rl",
         "axis": axis,
         "series": normalized_series,
         "latest_train": training[-1] if training else None,
@@ -298,14 +299,14 @@ class RunStore:
                 return cached
             data = json.loads(path.read_text())
             if not isinstance(data, dict) or not (
-                data.get("kind") == "sft" or any(
+                data.get("kind") in ("sft", "piece_recognition_sft") or any(
                     key in data for key in ("validation", "rollouts", "episode_metrics")
                 )
             ):
                 raise ValueError("File does not contain a supported training log")
             jerk_references = None
             split_path = path.with_name("data_split.json")
-            if data.get("kind") != "sft" and "validation" in data and split_path.exists():
+            if data.get("kind") not in ("sft", "piece_recognition_sft") and "validation" in data and split_path.exists():
                 split_revision = f"{split_path.stat().st_mtime_ns}:{data.get('run_config', {}).get('horizon', 300)}"
                 entry = self.reference_cache.get(run_id)
                 if entry is None or entry[0] != split_revision:
