@@ -10,6 +10,7 @@ import pytest
 import torch
 
 from so101.lego_scene import capture_scene_state
+from so101.collect_pile_references import reference_candidates
 from so101.pile_task_runtime import GRADER_VERSION
 from so101.rl_pile_adapter import (
     NativePileSimulation, attach_native_references, load_native_pool, load_reference_rows,
@@ -19,6 +20,18 @@ from so101.simulation_corpus import CorpusEpisode, TASKS
 from so101.train_trajectory_rl import replay_gold_prefix, rollout
 from so101.train_trajectory_rl import refresh_difficulty_pools
 from so101.rl_difficulty import DifficultyController
+
+
+def test_reference_selection_balances_families_within_exact_piece_bucket():
+    def episode(name, family, pieces):
+        return SimpleNamespace(source=name, metadata={
+            "scene_family_id": family, "native_entry": {"tags": {"piece_count": pieces}},
+        })
+
+    rows = [episode("wrong-bucket", "a", 30), episode("a0", "a", 20),
+            episode("a1", "a", 20), episode("b0", "b", 20), episode("b1", "b", 20)]
+    assert [row.source for row in reference_candidates(rows, 3, 20)] == ["a0", "b0", "a1"]
+    assert reference_candidates(rows, 4, 3) == []
 
 
 def test_native_reference_overlay_binds_actions_scene_and_replay_evidence(tmp_path):

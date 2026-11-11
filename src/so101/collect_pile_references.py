@@ -42,9 +42,26 @@ class ReferenceSimulation(NativePileSimulation):
         self.reference_rows.append(row)
 
 
+def reference_candidates(rows, max_per_task, piece_count=None):
+    families = {}
+    for episode in rows:
+        if (piece_count is not None
+                and episode.metadata["native_entry"]["tags"]["piece_count"] != piece_count):
+            continue
+        families.setdefault(episode.metadata["scene_family_id"], []).append(episode)
+    return [episode for group in zip_longest(*families.values())
+            for episode in group if episode is not None][:max_per_task]
+
+
 def collect(args):
     if args.max_per_task < 1:
         raise ValueError("Reference collection requires a positive per-task attempt limit")
+    accepted_per_task = getattr(args, "accepted_per_task", None)
+    piece_count = getattr(args, "piece_count", None)
+    if accepted_per_task is not None and not 1 <= accepted_per_task <= args.max_per_task:
+        raise ValueError("Accepted reference target must be positive and within the attempt budget")
+    if piece_count is not None and piece_count < 1:
+        raise ValueError("Reference piece count must be positive")
     if args.output.exists():
         raise FileExistsError("Reference output exists; reconcile instead of overwriting")
     args.output.mkdir(parents=True)
@@ -61,12 +78,14 @@ def collect(args):
               "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "pool_sha256": hashlib.sha256(args.pool.read_bytes()).hexdigest(),
               "references": [], "attempts": [], "complete": False}
+    if accepted_per_task is not None or piece_count is not None:
+        report.update(accepted_per_task=accepted_per_task, piece_count=piece_count,
+                      max_attempts_per_task=args.max_per_task)
     for task, rows in episodes.items():
-        families = {}
-        for episode in rows:
-            families.setdefault(episode.metadata["scene_family_id"], []).append(episode)
-        selected = [episode for group in zip_longest(*families.values())
-                    for episode in group if episode is not None][:args.max_per_task]
+        selected = reference_candidates(rows, args.max_per_task, piece_count)
+        if not selected:
+            raise ValueError(f"No {task} reference candidates for piece count {piece_count}")
+        accepted_count = 0
         for episode in selected:
             sim = ReferenceSimulation(episode, args.model_root, backend="mujoco")
             try:
@@ -103,6 +122,7 @@ def collect(args):
                            "maximum_qpos_error": maximum_error, "accepted": accepted}
                 report["attempts"].append(attempt)
                 if accepted:
+                    accepted_count += 1
                     identity = hashlib.sha256(str(episode.source).encode()).hexdigest()
                     frames = args.output / f"{identity}.json"
                     atomic_json(frames, actions)
@@ -115,6 +135,8 @@ def collect(args):
                 print(json.dumps({"event": "pile_reference_attempt", **attempt}), flush=True)
             finally:
                 sim.close()
+            if accepted_per_task is not None and accepted_count >= accepted_per_task:
+                break
     report["complete"] = True
     atomic_json(args.output / "manifest.json", report)
 
@@ -127,6 +149,10 @@ def main():
     parser.add_argument("--model-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-per-task", type=int, default=20)
+    parser.add_argument("--accepted-per-task", type=int,
+                        help="Stop each task after this many native-replay-qualified references")
+    parser.add_argument("--piece-count", type=int,
+                        help="Restrict reference attempts to one exact piece-count bucket")
     collect(parser.parse_args())
 
 

@@ -1053,6 +1053,10 @@ currently execute serially across the four problems.
 Generate reference overlays with `python -m so101.collect_pile_references
 --pool <immutable-pool.json> --model-root <model> --output <fresh-directory>`.
 Attempts are balanced across scene families and default to 20 per task type.
+Use `--piece-count <count> --accepted-per-task 4` to collect up to four qualified
+references per task within one bucket, stopping early at that target while keeping
+the `--max-per-task` attempt ceiling. Fewer accepted references remain explicitly
+unqualified for a four-problem assistance screen.
 The collector executes numeric policy actions, restores the exact integration
 state, replays every action, and admits a reference only when the native dwell
 grader succeeds at the end and maximum replay qpos error is at most 1e-7.
