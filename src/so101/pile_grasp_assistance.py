@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import errno
 import hashlib
 import json
 import logging
@@ -321,7 +322,13 @@ def generate(entry: dict, output: Path, *, parents: int = 1,
         staging = Path(directory) / "scene"
         staging.mkdir()
         for name in ("model.xml", "model.mjb"):
-            shutil.copyfile(source / name, staging / name)
+            try:
+                os.link(source / name, staging / name)
+            except OSError as error:
+                if error.errno != errno.EXDEV:
+                    raise
+                LOGGER.info("Cross-filesystem model publication; copying %s", name)
+                shutil.copyfile(source / name, staging / name)
         for name in ("scene_plan.json", "integration_state.json"):
             atomic_json(staging / name, {**json.loads((source / name).read_text()), "scene_id": scene_id})
         atomic_json(staging / "problem.json", published)
