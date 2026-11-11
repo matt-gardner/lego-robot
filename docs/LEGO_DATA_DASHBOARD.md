@@ -9,6 +9,8 @@ parent tasks, child starts, active/remaining stages, within-stage metric/value/
 units, measured child success counts and horizon. Numeric expert-prefix
 assistance zero does not mean an original unassisted physical start. Pilot
 groups never enter original bucket charts.
+An explicit `provenance.supersedes_native_pool_sha256` hides the overlapping
+predecessor pilot from the current view without deleting its historical files.
 
 The read-only `/buckets` page reads `--bucket-dashboard-root`, defaulting to
 `data/bucket_dashboard` beside the configured outputs root. Shared data uses

@@ -374,3 +374,23 @@ def test_distance_pilot_reports_parents_and_stages_without_baseline_merge(tmp_pa
     assert pilot["child_count"] == 1
     assert pilot["problems"][0]["tags"]["task_assistance"]["distance"]["active_stage"] == "release"
     assert pilot["groups"][0]["assistance"] == 0
+    manifest["snapshot_id"] = "successor"
+    manifest["provenance"] = {"native_pool_sha256": "new", "supersedes_native_pool_sha256": "old"}
+    successor = tmp_path / "successor"
+    publish(successor, manifest)
+    successor_pointer = json.loads((successor / "current.json").read_bytes())
+    successor_pointer["path"] = "successor/" + successor_pointer["path"]
+    new_channel = tmp_path / "publications" / "successor"
+    new_channel.mkdir()
+    new_pin = new_channel / "current.json"
+    new_pin.write_text(json.dumps(successor_pointer))
+    old = json.loads((root / "snapshots/one/manifest.json").read_bytes())
+    old["provenance"] = {"native_pool_sha256": "old"}
+    body = json.dumps(old).encode()
+    (root / "snapshots/one/manifest.json").write_bytes(body)
+    pointer["sha256"] = hashlib.sha256(body).hexdigest()
+    pin.write_text(json.dumps(pointer))
+    retained = browser.distance_pilots([pin, new_pin])
+    assert len(retained) == 1
+    assert retained[0]["manifest"]["snapshot_id"] == "successor"
+    assert (root / "snapshots/one/manifest.json").exists()

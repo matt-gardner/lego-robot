@@ -170,7 +170,11 @@ class BucketDashboard:
                 raise ValueError("Distance pilot measurement crosses child population")
             pilots.append({"manifest": manifest, "problems": assisted, "groups": groups,
                            "parent_count": len(parents), "child_count": len(assisted)})
-        return pilots
+        superseded = {p["manifest"].get("provenance", {}).get("supersedes_native_pool_sha256")
+                      for p in pilots}
+        return [p for p in pilots
+                if p["manifest"].get("provenance", {}).get("native_pool_sha256") not in
+                (superseded - {None})]
 
     def admitted_piles(self) -> list:
         pins = sorted(self.root.glob("pile-previews-v1/*/admission.json"))
