@@ -1041,6 +1041,11 @@ plan, stopping after mixed outcomes or four passes without assistance. Unmeasure
 remain explicitly unmeasured, and all-pass problems are marked too easy, not
 qualified training targets. Shared counts distinguish four-trial screens from
 eight-trial mixed-outcome estimates.
+Use a stable `--measurement-series-id` and descriptive `--measurement-series-label`
+when publishing another calibration against the same pool. The publisher retains
+previous measurements as separate series, replaces only the named series as it
+progresses, and rejects updates that discard existing samples. Top-level groups
+remain one explicitly selected series so incompatible protocols are never pooled.
 
 For bucket-level calibration, add `--bucket-screening --binary-search` and give
 exactly four distinct problems per `bucket_id` in the plan. Each level runs one

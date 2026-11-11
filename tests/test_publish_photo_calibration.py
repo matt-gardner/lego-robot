@@ -119,6 +119,51 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
     assert (output / "current.json").read_bytes() == previous_pointer
 
 
+def test_new_measurement_series_retains_prior_counts_without_pooling_or_duplicate_updates(tmp_path):
+    pool, reference, output, data, _ = inputs(tmp_path)
+    measurements = tmp_path / "measurements.json"
+    row = {
+        "task": "grasp", "source": data["attempts"][0]["source"], "policy_step": 0,
+        "assistance": .95, "success_interval_95": [0., .5],
+        "rollouts": [{"success": False, "invalid_action_error": None, "seed": index}
+                     for index in range(16)],
+    }
+    value = {"input_sha256": {"native_pool": data["pool_sha256"], "plan": "old"},
+             "optimizer": None, "policy_sha256_before": "initial", "repeats": 16,
+             "groups": [row], "complete": True}
+    measurements.write_text(json.dumps(value))
+    publish(pool, reference, output, measurements)
+    row["rollouts"] = [{"success": True, "invalid_action_error": None, "seed": 100}]
+    value.update(repeats=4, complete=False, bucket_screening=True, problems_per_bucket=4)
+    value["input_sha256"]["plan"] = "new"
+    measurements.write_text(json.dumps(value))
+    publish(pool, reference, output, measurements, measurement_series_id="new",
+            measurement_series_label="Four distinct problems")
+    snapshot = BucketDashboard(output).snapshot()
+    manifest = snapshot["manifest"]
+    prior, current = manifest["measurement_series"]
+    assert prior["groups"][0]["attempts"] == 16 and current["groups"][0]["attempts"] == 1
+    assert prior["protocol"]["repeats"] == 16
+    assert current["protocol"]["bucket_screening"] is True
+    assert current["protocol"]["problems_per_bucket"] == 4
+    assert snapshot["calibration"]["groups"] == prior["groups"]
+    assert manifest["current_measurement_series_id"] == prior["series_id"]
+    assert manifest["latest_measurement_series_id"] == "new"
+    publish(pool, reference, output, measurements, measurement_series_id="new")
+    repeated = BucketDashboard(output).snapshot()["manifest"]
+    assert len(repeated["measurement_series"]) == 2
+    assert sum(group["attempts"] for series in repeated["measurement_series"]
+               for group in series["groups"]) == 17
+    pointer = (output / "current.json").read_bytes()
+    row["rollouts"] = []
+    measurements.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="discards or changes"):
+        publish(pool, reference, output, measurements, measurement_series_id="new")
+    assert (output / "current.json").read_bytes() == pointer
+    with pytest.raises(ValueError, match="explicit series"):
+        publish(pool, reference, output, measurements)
+
+
 def test_channels_keep_native_inventory_images_and_scoped_history_without_legacy(tmp_path):
     pool, reference, output, _, _ = inputs(tmp_path)
     original_directory = tmp_path / "historical"

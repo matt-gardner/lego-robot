@@ -98,6 +98,82 @@ def publish_manifest(manifest: dict, directory: Path, output: Path, publication_
     return pointer
 
 
+def previous_manifest(output: Path, publication_id: str | None) -> dict | None:
+    pointer_path = publication_pointer(output, publication_id)
+    if not pointer_path.exists():
+        return None
+    pointer = json.loads(pointer_path.read_text())
+    relative = Path(pointer["path"])
+    path = (output / relative).resolve()
+    if relative.is_absolute() or not path.is_relative_to(output.resolve()):
+        raise ValueError("Previous publication escapes its output directory")
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != pointer["sha256"]:
+        raise ValueError("Previous publication differs from its pinned hash")
+    return json.loads(content)
+
+
+def retain_measurement_series(manifest: dict, previous: dict | None,
+                              series_id: str, label: str) -> None:
+    if not series_id or not label:
+        raise ValueError("Measurement series requires a nonempty identity and label")
+    pool_sha = manifest["provenance"]["native_pool_sha256"]
+    fields = ("protocol", "groups", "progress", "complete", "measurement_scopes")
+    series = []
+    selected = None
+    if previous is not None:
+        if previous["provenance"]["native_pool_sha256"] != pool_sha:
+            raise ValueError("Measurement history crosses immutable task pools")
+        series = list(previous.get("measurement_series", []))
+        selected = previous.get("current_measurement_series_id")
+        if not series and previous["groups"]:
+            identity = "legacy-" + previous["protocol"].get(
+                "measurement_results_sha256", previous["snapshot_id"],
+            )
+            count = sum(row["attempts"] for row in previous["groups"])
+            series.append({
+                "series_id": identity, "label": f"Previous calibration ({count} rollouts)",
+                **{field: previous[field] for field in fields},
+                "provenance": {**previous["provenance"], "snapshot_id": previous["snapshot_id"]},
+            })
+            selected = identity
+    if len({item["series_id"] for item in series}) != len(series):
+        raise ValueError("Duplicate measurement series identities")
+    incoming = {
+        "series_id": series_id, "label": label,
+        **{field: manifest[field] for field in fields},
+        "provenance": dict(manifest["provenance"]),
+    }
+    original = next((item for item in series if item["series_id"] == series_id), None)
+    if original is not None:
+        if original["protocol"].get("measurement_input_sha256") is not None and (
+                original["protocol"]["measurement_input_sha256"]
+                != incoming["protocol"].get("measurement_input_sha256")):
+            raise ValueError("Measurement series identity was reused for different inputs")
+        by_group = {(row["problem_id"], row["assistance"], row["policy_step"]): row
+                    for row in incoming["groups"]}
+        for row in original["groups"]:
+            current = by_group.get((row["problem_id"], row["assistance"], row["policy_step"]))
+            if (current is None or not set(row["seeds"]).issubset(current["seeds"])
+                    or current["successes"] < row["successes"]
+                    or current["attempts"] - current["successes"] < row["attempts"] - row["successes"]):
+                raise ValueError("Measurement series update discards or changes retained rollouts")
+    series = [incoming if item["series_id"] == series_id else item for item in series]
+    if original is None:
+        series.append(incoming)
+    selected = selected or series_id
+    active = next((item for item in series if item["series_id"] == selected), None)
+    if active is None:
+        raise ValueError("Selected measurement series is missing")
+    manifest.update({field: active[field] for field in fields})
+    manifest.update(measurement_series=series, current_measurement_series_id=selected,
+                    latest_measurement_series_id=series_id)
+    if not manifest["groups"]:
+        manifest["measurement_status"] = "unmeasured"
+    else:
+        manifest["measurement_status"] = "calibrating"
+
+
 def publish_native_channel(original: dict, source: Path, source_bytes: bytes,
                            implementation: bytes, output: Path) -> dict:
     identity = "native-" + original["provenance"]["native_pool_sha256"]
@@ -119,8 +195,12 @@ def publish_native_channel(original: dict, source: Path, source_bytes: bytes,
 def publish(pool_path: Path, references_path: Path, output: Path,
             measurements_path: Path | None = None, images_paths: list[Path] | None = None,
             native_snapshot_path: Path | None = None, native_snapshot_sha256: str | None = None,
-            publication_id: str | None = None):
+            publication_id: str | None = None, measurement_series_id: str | None = None,
+            measurement_series_label: str | None = None):
     publication_pointer(output, publication_id)
+    previous = previous_manifest(output, publication_id)
+    if previous is not None and previous.get("measurement_series") and measurement_series_id is None:
+        raise ValueError("Retained measurement history requires an explicit series identity for updates")
     pool_bytes, reference_bytes = pool_path.read_bytes(), references_path.read_bytes()
     pool, references = json.loads(pool_bytes), json.loads(reference_bytes)
     pool_sha = hashlib.sha256(pool_bytes).hexdigest()
@@ -207,8 +287,12 @@ def publish(pool_path: Path, references_path: Path, output: Path,
             problem = by_source[row["source"]]
             observations = row["rollouts"]
             successes = sum(item["success"] for item in observations)
-            if not observations or row["task"] != problem["task"] or row["policy_step"] != 0:
+            if row["task"] != problem["task"] or row["policy_step"] != 0:
                 raise ValueError("Policy group is empty or changes the bound task")
+            if not observations:
+                if measurements["complete"]:
+                    raise ValueError("Complete policy group is empty")
+                continue
             problem["measurement_status"] = "calibrating"
             groups.append({
                 "problem_id": problem["id"], "assistance": row["assistance"],
@@ -242,12 +326,6 @@ def publish(pool_path: Path, references_path: Path, output: Path,
         implementation + dataset_id.encode() + pool_bytes + reference_bytes + measurement_bytes + image_digest.digest(),
     ).hexdigest()
     directory = output / "snapshots" / snapshot_id
-    for problem, receipt, image in images:
-        problem["initial_images"].append({
-            **receipt, "path": copy_image(image, directory, receipt["sha256"]), "renderer": receipt["backend"],
-            "provenance": receipt,
-        })
-        problem["initial_images_status"] = "published"
     manifest = {
         "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": snapshot_id,
         "dataset_id": dataset_id,
@@ -265,6 +343,11 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                      "measurement_scope": measurements.get("measurement_scope")
                      if measurements is not None else None,
                      "search_strategy": measurements.get("search_strategy")
+                     if measurements is not None else None,
+                     "bucket_screening": measurements.get("bucket_screening", False)
+                     if measurements is not None else False,
+                     "repeats": measurements.get("repeats") if measurements is not None else None,
+                     "problems_per_bucket": measurements.get("problems_per_bucket")
                      if measurements is not None else None,
                      "assistance_decisions": measurements.get("assistance_decisions", {})
                      if measurements is not None else {},
@@ -293,6 +376,25 @@ def publish(pool_path: Path, references_path: Path, output: Path,
             "policy_rollouts": progress["policy_rollouts"],
         },
     }
+    if measurement_series_id is not None:
+        retain_measurement_series(
+            manifest, previous, measurement_series_id,
+            measurement_series_label or measurement_series_id,
+        )
+        snapshot_id = hashlib.sha256(
+            snapshot_id.encode() + json.dumps({
+                key: manifest[key] for key in ("measurement_series", "current_measurement_series_id",
+                                               "latest_measurement_series_id")
+            }, sort_keys=True).encode(),
+        ).hexdigest()
+        manifest["snapshot_id"] = snapshot_id
+        directory = output / "snapshots" / snapshot_id
+    for problem, receipt, image in images:
+        problem["initial_images"].append({
+            **receipt, "path": copy_image(image, directory, receipt["sha256"]), "renderer": receipt["backend"],
+            "provenance": receipt,
+        })
+        problem["initial_images_status"] = "published"
     if native_snapshot_path is not None:
         if publication_id is None:
             raise ValueError("Native inventory bootstrap requires an independent photo publication identity")
@@ -302,7 +404,7 @@ def publish(pool_path: Path, references_path: Path, output: Path,
     return {**pointer, "problems": len(problems), "initial_images": len(all_images),
             "problems_with_images": sum(bool(problem["initial_images"]) for problem in problems),
             "cameras": dict(Counter(image["camera"] for image in all_images)),
-            "tasks": dict(Counter(problem["task"] for problem in problems)), "progress": progress}
+            "tasks": dict(Counter(problem["task"] for problem in problems)), "progress": manifest["progress"]}
 
 
 def main():
@@ -314,9 +416,12 @@ def main():
     parser.add_argument("--native-snapshot", type=Path)
     parser.add_argument("--native-snapshot-sha256")
     parser.add_argument("--publication-id")
+    parser.add_argument("--measurement-series-id")
+    parser.add_argument("--measurement-series-label")
     args = parser.parse_args()
     print(json.dumps(publish(args.pool, args.references, args.output, args.measurements, args.images,
-                             args.native_snapshot, args.native_snapshot_sha256, args.publication_id)))
+                             args.native_snapshot, args.native_snapshot_sha256, args.publication_id,
+                             args.measurement_series_id, args.measurement_series_label)))
 
 
 if __name__ == "__main__":
