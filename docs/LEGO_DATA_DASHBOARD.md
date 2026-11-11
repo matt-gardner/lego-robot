@@ -6,7 +6,13 @@ The read-only `/buckets` page reads `--bucket-dashboard-root`, defaulting to
 `data/bucket_dashboard` beside the configured outputs root. Shared data uses
 `outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/bucket_dashboard`
 in the shared data workspace (writable by the producer without permissions changes).
-The dashboard composes ordinary producer files on every API/image read.
+The running dashboard precomputes its inventory, serialized API response and
+problem/image lookup in one background cache worker at startup and every
+20 seconds. HTTP requests reuse that snapshot; individual image requests do not
+rebuild or rescan the inventory. Original image bytes remain hash-checked.
+Cache refresh errors are logged and surfaced explicitly, not hidden as fresh
+data. The browser builds task modal contents only when a pile is opened.
+The dashboard composes ordinary producer files during these background refreshes.
 No renderer or generator session needs to run a dashboard publisher.
 The renderer writes atomic completed per-task receipts and assets under
 `initial-photo-external-v<N>/<pool SHA>/`; higher positive numeric versions take

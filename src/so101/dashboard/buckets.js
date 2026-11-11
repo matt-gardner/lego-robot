@@ -216,7 +216,11 @@ async function start() {
       Object.values(data.manifest.measurement_scopes).map(s=>`${s.label}: ${s.policy_rollouts} policy rollouts (${s.status})`).join(". ");
     document.getElementById("provenance").textContent=JSON.stringify({manifest:data.manifest,protocol:data.calibration.protocol},null,2);
     const sourcePath=s=>typeof s==="object" ? s?.path : s;
-    const groupFor=p=>groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index);
+    const measuredGroups=new Map();
+    const groupFor=p=>{
+      if(!measuredGroups.has(p.id)) measuredGroups.set(p.id,groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index));
+      return measuredGroups.get(p.id);
+    };
     const bucketIds=[...new Set([...buckets.map(b=>b.id),...problems.map(p=>p.bucket)])].sort();
     const overview=node("table"), heading=node("tr");
     for (const label of ["Bucket", "Problems", "Success vs assistance", "Measured coverage by task", "Initial images"]) heading.append(node("th",label));
@@ -325,11 +329,16 @@ async function start() {
           controls.append(previous,position,next);
           taskContent.append(stage,controls,strip);
           summary.addEventListener("click",()=>{
+            buildTasks();
             const dialog=document.getElementById("pile-dialog");
             document.getElementById("pile-title").textContent=`${label} · Pile ${pileIndex+1} · ${pile.tasks.length} tasks`;
             document.getElementById("pile-tasks").replaceChildren(taskContent);
             dialog.showModal();
           });
+          let built=false;
+          function buildTasks() {
+          if(built)return;
+          built=true;
           for (const p of pile.tasks) {
         const card=node("article",undefined,"problem");
         const target=(p.tags?.target_instance_id || p.source?.task_id || "").match(/(?:object|brick)_(\d+)/);
@@ -360,6 +369,7 @@ async function start() {
           }
           const restored=pile.tasks.findIndex(p=>p.id===preferences[`selected-task:${group.bucket}:${pile.id}`]);
           selectTask(restored<0 ? 0 : restored);
+          }
         }
         remaining=Math.max(0,remaining-group.piles.length);
       }

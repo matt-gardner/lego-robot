@@ -468,7 +468,8 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                 notice: str = "", lego_catalog_root: Path | None = None,
                 lego_episode_root: Path | None = None,
                 bucket_dashboard_root: Path | None = None,
-                bucket_curriculum_root: Path | None = None) -> ThreadingHTTPServer:
+                bucket_curriculum_root: Path | None = None,
+                cache_buckets: bool = False) -> ThreadingHTTPServer:
     base_path = base_path.rstrip("/")
     if not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*", base_path):
         raise ValueError("Base path must contain only slash-separated letters, digits, _ or -")
@@ -518,7 +519,7 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                         )
                         self.send_body(200, body, content_type)
                     else:
-                        self.respond(200, buckets.snapshot())
+                        self.send_body(200, buckets.response(), "application/json")
                 except FileNotFoundError:
                     self.respond(404, {"error": "Bucket snapshot or initial image has not been published"})
                 except (ValueError, KeyError, TypeError, IndexError) as error:
@@ -670,7 +671,15 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
         def log_message(self, format: str, *args: Any) -> None:
             LOGGER.debug(format, *args)
 
-    return ThreadingHTTPServer((host, port), Handler)
+    class DashboardServer(ThreadingHTTPServer):
+        def server_close(self):
+            super().server_close()
+            buckets.stop_cache()
+
+    server = DashboardServer((host, port), Handler)
+    if cache_buckets:
+        buckets.start_cache()
+    return server
 
 
 def main() -> None:
@@ -695,7 +704,7 @@ def main() -> None:
     try:
         server = make_server(args.root, args.host, args.port, args.base_path, args.notice,
                              args.lego_catalog_root, args.lego_episode_root, args.bucket_dashboard_root,
-                             args.bucket_curriculum_root)
+                             args.bucket_curriculum_root, cache_buckets=True)
     except ValueError as error:
         parser.error(str(error))
     print(f"RL dashboard: http://{args.host}:{server.server_port}{args.base_path.rstrip('/')}/",

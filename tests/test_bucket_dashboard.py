@@ -305,3 +305,26 @@ def test_admitted_pile_is_separate_from_task_inventory(tmp_path):
     assert browser.image(pile["id"], 0, pile["dataset_snapshot_id"]) == (image, "image/png")
     assert snapshot["manifest"]["snapshot_id"] != first["manifest"]["snapshot_id"]
     assert snapshot["calibration"]["groups"] == []
+
+
+def test_cached_response_and_images_do_not_rebuild_inventory(tmp_path, monkeypatch):
+    image = b"\x89PNG\r\n\x1a\ncached"
+    directory = publish(tmp_path, {
+        "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "cached",
+        "problems": [{"id": "p", "initial_images": [
+            {"path": "image.png", "sha256": hashlib.sha256(image).hexdigest()}]}],
+        "groups": [],
+    })
+    (directory / "image.png").write_bytes(image)
+    browser = BucketDashboard(tmp_path)
+    browser.start_cache(interval=3600)
+    try:
+        body = browser.response()
+        def unexpected():
+            raise AssertionError("request recomputed inventory")
+        monkeypatch.setattr(browser, "snapshot", unexpected)
+        assert browser.response() is body
+        assert browser.image("p", 0, "cached") == (image, "image/png")
+        assert browser.image("p", 0, "cached") == (image, "image/png")
+    finally:
+        browser.stop_cache()

@@ -1,7 +1,11 @@
 """Read-only, hash-pinned learning bucket publications."""
 import hashlib
 import json
+import logging
 from pathlib import Path
+import threading
+
+LOGGER = logging.getLogger(__name__)
 
 def validate_annotation(row, width, height):
     status, box, pixels = (row[key] for key in
@@ -24,6 +28,51 @@ class BucketDashboard:
     def __init__(self, root: Path, curriculum_root: Path | None = None):
         self.root = root.resolve()
         self.curriculum_root = curriculum_root.resolve() if curriculum_root else None
+        self._cache = None
+        self._cache_error = None
+        self._cache_lock = threading.Lock()
+        self._cache_ready = threading.Event()
+        self._cache_stop = threading.Event()
+        self._cache_thread = None
+
+    def start_cache(self, interval: float = 20) -> None:
+        def refresh():
+            while not self._cache_stop.is_set():
+                self.refresh_cache()
+                self._cache_stop.wait(interval)
+        self._cache_thread = threading.Thread(target=refresh, name="bucket-dashboard-cache", daemon=True)
+        self._cache_thread.start()
+
+    def stop_cache(self) -> None:
+        self._cache_stop.set()
+        if self._cache_thread:
+            self._cache_thread.join()
+
+    def refresh_cache(self) -> None:
+        try:
+            snapshot = self.snapshot()
+            body = json.dumps(snapshot).encode()
+            index = {p["id"]: p for p in [
+                *snapshot["problems"]["problems"], *snapshot.get("admitted_piles", [])]}
+            with self._cache_lock:
+                self._cache = (snapshot, body, index)
+                self._cache_error = None
+        except (OSError, ValueError, KeyError, TypeError, IndexError) as error:
+            LOGGER.exception("Cannot refresh bucket dashboard cache")
+            with self._cache_lock:
+                self._cache_error = error
+        finally:
+            self._cache_ready.set()
+
+    def cached(self):
+        self._cache_ready.wait()
+        with self._cache_lock:
+            if self._cache_error is not None:
+                raise self._cache_error
+            return self._cache
+
+    def response(self) -> bytes:
+        return self.cached()[1] if self._cache_thread else json.dumps(self.snapshot()).encode()
 
     def read(self, relative: str, expected: str | None = None, limit: int = 32 * 1024 * 1024) -> bytes:
         path = (self.root / relative).resolve()
@@ -363,9 +412,13 @@ class BucketDashboard:
             manifest["live_images"] = {"corrected_tasks": len(paths), "receipts_sha256": digest.hexdigest()}
 
     def image(self, problem_id: str, index: int, snapshot_id: str | None = None) -> tuple[bytes, str]:
-        snapshot = self.snapshot()
-        problems = [row for row in [*snapshot["problems"]["problems"], *snapshot.get("admitted_piles", [])]
-                    if row["id"] == problem_id]
+        if self._cache_thread:
+            snapshot, _, identities = self.cached()
+            problems = [identities[problem_id]] if problem_id in identities else []
+        else:
+            snapshot = self.snapshot()
+            problems = [row for row in [*snapshot["problems"]["problems"], *snapshot.get("admitted_piles", [])]
+                        if row["id"] == problem_id]
         if len(problems) != 1 or index < 0:
             raise ValueError("Unknown bucket problem/image")
         revision = problems[0].get("dataset_snapshot_id", snapshot["manifest"].get("snapshot_id"))
