@@ -273,7 +273,10 @@ def test_prefixed_http_page_missing_publication_and_exact_image(tmp_path):
         server.server_close()
 
 
-def test_admitted_tasks_are_available_before_pool_or_preview_completion(tmp_path):
+@pytest.mark.parametrize("workstream", [
+    "photo-task-progression-collective-v1", "catalog-diverse-20-v1", "catalog-diverse-larger-v1",
+])
+def test_admitted_tasks_are_available_before_pool_or_preview_completion(tmp_path, workstream):
     curriculum = tmp_path / "curriculum"
     curriculum.mkdir()
     scene = {"scene_id": "new-scene", "tags": {"piece_count": 40}, "tasks": [
@@ -302,7 +305,7 @@ def test_admitted_tasks_are_available_before_pool_or_preview_completion(tmp_path
     assert first["problems"]["problems"][0]["bucket"] == "current:40-pieces"
     assert first["problems"]["problems"][0]["initial_images"] == []
     assert first["admitted_piles"] == []
-    generated = curriculum / "photo-task-progression-collective-v1/pieces-40/tasks/scene_000/admission.json"
+    generated = curriculum / workstream / "pieces-40/tasks/scene_000/admission.json"
     generated.parent.mkdir(parents=True)
     generated.write_bytes(admission_bytes)
     (directory / "admission.json").unlink()

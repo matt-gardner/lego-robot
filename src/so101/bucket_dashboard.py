@@ -180,7 +180,8 @@ class BucketDashboard:
         pins = sorted(self.root.glob("pile-previews-v1/*/admission.json"))
         sources = {pin.parent.name: (pin, False) for pin in pins}
         if self.curriculum_root:
-            for workstream in ("photo-task-progression-collective-v1", "catalog-diverse-20-v1"):
+            for workstream in ("photo-task-progression-collective-v1", "catalog-diverse-20-v1",
+                               "catalog-diverse-larger-v1"):
                 for pin in sorted((self.curriculum_root / workstream).glob(
                         "pieces-*/tasks/scene_*/admission.json")):
                     body = self.curriculum_read(pin)

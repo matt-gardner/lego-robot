@@ -65,7 +65,8 @@ to each group for provenance. All groups are validated against selected sources.
 Tasks are read immediately from each admitted pile's hash-pinned `problem.json`,
 without waiting for a complete pool or rendered preview. Active generator
 admissions under `photo-task-progression-collective-v1` and
-`catalog-diverse-20-v1` are discovered independently of renderer progress.
+`catalog-diverse-20-v1` and `catalog-diverse-larger-v1` are discovered
+independently of renderer progress.
 Canonical task IDs deduplicate selected-pool tasks. All admitted tasks appear
 in their piece-count bucket and carousel; matching images attach only to their
 exact task. Missing images and unmeasured policy rates remain separate states.
