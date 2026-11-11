@@ -1032,6 +1032,8 @@ measurements per problem. Failure at the measured ceiling is reported as an
 unresolved assistance bracket, never task infeasibility. `--resume` retains
 completed and partial samples only when the initial policy, input hashes,
 horizon, repeat count, batch size and paired seeds match.
+Shared calibration publications retain the search strategy and per-problem
+assistance decisions alongside the measured rollout counts.
 `--calibrate-assistance` stops additional levels for a problem after 16 or more
 repeats show 25--75% success, or all pass without assistance. Unmeasured levels
 remain explicitly unmeasured, and all-pass problems are marked too easy, not

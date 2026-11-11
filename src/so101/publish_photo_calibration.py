@@ -264,6 +264,10 @@ def publish(pool_path: Path, references_path: Path, output: Path,
                      "horizon": measurements.get("horizon") if measurements is not None else None,
                      "measurement_scope": measurements.get("measurement_scope")
                      if measurements is not None else None,
+                     "search_strategy": measurements.get("search_strategy")
+                     if measurements is not None else None,
+                     "assistance_decisions": measurements.get("assistance_decisions", {})
+                     if measurements is not None else {},
                      "measurement_results_sha256": hashlib.sha256(measurement_bytes).hexdigest()
                      if measurements is not None else None,
                      "measurement_input_sha256": measurements["input_sha256"]

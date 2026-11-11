@@ -92,6 +92,8 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
     value = {"input_sha256": {"native_pool": data["pool_sha256"]}, "optimizer": None,
              "policy_sha256_before": "initial-policy", "repeats": 16,
              "horizon": 50, "measurement_scope": "short-horizon-screening",
+             "search_strategy": "binary-search",
+             "assistance_decisions": {row["source"]: {"status": "mixed", "assistance": .5}},
              "groups": [row], "complete": False}
     measurements.write_text(json.dumps(value))
     publish(pool, reference, output, measurements)
@@ -101,6 +103,8 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
     assert group["planned_attempts"] == 16
     assert snapshot["calibration"]["protocol"]["horizon"] == 50
     assert snapshot["calibration"]["protocol"]["measurement_scope"] == "short-horizon-screening"
+    assert snapshot["calibration"]["protocol"]["search_strategy"] == "binary-search"
+    assert snapshot["calibration"]["protocol"]["assistance_decisions"] == value["assistance_decisions"]
     assert snapshot["manifest"]["progress"]["policy_rollouts"] == 4
     assert snapshot["manifest"]["progress"]["reference_attempts"] == 1
     previous_pointer = (output / "current.json").read_bytes()
