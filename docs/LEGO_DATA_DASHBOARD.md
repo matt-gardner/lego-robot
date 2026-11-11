@@ -36,7 +36,10 @@ measured problem's task, canonical source and scene hash. The shared protocol,
 progress and groups are preserved; unmeasured pools remain unmeasured. Rates
 describe only the sampled problems, not the entire enumerated pool.
 
-Independent newly admitted piles appear separately from complete task pools.
+Independent newly admitted piles appear in their piece-count bucket alongside
+complete-pool piles, including a table row and filter option for admission-only
+buckets. Their cards and table coverage explicitly label task-pool readiness
+as pending, separately from image availability and unmeasured policy rates.
 The reader discovers `pile-previews-v1/<admission SHA>/admission.json`, validates
 the pin and scene problem hash, and shows an explicit pending state until an
 atomic task receipt and original PNG arrive in that directory. Receipt pool SHA

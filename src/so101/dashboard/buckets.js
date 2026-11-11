@@ -180,11 +180,9 @@ async function start() {
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     const problems=data.problems.problems.filter(p=>p.source?.kind!=="legacy");
     const groups=data.calibration.groups;
-    const admissions=document.getElementById("admitted-piles");
-    if(data.admitted_piles?.length) {
-      admissions.append(node("h2","Newly admitted piles · not complete task pools"));
-      const grid=node("div",undefined,"pile-grid");admissions.append(grid);
-      for(const pile of data.admitted_piles) {
+    const admitted=data.admitted_piles || [];
+    const admissionBucket=p=>`current:${p.tags.piece_count}-pieces`;
+    function admissionCard(pile) {
         const card=node("article",undefined,"pile-group");
         card.append(node("h3",`${pile.tags.piece_count} pieces · admitted pile`));
         if(pile.initial_images.length) {
@@ -194,9 +192,8 @@ async function start() {
           image.addEventListener("error",()=>image.replaceWith(node("p","Pile preview unavailable / failed integrity check","missing")));
           card.append(image);
         } else card.append(node("p","Pile preview not rendered yet","missing"));
-        card.append(node("p","Admission only · no task completion or policy success claimed."));
-        grid.append(card);
-      }
+        card.append(node("p","Admitted pile · task pool pending · policy rates unmeasured."));
+        return card;
     }
     const buckets=(data.problems.buckets || []).filter(b=>!b.id.startsWith("corpus:"));
     const pilot=data.calibration.qualification_status !== "qualified";
@@ -223,7 +220,7 @@ async function start() {
       if(!measuredGroups.has(p.id)) measuredGroups.set(p.id,groups.filter(g=>g.problem_id ? g.problem_id===p.id : (g.bucket_id ?? g.bucket)===p.bucket && g.task===p.task && sourcePath(g.source)===sourcePath(p.source) && g.problem_index===p.problem_index));
       return measuredGroups.get(p.id);
     };
-    const bucketIds=[...new Set([...buckets.map(b=>b.id),...problems.map(p=>p.bucket)])].sort();
+    const bucketIds=[...new Set([...buckets.map(b=>b.id),...problems.map(p=>p.bucket),...admitted.map(admissionBucket)])].sort();
     const overview=node("table"), heading=node("tr");
     for (const label of ["Bucket", "Problems", "Success vs assistance", "Measured coverage by task", "Initial images"]) heading.append(node("th",label));
     overview.append(heading);
@@ -237,8 +234,10 @@ async function start() {
         const rollouts=aggregate(tp.flatMap(groupFor)).reduce((n,c)=>n+c.n,0);
         coverage.append(node("p",`${task}: ${measured.length}/${tp.length} problems · ${rollouts} rollouts`));
       }
-      row.append(node("td",bucketLabel(b?.label || id)),node("td",String(ps.length)),chart,coverage,
-        node("td",`${ps.filter(p=>p.initial_images?.length).length}/${ps.length}`));
+      const ap=admitted.filter(p=>admissionBucket(p)===id);
+      if(ap.length) coverage.append(node("p",`${ap.length} admitted piles · task pool pending`));
+      row.append(node("td",bucketLabel(b?.label || id)),node("td",ps.length ? String(ps.length) : "Tasks pending"),chart,coverage,
+        node("td",ap.length ? `${ps.filter(p=>p.initial_images?.length).length}/${ps.length} task images; ${ap.filter(p=>p.initial_images.length).length}/${ap.length} admitted pile previews` : `${ps.filter(p=>p.initial_images?.length).length}/${ps.length}`));
           row.addEventListener("click",()=>{
             document.getElementById("bucket").value=id;
             document.getElementById("task").value="";
@@ -263,7 +262,16 @@ async function start() {
       const bucket=document.getElementById("bucket").value,task=document.getElementById("task").value,q=document.getElementById("search").value.toLowerCase();
       const filtered=problems.filter(p=>(!bucket||p.bucket===bucket)&&(!task||p.task===task)&&(!q||JSON.stringify(p).toLowerCase().includes(q)));
       const container=document.getElementById("problems");container.replaceChildren();
-      const hierarchy=groupPiles(filtered), pileCount=hierarchy.reduce((n,b)=>n+b.piles.length,0);
+      const hierarchy=groupPiles(filtered);
+      const filteredAdmissions=admitted.filter(p=>(!bucket||admissionBucket(p)===bucket)&&!task&&(!q||JSON.stringify(p).toLowerCase().includes(q)));
+      for(const pile of filteredAdmissions) {
+        const id=admissionBucket(pile);
+        let group=hierarchy.find(b=>b.bucket===id);
+        if(!group){group={bucket:id,piles:[]};hierarchy.push(group);}
+        group.piles.push({id:pile.id,admission:pile});
+      }
+      hierarchy.sort((a,b)=>a.bucket.localeCompare(b.bucket));
+      const pileCount=hierarchy.reduce((n,b)=>n+b.piles.length,0);
       document.getElementById("count").textContent=`${filtered.length} matching problems in ${pileCount} piles; showing ${Math.min(shown,pileCount)} piles.`;
       let remaining=shown;
       for (const group of hierarchy) {
@@ -276,6 +284,7 @@ async function start() {
         bucketSection.append(grid);
         container.append(bucketSection);
         for (const [pileIndex,pile] of group.piles.slice(0,remaining).entries()) {
+          if(pile.admission){grid.append(admissionCard(pile.admission));continue;}
           const pileSection=node("article",undefined,"pile-group");
           const representative=pile.tasks.find(p=>p.initial_images?.length) || pile.tasks[0];
           const scene=representative.tags?.scene || {};

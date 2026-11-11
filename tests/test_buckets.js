@@ -153,4 +153,20 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.equal(elements.get("search").value,"first");
   assert.equal(elements.get("bucket").value,"b");
   assert.equal(elements.get("problems").children[0].open,false);
+  payload.admitted_piles=[{id:"admission:new",tags:{piece_count:40},initial_images:[]}];
+  saved.clear();elements.clear();
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
+  await new Promise(resolve=>setImmediate(resolve));
+  const rows=elements.get("populations").children[0].children;
+  const pending=rows.find(row=>row.children[0]?.textContent==="40 pieces");
+  assert.ok(pending);
+  assert.equal(pending.children[1].textContent,"Tasks pending");
+  assert.equal(pending.children[3].children[0].textContent,"1 admitted piles · task pool pending");
+  const newBucket=elements.get("problems").children.find(e=>e.children[0].textContent==="40 pieces · 1 piles");
+  assert.ok(newBucket);
+  assert.equal(newBucket.children[1].children[0].children[0].textContent,"40 pieces · admitted pile");
+  pending.listeners.click();
+  assert.equal(elements.get("bucket").value,"current:40-pieces");
+  assert.equal(elements.get("problems").children.length,1);
 });
