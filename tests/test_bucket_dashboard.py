@@ -346,3 +346,31 @@ def test_cached_response_and_images_do_not_rebuild_inventory(tmp_path, monkeypat
         assert browser.image("p", 0, "cached") == (image, "image/png")
     finally:
         browser.stop_cache()
+
+
+def test_distance_pilot_reports_parents_and_stages_without_baseline_merge(tmp_path):
+    root = tmp_path / "pilot"
+    manifest = {
+        "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "pilot",
+        "problems": [{"id": "child", "task": "place", "tags": {
+            "parent_task_id": "parent", "task_assistance": {
+                "kind": "direct-task-distance-v2", "parent_task_id": "parent",
+                "distance": {"active_stage": "release", "stage_order": ["carry", "release"],
+                             "remaining_stages": ["release"],
+                             "within_stage": {"metric": "height", "value": .01, "units": "m"}},
+            }}}],
+        "groups": [{"problem_id": "child", "assistance": 0, "attempts": 1, "successes": 1}],
+    }
+    publish(root, manifest)
+    browser = BucketDashboard(tmp_path)
+    pointer = json.loads((root / "current.json").read_bytes())
+    pointer["path"] = "pilot/" + pointer["path"]
+    channel = tmp_path / "publications" / "pilot"
+    channel.mkdir(parents=True)
+    pin = channel / "current.json"
+    pin.write_text(json.dumps(pointer))
+    pilot = browser.distance_pilots([pin])[0]
+    assert pilot["parent_count"] == 1
+    assert pilot["child_count"] == 1
+    assert pilot["problems"][0]["tags"]["task_assistance"]["distance"]["active_stage"] == "release"
+    assert pilot["groups"][0]["assistance"] == 0

@@ -176,6 +176,10 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     ]}];
   payload.calibration.groups=payload.manifest.datasets[0].measurement_series.flatMap(s=>s.groups);
   payload.calibration.groups.push({problem_id:"second",assistance:.5,attempts:4,successes:2});
+  payload.distance_pilots=[{parent_count:1,child_count:1,manifest:{protocol:{horizon:50}},
+    problems:[{id:"assisted-child",task:"place",tags:{task_assistance:{distance:{
+      active_stage:"release",remaining_stages:["release"],within_stage:{metric:"height",value:.01,units:"m"},
+    }}}}],groups:[{problem_id:"assisted-child",assistance:0,attempts:1,successes:1}]}];
   saved.clear();elements.clear();
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
     {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
@@ -194,6 +198,10 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.equal(placePoint.opacity,.25);
   pushLegend.listeners.mouseleave();
   assert.equal(pushPoint.r,4);
+  const pilotSection=elements.get("distance-pilots").children[0];
+  assert.equal(pilotSection.children[0].textContent,"Distance-assisted pilot · 1 child starts / 1 parent tasks");
+  assert.equal(pilotSection.children[2].children[1].children[1].textContent,"release");
+  assert.equal(pilotSection.children[2].children[1].children[4].textContent,"1/1 (100.0%)");
   assert.equal(placePoint.fill,original);
   pushLegend.listeners.focus();
   assert.equal(pushPoint.r,6);

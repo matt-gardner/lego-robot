@@ -271,6 +271,31 @@ async function start() {
       const opt=node("option",bucketLabel(b?.label || id));opt.value=id;document.getElementById("bucket").append(opt);
     }
     document.getElementById("populations").append(overview);
+    for(const pilot of data.distance_pilots || []) {
+      const section=node("details");
+      section.append(node("summary",`Distance-assisted pilot · ${pilot.child_count} child starts / ${pilot.parent_count} parent tasks`));
+      section.append(node("p","Physically assisted starts, not original unassisted trials. Expert-prefix percentage does not measure remaining task distance."));
+      const table=node("table"),header=node("tr");
+      for(const label of ["Task","Active stage","Remaining stages","Within-stage distance","Policy success","Horizon"])header.append(node("th",label));
+      table.append(header);
+      for(const problem of pilot.problems) {
+        const distance=problem.tags.task_assistance.distance;
+        const measured=pilot.groups.filter(g=>g.problem_id===problem.id);
+        const cells=aggregate(measured);
+        const attempts=cells.reduce((n,c)=>n+c.n,0),successes=cells.reduce((n,c)=>n+c.successes,0);
+        const metric=distance.within_stage;
+        const horizons=[...new Set(measured.map(g=>g.protocol?.horizon || pilot.manifest.protocol?.horizon).filter(Boolean))];
+        const row=node("tr");
+        for(const value of [problem.task,distance.active_stage,distance.remaining_stages.join(" → "),
+          `${metric.metric}: ${metric.value} ${metric.units}`,
+          attempts ? `${successes}/${attempts} (${(100*successes/attempts).toFixed(1)}%)` : "Unmeasured",
+          horizons.length ? horizons.join(", ") : "Unmeasured"])row.append(node("td",value));
+        table.append(row);
+      }
+      section.append(table);
+      json(section,"Parent, reset and measurement provenance",pilot);
+      document.getElementById("distance-pilots").append(section);
+    }
     for (const task of [...new Set(problems.map(p=>p.task))].sort()) {const o=node("option",task);o.value=task;document.getElementById("task").append(o);}
     for (const id of ["bucket","task","search"]) {
       const element=document.getElementById(id);

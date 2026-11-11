@@ -2,6 +2,14 @@
 
 ## Live data buckets (schema 1)
 
+Distance-assisted child pilots (`tags.task_assistance.kind:
+direct-task-distance-v2`) are discovered from shared publication channels and
+displayed separately from original task buckets. The pilot view reports distinct
+parent tasks, child starts, active/remaining stages, within-stage metric/value/
+units, measured child success counts and horizon. Numeric expert-prefix
+assistance zero does not mean an original unassisted physical start. Pilot
+groups never enter original bucket charts.
+
 The read-only `/buckets` page reads `--bucket-dashboard-root`, defaulting to
 `data/bucket_dashboard` beside the configured outputs root. Shared data uses
 `outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/bucket_dashboard`

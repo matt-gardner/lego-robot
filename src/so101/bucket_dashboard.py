@@ -125,15 +125,52 @@ class BucketDashboard:
                     problems.append(problem)
         task_scenes = {p.get("source", {}).get("scene_id") for p in problems}
         admissions = [p for p in admissions if p["scene_id"] not in task_scenes]
+        pilots = self.distance_pilots(pointers)
         revision = hashlib.sha256(json.dumps(
             [[p["snapshot_id"] for p in datasets], admissions,
-             [(p["id"], p["dataset_snapshot_id"]) for p in problems]], sort_keys=True).encode()).hexdigest()
+             [(p["id"], p["dataset_snapshot_id"]) for p in problems],
+             pilots], sort_keys=True).encode()).hexdigest()
         return {"manifest": {"snapshot_id": revision, "datasets": datasets},
                 "admitted_piles": admissions,
+                "distance_pilots": pilots,
                 "problems": {"problems": problems, "buckets": buckets},
                 "calibration": {"groups": groups, "protocol": {},
                                 "qualification_status": "multiple datasets",
                                 "complete": all(p["calibration"]["complete"] for p in publications)}}
+
+    def distance_pilots(self, pointers: list[Path]) -> list:
+        pilots = []
+        for pointer in pointers:
+            publication = self.publication(str(pointer.relative_to(self.root)), compose=False)
+            problems = publication["problems"]["problems"]
+            assisted = [p for p in problems if p.get("tags", {}).get(
+                "task_assistance", {}).get("kind") == "direct-task-distance-v2"]
+            if not assisted:
+                continue
+            if len(assisted) != len(problems):
+                raise ValueError("Distance pilot mixes assisted and original task starts")
+            identities = {p["id"] for p in assisted}
+            parents = set()
+            for problem in assisted:
+                tags = problem["tags"]
+                parent = tags["parent_task_id"]
+                assistance = tags["task_assistance"]
+                if parent != assistance["parent_task_id"] or not parent:
+                    raise ValueError("Distance pilot parent identity differs")
+                distance = assistance["distance"]
+                if distance["active_stage"] not in distance["stage_order"]:
+                    raise ValueError("Distance pilot stage is missing from task order")
+                parents.add(parent)
+            manifest = publication["manifest"]
+            series = manifest.get("measurement_series", [])
+            groups = ([{**g, "measurement_series_id": s["series_id"], "protocol": s["protocol"]}
+                       for s in series for g in s["groups"]] if series else
+                      publication["calibration"]["groups"])
+            if any(g["problem_id"] not in identities for g in groups):
+                raise ValueError("Distance pilot measurement crosses child population")
+            pilots.append({"manifest": manifest, "problems": assisted, "groups": groups,
+                           "parent_count": len(parents), "child_count": len(assisted)})
+        return pilots
 
     def admitted_piles(self) -> list:
         pins = sorted(self.root.glob("pile-previews-v1/*/admission.json"))
