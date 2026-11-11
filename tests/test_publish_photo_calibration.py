@@ -127,6 +127,7 @@ def test_unassisted_partial_results_publish_without_expert_collection(tmp_path, 
     pool, _, output, references, _ = inputs(tmp_path)
     if kind == "native":
         manifest = json.loads(pool.read_text())
+        manifest["provenance"] = {"supersedes_native_pool_sha256": "1" * 64}
         entry = manifest["scenes"][0]
         scene_path = Path(entry["root"]) / "problem.json"
         scene = json.loads(scene_path.read_text())
@@ -153,6 +154,7 @@ def test_unassisted_partial_results_publish_without_expert_collection(tmp_path, 
     assert snapshot["manifest"]["progress"]["reference_complete"] is None
     assert snapshot["calibration"]["groups"][0]["attempts"] == 1
     if kind == "native":
+        assert snapshot["manifest"]["provenance"]["supersedes_native_pool_sha256"] == "1" * 64
         assert snapshot["calibration"]["groups"][0]["parent_task_id"] == "parent"
         assert snapshot["problems"]["problems"][0]["tags"]["task_assistance"]["kind"] == "direct-task-distance-v2"
     row["rollouts"].append({"success": True, "invalid_action_error": None, "seed": 118})

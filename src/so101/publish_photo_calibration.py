@@ -378,6 +378,8 @@ def publish(pool_path: Path, references_path: Path | None, output: Path,
                      if measurements is not None else None,
                      "reference_progress_is_policy_success_rate": False},
         "provenance": {"native_pool_sha256": pool_sha,
+                       **({"supersedes_native_pool_sha256": pool["provenance"]["supersedes_native_pool_sha256"]}
+                          if "supersedes_native_pool_sha256" in pool.get("provenance", {}) else {}),
                        "publisher_implementation_sha256": implementation.hex(),
                        "population_status": f"immutable-{source_kind}-TRAIN-pool"},
         "notes": ["Reference acceptance is not policy success or proof of general task feasibility.",
