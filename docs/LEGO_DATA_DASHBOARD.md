@@ -41,6 +41,10 @@ The primary overview is a compact bucket/task/assistance table with population,
 success/counts/intervals, measured-problem coverage, mixed-group yield, per-problem
 success range and initial-image coverage. Unmeasured task populations retain a
 visible row; clicking a measured or unmeasured row filters the problem inspector.
+The dashboard excludes historical `source.kind=legacy` problems and `corpus:`
+bucket summaries from the overview, selectors and problem inspector. This is a
+display-only retirement; producer snapshots, calibration and underlying data are
+unchanged. The remaining published population currently comprises native buckets.
 
 Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
 browsing, feedback and activation, not collection or part qualification.

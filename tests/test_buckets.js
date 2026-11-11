@@ -36,9 +36,11 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   };
   const payload={
     manifest:{snapshot_id:"snapshot"},
-    problems:{buckets:[{id:"b",population_total:2,tasks:[{task:"push",population_total:1},{task:"place",population_total:1}]}],
+    problems:{buckets:[{id:"b",population_total:2,tasks:[{task:"push",population_total:1},{task:"place",population_total:1}]},
+        {id:"corpus:old",population_total:1,tasks:[{task:"grasp",population_total:1}]}],
       problems:[{id:"first",bucket:"b",task:"push",initial_images:[{camera:"wrist"}]},
-        {id:"second",bucket:"b",task:"place",initial_images:[]}]},
+        {id:"second",bucket:"b",task:"place",initial_images:[]},
+        {id:"old",bucket:"corpus:old",task:"grasp",source:{kind:"legacy"},initial_images:[]}]},
     calibration:{protocol:{rollouts_per_group:4},groups:[{problem_id:"first",assistance:0,attempts:4,successes:4}]},
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
@@ -54,6 +56,9 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.ok(all.some(e=>e.textContent==="Unmeasured: no valid rollout counts published."));
   const overview=elements.get("populations").children[0];
   assert.equal(overview.children.length,3);
+  assert.equal(elements.get("bucket").children.length,1);
+  assert.equal(elements.get("task").children.length,2);
+  assert.ok(!all.some(e=>e.textContent.includes("corpus:old")));
   const measured=overview.children.find(row=>row.children[1]?.textContent==="push");
   const unmeasured=overview.children.find(row=>row.children[1]?.textContent==="place");
   assert.equal(measured.children[3].textContent,"0");

@@ -64,8 +64,9 @@ async function start() {
     const response=await fetch("api/buckets");
     const data=await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    const problems=data.problems.problems, groups=data.calibration.groups;
-    const buckets=data.problems.buckets || [];
+    const problems=data.problems.problems.filter(p=>p.source?.kind!=="legacy");
+    const groups=data.calibration.groups;
+    const buckets=(data.problems.buckets || []).filter(b=>!b.id.startsWith("corpus:"));
     const pilot=data.calibration.qualification_status !== "qualified";
     status.textContent=`${pilot ? "SCREENING ONLY — not calibrated qualification" : "Measurement status: "+(data.calibration.qualification_status || "Unqualified / unspecified")}. ${problems.length} published problems. ${data.calibration.complete ? "Measurement plan complete" : "Measurements in progress"}.`;
     document.getElementById("provenance").textContent=JSON.stringify({manifest:data.manifest,protocol:data.calibration.protocol},null,2);
