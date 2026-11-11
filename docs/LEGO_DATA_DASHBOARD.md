@@ -37,6 +37,9 @@ The renderer writes atomic completed per-task receipts and assets under
 precedence per completed task, not per entire batch. Within a version,
 `_roles-v1/<task>.json` takes precedence over that task's original receipt.
 Invalid selected receipts fail explicitly rather than hiding behind older data.
+Photoreal receipts accept explicit `mitsuba-llvm_ad_rgb` and
+`mitsuba-cuda_ad_rgb` backends, preserving the reported backend label and the
+same task/reset, annotation, and asset-hash validation for either renderer.
 The reader validates pool, canonical source,
 scene hash, target, reset invariants, annotations and image hashes, then serves
 the original asset without copying it. A metrics callback replacing a legacy

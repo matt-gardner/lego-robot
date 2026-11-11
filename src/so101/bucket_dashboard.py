@@ -487,7 +487,7 @@ class BucketDashboard:
                     or row["target_instance_id"] != problem["tags"]["target_instance_id"]
                     or row["physics_unchanged"] is not True or row["assistance"] != 0
                     or row["is_gpu_policy_frame"] is not False or row["camera"] != "external"
-                    or row["backend"] != "mitsuba-llvm_ad_rgb"):
+                    or row["backend"] not in ("mitsuba-llvm_ad_rgb", "mitsuba-cuda_ad_rgb")):
                 raise ValueError("Live renderer receipt differs from selected initial task")
             name = row["image_file"]
             if Path(name).name != name:

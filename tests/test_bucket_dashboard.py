@@ -79,7 +79,8 @@ def test_auto_discovers_independent_publications_and_preserves_images(tmp_path):
     assert len(browser.snapshot()["manifest"]["datasets"]) == 2
 
 
-def test_live_renderer_files_survive_base_publication_replacement(tmp_path):
+@pytest.mark.parametrize("backend", ["mitsuba-llvm_ad_rgb", "mitsuba-cuda_ad_rgb"])
+def test_live_renderer_files_survive_base_publication_replacement(tmp_path, backend):
     source = "/scenes/tasks/push"
     identity = hashlib.sha256(source.encode()).hexdigest()
     pool = "a" * 64
@@ -99,7 +100,7 @@ def test_live_renderer_files_survive_base_publication_replacement(tmp_path):
         "problem_id": identity, "pool_sha256": pool, "episode_source": source,
         "scene_files_sha256": {"problem.json": "scene"}, "target_instance_id": "brick_0",
         "physics_unchanged": True, "assistance": 0, "is_gpu_policy_frame": False,
-        "camera": "external", "backend": "mitsuba-llvm_ad_rgb", "width": 10, "height": 10,
+        "camera": "external", "backend": backend, "width": 10, "height": 10,
         "image_file": "image.png", "sha256": hashlib.sha256(image).hexdigest(),
         "target_bbox_status": "visible", "target_bbox_xyxy": [1, 1, 3, 3], "target_visible_pixels": 4,
     }
@@ -107,7 +108,15 @@ def test_live_renderer_files_survive_base_publication_replacement(tmp_path):
     receipt.write_text(json.dumps(row))
     browser = BucketDashboard(tmp_path)
     first = browser.snapshot()["manifest"]["snapshot_id"]
+    assert browser.snapshot()["problems"]["problems"][0]["initial_images"][0]["renderer"] == backend
     assert browser.image(identity, 0, first) == (image, "image/png")
+    receipt.write_text(json.dumps({**row, "backend": "mujoco-rgb"}))
+    with pytest.raises(ValueError, match="selected initial task"):
+        browser.snapshot()
+    receipt.write_text(json.dumps({**row, "sha256": "0" * 64}))
+    with pytest.raises(ValueError, match="hash|SHA|digest"):
+        browser.image(identity, 0)
+    receipt.write_text(json.dumps(row))
     # A legacy callback may replace base data, but cannot erase live renderer files.
     manifest["snapshot_id"] = "next"
     body = json.dumps(manifest).encode()
