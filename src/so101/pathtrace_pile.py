@@ -34,6 +34,33 @@ def linear_rgb(rgb) -> np.ndarray:
     return np.where(values <= .04045, values / 12.92, ((values + .055) / 1.055) ** 2.4)
 
 
+def check_segmentation_alignment(mi, dr, loaded, description, segmentation_path, width, height):
+    with np.load(segmentation_path) as archive:
+        segmentation = archive["segmentation"]
+    if segmentation.shape != (height, width, 2):
+        raise ValueError("Segmentation dimensions differ from the appearance camera")
+    ys, xs = np.meshgrid(np.arange(2, height, 5), np.arange(2, width, 5), indexing="ij")
+    pixel = mi.Point2f((xs.ravel() + .5) / width, (ys.ravel() + .5) / height)
+    rays, _ = loaded.sensors()[0].sample_ray(0, .5, pixel, mi.Point2f(.5))
+    intersections = loaded.ray_intersect(rays)
+    measured = segmentation[ys.ravel(), xs.ravel()]
+    expected = np.full(len(xs.ravel()), -1)
+    actual = np.full_like(expected, -1)
+    names = {"table": [description["table_geom_id"]]}
+    names.update({f"part_{i}": obj["geom_ids"] for i, obj in enumerate(description["objects"])})
+    for index, shape in enumerate(loaded.shapes()):
+        if shape.id() not in names:
+            continue
+        expected[(measured[:, 1] == 5) & np.isin(measured[:, 0], names[shape.id()])] = index
+        actual[np.asarray(intersections.shape == shape)] = index
+    mismatch = float(np.mean(expected != actual))
+    if mismatch > .01:
+        raise ValueError(f"Same-camera mesh/segmentation alignment failed: {mismatch:.4%} mismatched rays")
+    return {"method": "Mitsuba pixel-center primary rays versus MuJoCo geom segmentation",
+            "sampled_pixels": len(expected), "mismatched_pixels": int(np.count_nonzero(expected != actual)),
+            "mismatch_fraction": mismatch, "maximum_mismatch_fraction": .01}
+
+
 def render_pathtrace(
     scene_path: Path, output: Path, profile_path: Path = DEFAULT_PROFILE,
     mesh_root: Path | None = None,
@@ -50,7 +77,7 @@ def render_pathtrace(
         source = scene_path.parent / source
     inputs = [
         scene_path, profile_path, Path(__file__), source / "model.xml",
-        source / "settled-state.npz",
+        source / description.get("source_state_file", "settled-state.npz"),
     ]
     input_hashes = {str(path): file_hash(path) for path in inputs}
     origin, target, up = camera_frame(description["camera"])
@@ -95,6 +122,9 @@ def render_pathtrace(
             "emitter": {"type": "area", "radiance": profile["key_radiance"]},
         },
     }
+    for key in ("near_clip", "far_clip"):
+        if key in description["camera"]:
+            scene["sensor"][key] = float(description["camera"][key])
     if "aperture_radius_m" in profile:
         focus = float(profile["focus_distance_m"])
         aperture = float(profile["aperture_radius_m"])
@@ -109,6 +139,13 @@ def render_pathtrace(
                      "ext_ior": 1., "diffuse_reflectance": {"type": "rgb", "value": rgb.tolist()}},
         }
     loaded = mi.load_dict(scene)
+    alignment = None
+    if "segmentation" in description:
+        segmentation_path = scene_path.parent / description["segmentation"]
+        input_hashes[str(segmentation_path)] = file_hash(segmentation_path)
+        alignment = check_segmentation_alignment(
+            mi, dr, loaded, description, segmentation_path, profile["width"], profile["height"],
+        )
     output.mkdir(parents=True, exist_ok=False)
     image = mi.render(loaded, seed=profile["seed"], spp=profile["samples"])
     mi.util.write_bitmap(
@@ -128,6 +165,7 @@ def render_pathtrace(
         "mesh_count": len(meshes), "camera": description["camera"], "settings": profile,
         "input_sha256": input_hashes,
         "image_sha256": file_hash(output / "pile.png"),
+        "segmentation_alignment": alignment,
         "qualification": "Appearance only; input collision qualification is not upgraded. "
         "No simulation stepping, silhouette bevels, synchronized labels, calibration or transfer claim.",
     }

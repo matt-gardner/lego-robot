@@ -122,6 +122,12 @@ modifying the source pool. Models, pile states and family IDs are retained;
 scene/task IDs and problem hashes change, invalidating old expert references.
 Renderers must group by actual task reset state, not only scene identity.
 
+After verifying all replacement pools, `--select-pools <pool.json> ... --root
+<curriculum-root>` atomically writes `current-task-pools.json` with the selected
+manifest paths, hashes and populations. Dashboard readers use this explicit
+selection, not modification times or recursive discovery of historical subsets.
+Pending previews must not reuse images from superseded task/reset identities.
+
 After handing the ten-scene 20-piece pool to the trainer, use
 `python -m so101.photo_pile_curriculum --source <original-photo-demo> --root
 <new-curriculum-root>` for **30, 40, 60 and 90 pieces**, in that order. Each
@@ -198,6 +204,40 @@ blur; the default retains the inspectable pinhole view rather than
 assuming unmeasured optics. Further substantial gains require actual
 rounded visual geometry and material/optical measurements, not heavier
 blur or arbitrary noise.
+
+## Exact INITIAL external pile cards
+
+`python -m so101.photoreal_task_images --pool <complete-TRAIN-pool>
+--output <versioned-durable-pool-directory>` restores each robot-integrated
+task-specific `initial_state` (or legacy `integration_state.json`) through
+`pile_task_runtime`; it never substitutes the original pre-robot settled pile.
+Images are shared only when the actual full integration-state hashes match,
+not merely because task descriptors belong to the same scene.
+It exports compiled visual vertices and normals
+once into world-space PLYs, groups them by body/material, and uses the pinned
+`pile_pathtrace_v1` CPU recipe. MuJoCo segmentation is captured separately at the
+same resolution and mono camera (average of both eye transforms). Sampled
+pixel-center Mitsuba primary rays must agree with the segmentation within 1%;
+the actual sampled count and mismatch are recorded, not a calibration claim.
+Unsupported geometry/materials and task-dependent reset differences fail explicitly.
+
+The output root contains only content-hashed PNGs and per-task image receipts.
+`_scenes/<scene-id>/<integration-state-sha>/` retains world exports, segmentation, diagnostic raster RGB and pathtrace
+receipts; `_meta/` pins implementation/profile/pool hashes and per-piece-count
+visible/not-visible coverage. The dashboard's live-file reader is the ongoing consumer.
+Use a new versioned output for changed implementation/profile bytes. A partial
+population is not full image coverage or policy qualification. Existing wrist
+images remain separate; no historical image recovery is performed.
+
+`python -m so101.task_image_roles --images <captured-pool> --output <roles-v1>`
+adds independently measured `source_object` and push/place `destination` roles
+without changing RGB. Destination boxes describe visible goal-marker geometry,
+not an invented second LEGO object, tolerance region or amodal extent.
+The dashboard reads complete atomic receipts and assets directly from the durable
+pool directory, preferring enriched `_roles-v1` receipts per task. It validates
+the exact pool, problem/source, target and image hashes on read. No image
+publication callback or copied measurement manifest is required, and a metrics
+refresh cannot overwrite these independent image derivatives.
 
 ## Archived curriculum wrist rerenders
 

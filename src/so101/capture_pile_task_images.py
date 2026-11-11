@@ -10,7 +10,6 @@ import numpy as np
 from PIL import Image
 
 from so101.cloud_checkpoint import atomic_json
-from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
 
 
 def target_annotation(mask):
@@ -27,6 +26,9 @@ def target_annotation(mask):
 
 
 def capture(args):
+    # Policy rendering dependencies are optional for consumers of target_annotation.
+    from so101.rl_pile_adapter import NativePileSimulation, load_native_pool
+
     pool_bytes = args.pool.read_bytes()
     pool_sha = hashlib.sha256(pool_bytes).hexdigest()
     implementation = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
