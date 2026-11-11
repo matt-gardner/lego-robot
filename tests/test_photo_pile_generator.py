@@ -131,12 +131,27 @@ def test_rejections_resume_and_stop_preserve_attempts(photo_source, tmp_path, mo
         generator.run(root, photo_source, seed=11, count=21, attempts=1)
 
 
-def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path):
+def test_robot_task_pool_resets_and_adapter(photo_source, tmp_path, monkeypatch):
     source = tmp_path / "fresh"
     generator.generate_scene(photo_source, source, count=20, seed=20261111)
     root = tmp_path / "tasks"
     root.mkdir()
-    entry = photo_pile_tasks.build_problem(source, root / "scene_000000000")
+    def reject_step(*args, **kwargs):
+        raise AssertionError("Adding the robot must not step the settled pile")
+
+    with monkeypatch.context() as context:
+        context.setattr(mujoco, "mj_step", reject_step)
+        entry = photo_pile_tasks.build_problem(source, root / "scene_000000000")
+    snapshot = json.loads((root / "scene_000000000" / "integration_state.json").read_bytes())
+    assert snapshot["robot_integration"]["physics_steps"] == 0
+    receipt = json.loads((source / "receipt.json").read_bytes())
+    model = mujoco.MjModel.from_binary_path(str(root / "scene_000000000" / "model.mjb"))
+    for obj in receipt["objects"]:
+        joint = int(model.body_jntadr[model.body(obj["instance_id"]).id])
+        q = int(model.jnt_qposadr[joint])
+        expected = np.asarray(obj["qpos"]).copy()
+        expected[:3] += [.22, 0., photo_pile_tasks.TABLE_Z]
+        assert np.array_equal(snapshot["qpos"][q:q + 7], expected)
     scene = json.loads((root / "scene_000000000" / "problem.json").read_text())
     assert len(scene["tasks"]) == 80
     assert len({task["target_instance_id"] for task in scene["tasks"]}) == 20

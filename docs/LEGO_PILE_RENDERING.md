@@ -99,9 +99,13 @@ generation itself does not produce a photograph or establish RL/SFT acceptance.
 `python -m so101.photo_pile_tasks --source-root <saved-photo-pool> --root
 <new-task-pool> --pieces 20 --scenes 10` selects ten distinct saved model
 identities and integrates them with the SO101 robot and visible destination
-markers. Original object poses are translated onto the robot workspace table,
-then the full scene is dynamically settled with the photo-demo physics.
-Sources that fail this additional settling are recorded and skipped. Original
+markers. Original object poses are translated onto the robot workspace table
+without another simulation. Piece velocities, applied forces and solver
+warm starts are preserved; imported contact parameters are made explicit so
+robot-model defaults cannot silently change them. Static checks reject
+robot/pile intersections or changed initial speed/penetration limits. The
+continuous settling qualification comes from the source pile, not a second run.
+Original
 pile files are never modified. The new receipts bind source hashes and the
 translation explicitly.
 

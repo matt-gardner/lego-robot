@@ -14,7 +14,7 @@ import mujoco
 import numpy as np
 
 from so101.cloud_checkpoint import atomic_json
-from so101.lego_scene import capture_scene_state, settle_data
+from so101.lego_scene import body_surface_speed_bound, capture_scene_state, restore_scene
 from so101.photo_pile_generator import CATALOG_PROFILE, PROFILE, verify_scene
 from so101.pile_pool import publish_pool
 from so101.pile_task_runtime import GRADER_VERSION, create_simulation, load_problem
@@ -195,6 +195,10 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
     if receipt.get("profile") not in (PROFILE, CATALOG_PROFILE) or receipt["restored_original_integration_state"]:
         raise ValueError("Tasks require a verified fresh photo-profile pile")
     photo = ET.parse(source / "model.xml").getroot()
+    source_xml = (source / "model.xml").read_text()
+    source_model = mujoco.MjModel.from_xml_string(source_xml)
+    source_data = mujoco.MjData(source_model)
+    restore_scene(source_model, source_data, receipt, source_xml)
     robot = ET.fromstring(scene_xml(model_root, SCENE_VERSION))
     world = robot.find("worldbody")
     assets = robot.find("asset")
@@ -235,7 +239,17 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
             raise ValueError("Robot scene lacks destination marker")
         marker.set("pos", f".22 {y} {TABLE_Z + .00002}")
     for body in photo_world.findall("body"):
-        world.append(copy.deepcopy(body))
+        imported = copy.deepcopy(body)
+        original_body = source_model.body(body.attrib["name"]).id
+        for offset, geom in enumerate(imported.findall("geom")):
+            index = int(source_model.body_geomadr[original_body]) + offset
+            for name in ("contype", "conaffinity", "condim", "priority", "group"):
+                geom.set(name, str(int(getattr(source_model, f"geom_{name}")[index])))
+            for name in ("friction", "solref", "solimp"):
+                geom.set(name, " ".join(map(str, getattr(source_model, f"geom_{name}")[index])))
+            for name in ("margin", "gap", "solmix"):
+                geom.set(name, str(float(getattr(source_model, f"geom_{name}")[index])))
+        world.append(imported)
     size = robot.find("size")
     if size is None:
         size = ET.SubElement(robot, "size")
@@ -258,12 +272,19 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
             sim.data.qpos[q:q + 7] = obj["qpos"]
             sim.data.qpos[q:q + 3] += origin
             sim.data.qvel[v:v + 6] = obj["qvel"]
+            original_body = source_model.body(obj["instance_id"]).id
+            original_joint = int(source_model.body_jntadr[original_body])
+            original_v = int(source_model.jnt_dofadr[original_joint])
+            sim.data.qacc_warmstart[v:v + 6] = source_data.qacc_warmstart[original_v:original_v + 6]
+            sim.data.qfrc_applied[v:v + 6] = source_data.qfrc_applied[original_v:original_v + 6]
+            sim.data.xfrc_applied[body] = source_data.xfrc_applied[original_body]
+        sim.data.time = source_data.time
         provenance = {
             "source": str(source.resolve()),
             "receipt_sha256": hashlib.sha256((source / "receipt.json").read_bytes()).hexdigest(),
             "source_model_sha256": receipt["model_xml_sha256"],
             "translation_m": origin.tolist(), "profile": receipt["profile"],
-            "robot_integration": "source poses translated onto robot table, then full dynamic settling",
+            "robot_integration": "settled source state translated onto robot table; robot placed without physics stepping",
         }
         scene_id = hashlib.sha256(json.dumps(provenance, sort_keys=True).encode()).hexdigest()
         family = hashlib.sha256(f"photo-pile:{receipt['seed']}:{len(names)}".encode()).hexdigest()
@@ -271,11 +292,26 @@ def build_problem(source: Path, output: Path, model_root: Path = MODEL_ROOT) -> 
                 "seed": receipt["seed"], "objects": [
                     {"instance_id": obj["instance_id"], "part_id": obj["part_id"]}
                     for obj in receipt["objects"]]}
-        _, _, snapshot = settle_data(
-            model, sim.data, xml, plan, velocity_tolerance=.0005, contact_limit_m=.005,
-            stationarity_metric="surface-speed-v2",
-        )
         mujoco.mj_forward(model, sim.data)
+        pile_bodies = {model.body(name).id for name in names}
+        penetration = 0.
+        for contact in sim.data.contact:
+            endpoints = [int(model.geom_bodyid[g]) for g in (contact.geom1, contact.geom2)]
+            if not pile_bodies.intersection(endpoints):
+                continue
+            penetration = max(penetration, max(0., -float(contact.dist)))
+            if any(body not in pile_bodies and body != 0 for body in endpoints) and contact.dist < .002:
+                raise ValueError("Placed robot intersects the settled pile")
+        maximum_speed = max(body_surface_speed_bound(model, sim.data, body) for body in pile_bodies)
+        if penetration > .005 or maximum_speed > .0005:
+            raise ValueError("Robot placement changed settled-pile physical acceptance")
+        snapshot = capture_scene_state(model, sim.data, xml, plan, status="settled")
+        snapshot.update(
+            stationarity={**receipt["stationarity"], "qualification_source": "standalone-pile"},
+            maximum_penetration_m=penetration,
+            robot_integration={"physics_steps": 0, "maximum_initial_surface_speed_m_s": maximum_speed,
+                               "maximum_initial_penetration_m": penetration},
+        )
         bounds = {}
         for name in names:
             body_id = model.body(name).id
