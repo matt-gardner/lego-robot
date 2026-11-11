@@ -20,13 +20,14 @@ from so101.cloud_checkpoint import atomic_json
 from so101.lego_scene import capture_scene_state
 from so101.pile_task_generator import resource_check
 from so101.pile_task_runtime import (
-    PileSimulation, create_simulation, load_problem, reset_problem, target_contact_state, task_predicate,
+    MAXIMUM_ASSISTANCE_PRELOAD_N, PileSimulation, create_simulation, load_problem,
+    reset_problem, target_contact_state, task_predicate,
 )
 from so101.robot_sim import BeamSimulation, MODEL_ROOT, TABLE_Z
 
 
 LOGGER = logging.getLogger(__name__)
-PROFILE = "direct-task-distance-v1"
+PROFILE = "direct-task-distance-v2"
 STAGES = {
     "view": ("orient", "center", "dwell"),
     "grasp": ("approach", "grip", "lift", "dwell"),
@@ -150,7 +151,7 @@ def _holding(sim, target, tool_point, yaw):
         _put_target(sim, target, sim.position(target) + axis * (inner - .00015 - lower))
         separation = min(mujoco.mj_geomDistance(sim.model, sim.data, jaw, int(geom), .03, None)
                          for geom in geoms)
-        _put_target(sim, target, sim.position(target) - axis * (separation + .000005))
+        _put_target(sim, target, sim.position(target) - axis * (separation + .000001))
         previous = opened
         for grip in np.linspace(opened, sim.limits[-1, 0], 32):
             sim.data.qpos[sim.qadr[-1]] = grip
@@ -171,7 +172,10 @@ def _holding(sim, target, tool_point, yaw):
                 sim.data.qpos[sim.qadr[-1]] = closed
                 sim.data.ctrl[sim.actuators[-1]] = closed
                 mujoco.mj_forward(sim.model, sim.data)
-                return target_contact_state(sim.native, target)
+                measured = target_contact_state(sim.native, target)
+                if max(measured["jaw_normal_forces_n"].values(), default=0.) <= MAXIMUM_ASSISTANCE_PRELOAD_N:
+                    return measured
+                break
             previous = grip
     raise ValueError("No valid directly constructed bilateral holding state")
 
@@ -253,7 +257,8 @@ def construct_state(sim, problem: dict, stage: str, fraction: float) -> tuple[di
             sim.data.qpos[q + 2] -= separation_to_table + .000005
             mujoco.mj_forward(sim.model, sim.data)
             measured = target_contact_state(sim.native, target)
-            if measured["jaw_normal_forces_n"] and measured["table_supported"] and _finite_contacts(sim):
+            if (measured["jaw_normal_forces_n"] and measured["table_supported"] and _finite_contacts(sim)
+                    and max(measured["jaw_normal_forces_n"].values()) <= MAXIMUM_ASSISTANCE_PRELOAD_N):
                 contact_position = sim.position(target)
                 away = np.r_[direction, 0.]
                 for clearance in (.001, .003, .006, .012):
@@ -273,6 +278,8 @@ def construct_state(sim, problem: dict, stage: str, fraction: float) -> tuple[di
                         clear = middle
                 _put_target(sim, target, contact_position + away * touching)
                 measured = target_contact_state(sim.native, target)
+                if max(measured["jaw_normal_forces_n"].values(), default=0.) > MAXIMUM_ASSISTANCE_PRELOAD_N:
+                    raise ValueError("Constructed state exceeds the 1N per-jaw construction preload cap")
                 if measured["jaw_normal_forces_n"] and measured["table_supported"] and _finite_contacts(sim):
                     break
         else:
@@ -321,6 +328,7 @@ def generate(entry: dict, output: Path, *, task_ids: list[str] | None = None,
     sim.native = PileSimulation(model, sim.data, None, {name: model.body(name).id for name in names})
     implementation = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     provenance = {"profile": PROFILE, "parent_entry": entry, "generator_sha256": implementation,
+                  "maximum_initial_jaw_force_n": MAXIMUM_ASSISTANCE_PRELOAD_N,
                   "runtime_sha256": hashlib.sha256(
                       Path(__file__).with_name("pile_task_runtime.py").read_bytes()).hexdigest(),
                   "parent_task_ids": [task["task_id"] for task in parents]}
@@ -360,7 +368,7 @@ def generate(entry: dict, output: Path, *, task_ids: list[str] | None = None,
                     child["initial_state"] = capture_scene_state(model, sim.data, (source / "model.xml").read_text(),
                                                                  plan, status="task-start")
                     child["assistance"] = {
-                        "schema_version": 1, "kind": PROFILE, "parent_task_id": original["task_id"],
+                        "schema_version": 2, "kind": PROFILE, "parent_task_id": original["task_id"],
                         "construction": "direct state placement; no demonstration, setup trajectory, or expert prefix",
                         "construction_fraction": fraction, "distance": distance, **construction,
                     }

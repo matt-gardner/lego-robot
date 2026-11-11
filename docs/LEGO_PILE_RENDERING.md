@@ -149,7 +149,7 @@ The output is separate and immutable; original task goals, lift anchors,
 scene-family identity and randomized evaluation remain unchanged.
 
 Each child has `parent_task_id`, a full `initial_state`, and
-`assistance.kind="direct-task-distance-v1"`. `task_families` associates the
+`assistance.kind="direct-task-distance-v2"`. `task_families` associates the
 original immutable entry and its measured initial distance with child IDs and
 explicit construction failures. Distance first orders the remaining task
 stages, then the measured distance within the same stage/metric, in metres or
@@ -168,6 +168,11 @@ are contact-ready states, not a claim of ongoing motion.
 Invalid, already-successful or duplicate states are not admitted. Every child
 must replay its full reset exactly before atomic publication. Failed grasp
 constructions remain unavailable, never metadata-only holding claims.
+Version 2 sums positive contact-normal forces per jaw and caps construction
+preload at 1 N per jaw. This is a conservative initialization-quality bound,
+not a hardware rating or a sustained-grasp demonstration. The earlier v1 pilot
+is historical and not qualified for training intake: some shapes produced
+large initial contact loads despite satisfying the contact-presence predicate.
 
 Distance-assistance admissions are separate trainer inputs, not replacements
 for `current-task-pools.json` or qualification for paired SFT recordings.

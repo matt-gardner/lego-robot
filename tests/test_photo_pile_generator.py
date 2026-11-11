@@ -11,6 +11,7 @@ from so101 import photo_pile_generator as generator
 from so101 import photo_pile_tasks
 from so101 import photo_pile_curriculum
 from so101 import pile_task_assistance
+from so101 import pile_task_runtime
 from so101.photo_pile_curriculum import validate_stages
 from so101.pile_pool import publish_pool
 from so101.pile_task_runtime import create_simulation, load_problem, reset_problem, task_predicate
@@ -360,6 +361,13 @@ def test_direct_assistance_links_parent_without_a_trajectory(photo_source, tmp_p
                 spoofed = {**task, "initial_task_state": {"lifted_once": True}}
                 with pytest.raises(ValueError, match="physically held"):
                     reset_problem(sim, {**problem, "task": spoofed})
+            else:
+                measured = pile_task_runtime.target_contact_state(sim, task["target_instance_id"])
+                with monkeypatch.context() as patch:
+                    patch.setattr(pile_task_runtime, "target_contact_state", lambda *args: {
+                        **measured, "jaw_normal_forces_n": {"fixed": 2., "moving": 2.}})
+                    with pytest.raises(ValueError, match="preload cap"):
+                        reset_problem(sim, problem)
             reset_problem(sim, load_problem(entry, parent["task_id"]))
             assert not sim.lifted_once
             np.testing.assert_array_equal(sim.position(parent["target_instance_id"]),

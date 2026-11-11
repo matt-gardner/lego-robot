@@ -14,6 +14,7 @@ from so101.lego_scene import body_surface_speed_bound, restore_scene
 
 GRADER_VERSION = "native-pile-goals-v1"
 TASKS = ("view", "grasp", "push", "place")
+MAXIMUM_ASSISTANCE_PRELOAD_N = 1.
 
 
 def load_problem(entry: dict, task_id: str) -> dict:
@@ -134,11 +135,14 @@ def reset_problem(sim: PileSimulation, problem: dict) -> None:
         if (not isinstance(progress, dict) or set(progress) != {"lifted_once"}
                 or type(progress["lifted_once"]) is not bool
                 or not isinstance(assistance, dict) or not task.get("parent_task_id")
-                or assistance.get("kind") != "direct-task-distance-v1"
+                or assistance.get("kind") not in ("direct-task-distance-v1", "direct-task-distance-v2")
                 or assistance.get("parent_task_id") != task.get("parent_task_id")):
             raise ValueError("Invalid assistance initial task-progress state")
+        measured = target_contact_state(sim, task["target_instance_id"])
+        if (assistance["kind"] == "direct-task-distance-v2"
+                and max(measured["jaw_normal_forces_n"].values(), default=0.) > MAXIMUM_ASSISTANCE_PRELOAD_N):
+            raise ValueError("Assistance reset exceeds the per-jaw construction preload cap")
         if progress["lifted_once"]:
-            measured = target_contact_state(sim, task["target_instance_id"])
             if (task["task_type"] != "place" or not measured["bilateral_grip"]
                     or measured["table_supported"]):
                 raise ValueError("PLACE progress initialization requires a physically held piece")
@@ -162,7 +166,7 @@ def target_contact_state(sim: PileSimulation, target: str) -> dict:
         mujoco.mj_contactForce(sim.model, sim.data, index, force)
         for endpoint, label in labels.items():
             if endpoint in bodies and force[0] > 1e-5:
-                jaws[label] = max(jaws.get(label, 0.), float(force[0]))
+                jaws[label] = jaws.get(label, 0.) + float(force[0])
         supported |= table in geoms and force[0] > 1e-5
     return {"jaw_normal_forces_n": jaws, "table_supported": bool(supported),
             "bilateral_grip": set(jaws) == {"fixed", "moving"}}
