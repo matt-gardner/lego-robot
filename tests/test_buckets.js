@@ -48,6 +48,8 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     close(){this.open=false;}
   }
   const elements=new Map();
+  const saved=new Map();
+  const localStorage={getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)};
   const document={
     getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},
     createElement(){return new Element();},
@@ -67,7 +69,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     calibration:{protocol:{rollouts_per_group:4},groups:[{problem_id:"first",assistance:0,attempts:4,successes:4}]},
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
-    {document,fetch:async()=>({ok:true,json:async()=>payload}),console});
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
   await new Promise(resolve=>setImmediate(resolve));
   assert.match(elements.get("status").textContent,/SCREENING ONLY/);
   assert.match(elements.get("count").textContent,/2 matching problems/);
@@ -117,7 +119,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     reference_accepted:17,policy_calibration_status:"pending",policy_rollouts:0};
   payload.calibration.groups=[];
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
-    {document,fetch:async()=>({ok:true,json:async()=>payload}),console});
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
   await new Promise(resolve=>setImmediate(resolve));
   assert.match(elements.get("status").textContent,/17 accepted \/ 35 attempts \(not model pass rate\)/);
   assert.match(elements.get("status").textContent,/No policy pass rates measured yet/);
@@ -125,7 +127,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     role:"destination",target_bbox_status:"not_visible",target_visible_pixels:0,
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
-    {document,fetch:async()=>({ok:true,json:async()=>payload}),console});
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
   await new Promise(resolve=>setImmediate(resolve));
   elements.get("problems").children[0].children[1].children[0].children[0].listeners.click();
   const updated=[];
@@ -134,4 +136,19 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.ok(updated.some(e=>e.textContent.includes("Destination goal marker (cyan) · not visible in this camera · no box")));
   assert.ok(!updated.some(e=>e.stroke==="#00e5ff"));
   assert.ok(updated.some(e=>e.stroke==="#ffdd00"));
+  const section=elements.get("problems").children[0];
+  section.open=false;section.listeners.toggle();
+  elements.get("search").value="first";
+  elements.get("search").listeners.input();
+  assert.equal(elements.get("problems").children[0].open,false);
+  elements.get("snapshot-details").open=true;
+  elements.get("snapshot-details").listeners.toggle();
+  elements.clear();
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(elements.get("search").value,"first");
+  assert.equal(elements.get("bucket").value,"b");
+  assert.equal(elements.get("problems").children[0].open,false);
+  assert.equal(elements.get("snapshot-details").open,true);
 });

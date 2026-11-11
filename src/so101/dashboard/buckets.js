@@ -86,8 +86,9 @@ function node(tag, text, cls) {
   if (cls) e.className = cls;
   return e;
 }
-function json(parent, label, value) {
+function json(parent, label, value, remember) {
   const d = node("details"); d.append(node("summary", label), node("pre", JSON.stringify(value ?? "Unmeasured / missing", null, 2))); parent.append(d);
+  remember?.(d);
 }
 function curve(parent, cells) {
   const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
@@ -119,6 +120,20 @@ function stats(parent, groups) {
 }
 async function start() {
   const status=document.getElementById("status");
+  const preferenceKey="lego-buckets-view-v1";
+  let preferences={};
+  try {
+    const saved=JSON.parse(localStorage.getItem(preferenceKey) || "{}");
+    if(saved && typeof saved==="object" && !Array.isArray(saved)) preferences=saved;
+  } catch(error) {console.warn("Could not restore bucket dashboard preferences",error);}
+  function save() {
+    try {localStorage.setItem(preferenceKey,JSON.stringify(preferences));}
+    catch(error) {console.warn("Could not save bucket dashboard preferences",error);}
+  }
+  function rememberDetails(element,key,defaultOpen=false) {
+    element.open=typeof preferences[key]==="boolean" ? preferences[key] : defaultOpen;
+    element.addEventListener("toggle",()=>{preferences[key]=element.open;save();});
+  }
   try {
     const response=await fetch("api/buckets");
     const data=await response.json();
@@ -172,7 +187,7 @@ async function start() {
           row.addEventListener("click",()=>{
             document.getElementById("bucket").value=id;
             document.getElementById("task").value=task;
-            shown=24;render();
+            shown=24;saveFilters();render();
           });
           overview.append(row);
         }
@@ -181,7 +196,17 @@ async function start() {
     }
     document.getElementById("populations").append(overview);
     for (const task of [...new Set(problems.map(p=>p.task))].sort()) {const o=node("option",task);o.value=task;document.getElementById("task").append(o);}
-    let shown=24;
+    for (const id of ["bucket","task","search"]) {
+      const element=document.getElementById(id);
+      if(typeof preferences[id]==="string" &&
+        (id==="search" || (id==="bucket" ? bucketIds : [...new Set(problems.map(p=>p.task))]).includes(preferences[id]))) element.value=preferences[id];
+    }
+    rememberDetails(document.getElementById("snapshot-details"),"snapshot-details");
+    let shown=Number.isInteger(preferences.shown) && preferences.shown>=24 ? preferences.shown : 24;
+    function saveFilters() {
+      for (const id of ["bucket","task","search"]) preferences[id]=document.getElementById(id).value;
+      preferences.shown=shown;save();
+    }
     function render() {
       const bucket=document.getElementById("bucket").value,task=document.getElementById("task").value,q=document.getElementById("search").value.toLowerCase();
       const filtered=problems.filter(p=>(!bucket||p.bucket===bucket)&&(!task||p.task===task)&&(!q||JSON.stringify(p).toLowerCase().includes(q)));
@@ -192,7 +217,7 @@ async function start() {
       for (const group of hierarchy) {
         if (!remaining) break;
         const bucketSection=node("details",undefined,"bucket-group");
-        bucketSection.open=true;
+        rememberDetails(bucketSection,`bucket-open:${group.bucket}`,true);
         const label=(buckets.find(b=>b.id===group.bucket)?.label || group.bucket).replace(/^native:/,"").replace(/-/g," ");
         bucketSection.append(node("summary",`${label} · ${group.piles.length} piles`));
         const grid=node("div",undefined,"pile-grid");
@@ -236,6 +261,7 @@ async function start() {
           let selected=0;
           function selectTask(index) {
             selected=(index+slides.length)%slides.length;
+            preferences[`selected-task:${group.bucket}:${pile.id}`]=pile.tasks[selected].id;save();
             slides.forEach((slide,i)=>{slide.hidden=i!==selected;});
             thumbnails.forEach((thumb,i)=>thumb.setAttribute("aria-pressed",String(i===selected)));
             position.textContent=`Task ${selected+1} of ${slides.length}`;
@@ -281,18 +307,19 @@ async function start() {
         stats(card,measured);
         const failures=measured.reduce((n,g)=>n+Math.max(0,(g.attempts ?? g.trajectories?.length ?? 0)-(g.successes ?? 0)),0);
         card.append(node("p",`Observed unsuccessful rollouts: ${measured.length ? failures : "unmeasured"}. Feasibility vs policy failure attribution: ${p.failure_attribution_status || "unmeasured"}. Visibility / reach: ${p.tags?.visibility ?? "unmeasured"} / ${p.tags?.reach ?? "unmeasured"}.`));
-        json(card,"Tags / provenance / measurement and failure evidence",p);
-        json(card,"Raw measured groups (invalid actions, policy vs feasibility failures)",groupFor(p));
+        json(card,"Tags / provenance / measurement and failure evidence",p,d=>rememberDetails(d,`task-provenance:${p.id}`));
+        json(card,"Raw measured groups (invalid actions, policy vs feasibility failures)",groupFor(p),d=>rememberDetails(d,`task-groups:${p.id}`));
         slides.push(card);stage.append(card);
           }
-          selectTask(0);
+          const restored=pile.tasks.findIndex(p=>p.id===preferences[`selected-task:${group.bucket}:${pile.id}`]);
+          selectTask(restored<0 ? 0 : restored);
         }
         remaining=Math.max(0,remaining-group.piles.length);
       }
       document.getElementById("more").hidden=shown>=pileCount;
     }
-    for (const id of ["bucket","task","search"]) document.getElementById(id).addEventListener("input",()=>{shown=24;render();});
-    document.getElementById("more").addEventListener("click",()=>{shown+=24;render();});
+    for (const id of ["bucket","task","search"]) document.getElementById(id).addEventListener("input",()=>{shown=24;saveFilters();render();});
+    document.getElementById("more").addEventListener("click",()=>{shown+=24;saveFilters();render();});
     render();
     if(typeof setInterval!=="undefined") setInterval(async()=>{
       if(document.getElementById("pile-dialog").open) return;

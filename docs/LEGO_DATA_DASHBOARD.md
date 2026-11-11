@@ -94,6 +94,12 @@ a second LEGO object or an inferred tolerance region. Include `entity_id`,
 Legacy singular boxes remain source-only; missing destination measurements
 are explicitly labeled.
 
+The buckets page remembers bucket collapse state, provenance disclosure state,
+bucket/task/search filters, the loaded pile count and each pile's selected task
+in browser-local storage across manual and automatic refreshes. Removed filter
+values and task identities fall back to the available publication. Storage
+failures are logged without preventing browsing.
+
 Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
 browsing, feedback and activation, not collection or part qualification.
 
