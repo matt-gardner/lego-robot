@@ -196,7 +196,7 @@ async function start() {
           const image=representative.initial_images?.[0];
           if (image) {
           const img=node("img");img.loading="lazy";img.alt=`Initial pile ${pileIndex+1}`;
-          img.src=`api/buckets/image?problem=${encodeURIComponent(representative.id)}&index=0&snapshot=${encodeURIComponent(data.manifest.snapshot_id)}`;
+          img.src=`api/buckets/image?problem=${encodeURIComponent(representative.id)}&index=0&snapshot=${encodeURIComponent(representative.dataset_snapshot_id || data.manifest.snapshot_id)}`;
           img.addEventListener("error",()=>{img.replaceWith(node("p","Initial image unavailable / failed integrity check","missing"));});
           preview.append(img);
           } else preview.append(node("p","Initial scene images not published.","missing"));
@@ -230,7 +230,7 @@ async function start() {
         const targetLabel=target ? `Object ${Number(target[1])+1}` : "Target";
         card.append(node("summary",`${p.task} · ${targetLabel}${dimensions ? " · "+dimensions.map(x=>(x*1000).toFixed(1)).join(" × ")+" mm" : ""}`));
         for (const [index,image] of (p.initial_images || []).entries()) {
-          card.append(taskImage(p,image,index,data.manifest.snapshot_id));
+          card.append(taskImage(p,image,index,p.dataset_snapshot_id || data.manifest.snapshot_id));
         }
         if (!p.initial_images?.length) card.append(node("p","Task image not published yet","missing"));
         card.append(node("p",`Feasibility: ${p.feasibility?.status || "unmeasured"}. Low policy success does not prove infeasibility or solvability.`));

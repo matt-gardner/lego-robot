@@ -78,11 +78,12 @@ class BucketDashboard:
 
     def image(self, problem_id: str, index: int, snapshot_id: str | None = None) -> tuple[bytes, str]:
         snapshot = self.snapshot()
-        if snapshot_id is not None and snapshot["manifest"].get("snapshot_id") != snapshot_id:
-            raise ValueError("Bucket publication changed; refresh the page")
         problems = [row for row in snapshot["problems"]["problems"] if row["id"] == problem_id]
         if len(problems) != 1 or index < 0:
             raise ValueError("Unknown bucket problem/image")
+        revision = problems[0].get("dataset_snapshot_id", snapshot["manifest"].get("snapshot_id"))
+        if snapshot_id is not None and revision != snapshot_id:
+            raise ValueError("Bucket publication changed; refresh the page")
         images = problems[0].get("initial_images", [])
         if index >= len(images):
             raise ValueError("Unknown bucket problem/image")
