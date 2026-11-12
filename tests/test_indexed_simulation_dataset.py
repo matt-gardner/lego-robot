@@ -77,6 +77,45 @@ def test_catalog_mismatch_rejected(tmp_path):
         EntityTrajectoryDataset(tmp_path, 4, 3, storage_path=destination)
 
 
+def test_window_reset_history_uses_initial_state_not_future_command(tmp_path):
+    sources, _ = make_collection(tmp_path)
+    path = tmp_path / sources[0] / "episode.json"
+    episode = json.loads(path.read_text())
+    episode["initial_history_action"] = [7.] * 6
+    path.write_text(json.dumps(episode))
+    dataset = EntityTrajectoryDataset(tmp_path, 4, 3)
+    reset = dataset[0]["history_action"].numpy()
+    expected = (np.full((3, 6), 7.) - dataset.action_mean) / dataset.action_std
+    np.testing.assert_allclose(reset, expected, rtol=1e-6)
+    after_one = dataset[1]["history_action"].numpy()
+    expected[-1] = (np.zeros(6) - dataset.action_mean) / dataset.action_std
+    np.testing.assert_allclose(after_one, expected, rtol=1e-6)
+
+
+@pytest.mark.parametrize("initial", [[0.] * 5, [float("nan")] * 6])
+def test_window_reset_history_rejects_invalid_initial_state(tmp_path, initial):
+    sources, _ = make_collection(tmp_path)
+    path = tmp_path / sources[0] / "episode.json"
+    episode = json.loads(path.read_text())
+    episode["initial_history_action"] = initial
+    path.write_text(json.dumps(episode))
+    with pytest.raises(ValueError, match="invalid initial action-history state"):
+        EntityTrajectoryDataset(tmp_path, 4, 3)
+
+
+def test_single_window_supports_unpaired_sampling_without_inventing_a_pair(tmp_path):
+    sources, _ = make_collection(tmp_path)
+    (tmp_path / "collection.json").write_text(json.dumps({
+        "kind": "grasp-window-sft-v1", "successful_episodes": [sources[0]],
+    }))
+    dataset = EntityTrajectoryDataset(tmp_path, 4, 3)
+    assert len(dataset) == 3
+    assert dataset[0]["actions"].shape == (4, 6)
+    assert len(dataset.balanced_indices(np.random.default_rng(1), 2)) == 2
+    with pytest.raises(ValueError, match="use unpaired sampling"):
+        dataset.paired_indices(np.random.default_rng(1), 2)
+
+
 def test_indexed_storage_preserves_clean_expert_rejection(tmp_path):
     sources, _ = make_collection(tmp_path)
     source = tmp_path / sources[0]

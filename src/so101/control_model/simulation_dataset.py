@@ -66,6 +66,10 @@ class EntityTrajectoryDataset(Dataset):
                 for line in self.read_bytes(source, "frames.jsonl").splitlines()
             ]
             validate_clean_expert(episode, rows)
+            if "initial_history_action" in episode:
+                initial_action = np.asarray(episode["initial_history_action"], dtype=np.float32)
+                if initial_action.shape != (6,) or not np.isfinite(initial_action).all():
+                    raise ValueError(f"{source}: invalid initial action-history state")
             if not rows or any(
                 key not in row
                 for row in rows
@@ -168,7 +172,7 @@ class EntityTrajectoryDataset(Dataset):
             for groups in self.pair_groups_by_task.values()
             for group in groups
         ]
-        if not self.pair_groups:
+        if not self.pair_groups and report.get("kind") != "grasp-window-sft-v1":
             raise ValueError("Entity collection must contain paired command episodes")
         self.task_contrast_groups = [
             indices
@@ -242,6 +246,8 @@ class EntityTrajectoryDataset(Dataset):
         history_state = np.asarray([rows[i]["state"] for i in history_indices], dtype=np.float32)
         prior_indices = np.maximum(history_indices - 1, 0)
         history_action = np.asarray([rows[i]["action"] for i in prior_indices], dtype=np.float32)
+        if "initial_history_action" in episode:
+            history_action[history_indices == 0] = episode["initial_history_action"]
         future_actions = np.asarray([rows[i]["action"] for i in future_indices], dtype=np.float32)
         entity_count = len(rows[index]["command_roles"])
         entity_order = np.random.permutation(entity_count)
@@ -384,6 +390,8 @@ class EntityTrajectoryDataset(Dataset):
     ) -> list[int]:
         if batch_size <= 0 or batch_size % 2:
             raise ValueError("Paired batches require a positive even batch size")
+        if not self.pair_groups:
+            raise ValueError("Window collection has no paired commands; use unpaired sampling")
         indices = []
         tasks = tuple(self.pair_groups_by_task)
         for _ in range(batch_size // 2):

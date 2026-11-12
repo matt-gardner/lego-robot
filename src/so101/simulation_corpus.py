@@ -51,6 +51,8 @@ def load_catalog(collection: Path) -> dict:
 
 def load_corpus(collection: Path) -> dict[str, list[CorpusEpisode]]:
     report = load_catalog(collection)
+    if report.get("kind") == "grasp-window-sft-v1":
+        raise ValueError("Grasp-window SFT demonstrations are not full-task rollout references")
     episodes: dict[str, list[CorpusEpisode]] = defaultdict(list)
     for source_name in report["successful_episodes"]:
         source = Path(source_name)

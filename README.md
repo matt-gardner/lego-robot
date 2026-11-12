@@ -1099,6 +1099,32 @@ LLVM backend plus a working headless MuJoCo GL context; qualify actual scene
 rendering first. Results and trace headers record both selections. Alternate
 runtime diagnostics do not establish GPU pixel or rollout equivalence.
 
+`python -m so101.grasp_window_demonstrations` builds short action-supervised
+approach/closure windows from admitted GRASP `.70–.90` and PLACE `.35–.50`
+anchors. `freeze` pins published family admissions, then `generate` executes
+physical controls without resetting between anchors. The expert lifts to a
+10 mm hover before aligning/descending with a 1.5 mm raised closing pose,
+uses measured target-position feedback, arm gravity feedforward and
+contact-feedback closure, and changes no gains, force limits, or physics.
+Acceptance requires ten consecutive bilateral-contact frames below the native
+0.03 m/s speed threshold and no robot/table intersection; target displacement
+is reported, not relabeled as success. A static anchor alone is not a pass.
+Use `--per-task-limit` for a scene-diverse physical pilot.
+`generate --resume` continues an interrupted run only with the same frozen
+intake/selection and unchanged completed trace hashes; failures remain explicit.
+
+The `render --traces STATUS_JSON --intake INTAKE_JSON --output COLLECTION --model-root MODEL`
+subcommand renders accepted windows with CPU path tracing and dedicated
+zero-MSAA entity labels, checking every replayed qpos against the physical
+trace. Its `grasp-window-sft-v1` collection is consumable by
+`EntityTrajectoryDataset`; reset action history uses the saved initial joint
+state rather than the first future demonstration command. Use unpaired/balanced
+sampling: independent accepted windows do not invent paired-command coverage.
+Episode success
+means **window completion only**, not successful full GRASP or PLACE, and these
+collections are rejected as full-task rollout references. Original family
+splits are retained; all-TRAIN source data does not create held-out evidence.
+
 Launch the prepared detached Docker command on the **existing** GPU through the
 managed mirror, not a bare trainer (the prepared command mounts frozen data and
 source read-only and writes only the isolated recovery output):

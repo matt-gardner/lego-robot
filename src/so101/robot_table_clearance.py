@@ -5,6 +5,10 @@ import mujoco
 import numpy as np
 
 
+class RobotTableIntersection(ValueError):
+    """Robot geometry violates the table-plane clearance requirement."""
+
+
 def robot_body_ids(model: mujoco.MjModel) -> set[int]:
     bodies = {model.body("base").id}
     for body in range(1, model.nbody):
@@ -22,12 +26,12 @@ def robot_table_clearance(model: mujoco.MjModel, data: mujoco.MjData) -> dict:
     bodies = robot_body_ids(model)
     minimum, limiting = float("inf"), None
     count = 0
-    for geom in range(model.ngeom):
-        if int(model.geom_bodyid[geom]) not in bodies:
-            continue
-        if not (model.geom_contype[geom] or model.geom_conaffinity[geom]
-                or model.geom_group[geom] == 2):
-            continue
+    robot_geoms = np.flatnonzero(
+        np.isin(model.geom_bodyid, list(bodies))
+        & ((model.geom_contype != 0) | (model.geom_conaffinity != 0) | (model.geom_group == 2))
+    )
+    for geom in robot_geoms:
+        geom = int(geom)
         rotation = data.geom_xmat[geom].reshape(3, 3)
         direction = normal @ rotation
         size = model.geom_size[geom]
@@ -69,7 +73,7 @@ def require_robot_above_table(model: mujoco.MjModel, data: mujoco.MjData) -> dic
     clearance = robot_table_clearance(model, data)
     # One nanometre permits floating-point noise, not physical penetration.
     if clearance["minimum_clearance_m"] < -1e-9:
-        raise ValueError(
+        raise RobotTableIntersection(
             "Robot intersects table: "
             f"{clearance['limiting_body']} clearance "
             f"{clearance['minimum_clearance_m']:.9f}m"
