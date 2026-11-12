@@ -1034,6 +1034,37 @@ pile size, descriptive Wilson intervals, and input provenance; they do not
 establish held-out accuracy or readiness for training. Recover results
 continuously during execution and own GPU shutdown when useful work ends.
 
+For a bounded **GRASP recovery SFT** diagnostic, `python -m
+so101.fit_grasp_recovery --data /verified/recovery-data --checkpoint
+/original/SFT7296 --output /output/entity_smolvla_sft_b4_lr1e-04 --steps 50
+--batch-size 4 --learning-rate 1e-4` consumes recorded policy inputs and normalized
+future actions from successful exact-native demonstration replays. Only the
+action-output projection is updated; padded future steps and non-robot action
+dimensions are excluded from the flow loss. This is training-subset fitting,
+not evidence of improved autonomous performance. Evaluate teacher-free native
+rollouts separately at 70/75/80% and exclude the recorded original training scene
+families from held-out comparisons.
+
+Launch the prepared detached Docker command on the **existing** GPU through the
+managed mirror, not a bare trainer (the prepared command mounts frozen data and
+source read-only and writes only the isolated recovery output):
+
+```bash
+python scripts/sync_gpu_dashboard.py \
+  --host "$GPU_HOST" --instance-id "$GPU_INSTANCE" --job-id "$GPU_JOB" \
+  --known-hosts /home/claude/.ssh/lego_grasp_147_known_hosts \
+  --container-name lego-grasp-recovery-sft \
+  --remote-root /opt/dlami/nvme/grasp-diag-152/grasp-recovery-sft/output \
+  --output "$RECOVERY_PUBLICATION_ROOT/sft" \
+  --launch-command /opt/dlami/nvme/grasp-diag-152/recovery-command.json
+```
+
+Supply the current allocation's private host, instance and job identifiers; keep
+this launcher persistent and verify its first successful 20-second refresh.
+Recover the exported checkpoint, optimizer/RNG state and dataset provenance
+before shutdown. A live finite supervision cron complements, but never replaces,
+the managed mirror.
+
 With `--calibrate-assistance --batch-rollouts --group-size 4`, synchronous
 calibration retries the **same problem**: four passes reduce assistance; four
 failures increase it; only mixed groups contribute training gradients.
