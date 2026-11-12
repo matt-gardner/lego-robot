@@ -69,6 +69,22 @@ def test_grasp_evaluation_publication_is_discovered_without_fake_training(tmp_pa
     assert json.loads((output / "remote_status.json").read_text())["state"] == "completed"
 
 
+def test_unmeasured_grasp_evaluation_remains_pending_not_zero_success(tmp_path):
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({
+        **grasp_evaluation_log(), "groups": [], "cells_by_recovery_partition": {},
+    }))
+    output = tmp_path / "outputs"
+    publish_evaluation(source, output, state="running")
+    store = RunStore(output)
+    identity, path = next(iter(store.discover().items()))
+    result = store.load(identity, path)
+    assert result["error"] is None
+    assert result["progress"] == {"completed": 0, "expected": 6, "complete": False}
+    assert result["series"] == []
+    assert result["latest_eval"] is None
+
+
 @pytest.mark.parametrize("change", [
     {"optimizer": "AdamW"},
     {"complete": True},

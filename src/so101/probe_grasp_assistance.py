@@ -129,6 +129,7 @@ def main():
         "action_steps": 16, "denoising_noise_scale": .1, "renderer_samples": 16,
         "renderer": "gpu-pathtrace", "label_renderer": "native-id-segmentation-no-msaa-v1",
         "expert_prefix_assistance": 0, "groups": [], "cells": [],
+        "cells_by_recovery_partition": {},
         "scope": "Paired TRAIN screening; Wilson intervals are descriptive, parents are correlated",
     }
     atomic_json(args.output, result)
