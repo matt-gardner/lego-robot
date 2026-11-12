@@ -1112,6 +1112,9 @@ is reported, not relabeled as success. A static anchor alone is not a pass.
 Use `--per-task-limit` for a scene-diverse physical pilot.
 `generate --resume` continues an interrupted run only with the same frozen
 intake/selection and unchanged completed trace hashes; failures remain explicit.
+Constructed other-task resets validate their original admitted parent and
+physical reset invariants, including inherited contacts and PLACE progress,
+before executing demonstration controls.
 
 The `render --traces STATUS_JSON --intake INTAKE_JSON --output COLLECTION --model-root MODEL`
 subcommand renders accepted windows with CPU path tracing and dedicated
