@@ -64,3 +64,22 @@ def test_summary_keeps_static_assistance_and_pile_sizes_separate():
     assert cells[0., None]["total"] == 1
     assert cells[0., None]["success_rate"] == 0.
     assert cells[0., None]["success_interval_95"][1] > 0.
+
+
+def test_recovery_level_selection_retains_paired_frozen_semantics():
+    from so101.probe_grasp_assistance import measurement_levels
+
+    frozen = [tick / 20 for tick in range(20)]
+    assert measurement_levels(frozen, [.8, .7, .75]) == [.7, .75, .8]
+    assert measurement_levels(frozen, None) == frozen
+    for invalid in ([], [.8, .8], [.81], [1.]):
+        with pytest.raises(ValueError, match="frozen levels"):
+            measurement_levels(frozen, invalid)
+
+
+def test_recovery_holdout_is_by_original_scene_not_target_or_admission():
+    from so101.probe_grasp_assistance import recovery_partition
+
+    assert recovery_partition("shared-scene", ["shared-scene"]) == "recovery-training"
+    assert recovery_partition("different-scene", ["shared-scene"]) == "recovery-heldout"
+    assert recovery_partition("different-scene", []) == "unpartitioned"

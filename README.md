@@ -1044,6 +1044,12 @@ dimensions are excluded from the flow loss. This is training-subset fitting,
 not evidence of improved autonomous performance. Evaluate teacher-free native
 rollouts separately at 70/75/80% and exclude the recorded original training scene
 families from held-out comparisons.
+The same paired evaluator accepts `--levels .7 .75 .8
+--expected-policy-sha256 UPDATED_POLICY_DIGEST --training-scene-family
+ORIGINAL_TRAINING_SCENE_FAMILY`. It retains the full frozen input validation and
+original parent seeds while reporting actual counts separately for recovery
+training scenes and recovery-heldout scenes. Without an explicit training-scene
+list, results are unpartitioned rather than implicitly claimed as held out.
 
 Launch the prepared detached Docker command on the **existing** GPU through the
 managed mirror, not a bare trainer (the prepared command mounts frozen data and
