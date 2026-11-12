@@ -1058,6 +1058,8 @@ ORIGINAL_TRAINING_SCENE_FAMILY`. It retains the full frozen input validation and
 original parent seeds while reporting actual counts separately for recovery
 training scenes and recovery-heldout scenes. Without an explicit training-scene
 list, results are unpartitioned rather than implicitly claimed as held out.
+Repeat `--parent-task-id` for a bounded parent subset; all frozen inputs are
+still checked, and each selected parent retains its original seed index.
 
 Launch the prepared detached Docker command on the **existing** GPU through the
 managed mirror, not a bare trainer (the prepared command mounts frozen data and

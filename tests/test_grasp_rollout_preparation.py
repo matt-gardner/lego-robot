@@ -1,7 +1,10 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+from so101.probe_grasp_assistance import select_parent_families
 
 
 spec = importlib.util.spec_from_file_location(
@@ -9,6 +12,19 @@ spec = importlib.util.spec_from_file_location(
 )
 prepare = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prepare)
+
+
+def test_parent_subset_preserves_original_seed_indices():
+    families = [{level: SimpleNamespace(metadata={"parent_task_id": f"parent-{index}"})
+                 for level in (.75, .8)} for index in range(10)]
+    selected = select_parent_families(families, ["parent-7", "parent-2"])
+    assert [index for index, family in selected] == [2, 7]
+    assert [17551000 + index for index, family in selected] == [17551002, 17551007]
+    assert selected[-1][1] is families[7]
+    assert len(select_parent_families(families, None)) == 10
+    for invalid in ([], ["missing"], ["parent-7", "parent-7"]):
+        with pytest.raises(ValueError, match="frozen parents"):
+            select_parent_families(families, invalid)
 
 
 def admitted(parent, family, size=3, split="train"):

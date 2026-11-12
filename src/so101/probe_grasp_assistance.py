@@ -47,6 +47,18 @@ def recovery_partition(scene_family, training_families):
     return "recovery-training" if scene_family in training_families else "recovery-heldout"
 
 
+def select_parent_families(episodes, requested):
+    indexed = list(enumerate(episodes))
+    if requested is None:
+        return indexed
+    available = {next(iter(family.values())).metadata["parent_task_id"]
+                 for family in episodes}
+    if not requested or len(set(requested)) != len(requested) or not set(requested) <= available:
+        raise ValueError("Selected parents must be a nonempty distinct subset of frozen parents")
+    return [(index, family) for index, family in indexed
+            if next(iter(family.values())).metadata["parent_task_id"] in requested]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("plan", "checkpoint", "model-root", "bounds", "output"):
@@ -58,6 +70,7 @@ def main():
     parser.add_argument("--expected-policy-sha256",
                         default="52cabd5b2d5df41b3825f323ffba3f56601725b0a25b24dc16cd923310b5f831")
     parser.add_argument("--training-scene-family", action="append", default=[])
+    parser.add_argument("--parent-task-id", action="append")
     args = parser.parse_args()
     if args.horizon <= 0 or args.deadline <= time.time():
         raise ValueError("Positive horizon and future deadline required")
@@ -96,6 +109,7 @@ def main():
         if sorted(family) != plan["levels"]:
             raise ValueError("Missing paired assistance levels")
         episodes.append(family)
+    selected = select_parent_families(episodes, args.parent_task_id)
     controller = EntityPolicy(args.checkpoint, "cuda", True)
     trainable_parameters(controller, "all")
     controller.policy.eval()
@@ -107,7 +121,8 @@ def main():
         "protocol": plan, "optimizer": None, "policy_sha256_before": before,
         "complete": False, "horizon": args.horizon, "seed": args.seed,
         "assistance_profile": "original-pose-grasp-v1",
-        "expected_rollouts": len(episodes) * len(levels),
+        "expected_rollouts": len(selected) * len(levels),
+        "selected_parent_task_ids": args.parent_task_id,
         "measured_assistance_levels": levels,
         "recovery_training_scene_families": args.training_scene_family,
         "partition_scope": "Recovery-heldout excludes recovery-SFT scenes only, not the original SFT population",
@@ -120,7 +135,7 @@ def main():
     sim = create_simulation(args.model_root, backend="gpu-pathtrace", samples=16)
     try:
         for level in reversed(levels):
-            for index, family in enumerate(episodes):
+            for index, family in selected:
                 if time.time() >= args.deadline:
                     result["stop_reason"] = "deadline"
                     return
