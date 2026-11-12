@@ -52,7 +52,7 @@ async function dashboard(catalog, saved = {}, options = {}) {
   const requests = [];
   const basePath = options.basePath || "";
   const storage = new Map(Object.entries(saved));
-  for (const run of catalog) run.series = [
+  for (const run of catalog) if (!run.series.length) run.series = [
     {phase: "train", task: "all", points: [run.latest_train]},
     {phase: "eval", task: "all", points: [run.latest_eval]},
     {phase: "eval", task: "push", points: [run.latest_eval]},
@@ -111,6 +111,41 @@ test("recognition runs use a separate tab and sample-matched loss series", async
   assert.equal(values.length,1);
   assert.equal(values[0].values[0].x,1280);
   assert.equal(values[0].values[0].value,2);
+});
+
+test("native evaluation keeps progress and scene partitions separate from optimizer training", async () => {
+  const evaluation = {
+    ...run("native-eval", "evaluation", true),
+    axis: "Saved-state assistance (%)", latest_train: null,
+    progress: {completed: 2, expected: 45, complete: false},
+    latest_eval: {step: 80, samples: 1, success_rate: 0},
+    config: {optimizer: null},
+    series: [
+      {phase: "eval", task: "recovery-heldout", points: [{step: 80, samples: 1, success_rate: 0}]},
+      {phase: "eval", task: "recovery-training", points: [{step: 80, samples: 1, success_rate: 1}]},
+    ],
+  };
+  const page = await dashboard([run("action1", "sft"), evaluation]);
+  await page.elements.get("tab-evaluation").events.click();
+  assert.equal(page.eval("chosen().map(r => r.id).join(',')"), "native-eval");
+  assert.match(page.elements.get("cards").textContent, /2\/45/);
+  assert.match(page.elements.get("cards").textContent, /Partial population/);
+  assert.doesNotMatch(page.elements.get("cards").textContent, /Latest optimizer|unassisted/);
+  assert.match(page.elements.get("step-timing").textContent, /teacher-free evaluation.*2\/45/);
+  assert.doesNotMatch(page.elements.get("step-timing").textContent, /optimizer|step —/);
+  assert.equal(page.elements.get("recent-title").textContent, "Measured assistance levels");
+  assert.match(page.elements.get("recent").textContent, /recovery-heldout/);
+  assert.match(page.elements.get("recent").textContent, /recovery-training/);
+  const heldout = page.eval("seriesFor(evaluationSections[0].metrics[0])");
+  const training = page.eval("seriesFor(evaluationSections[1].metrics[0])");
+  assert.equal(heldout[0].values[0].x, 80);
+  assert.equal(heldout[0].values[0].value, 0);
+  assert.equal(training[0].values[0].value, 100);
+  assert.equal(heldout[0].axis, "Saved-state assistance (%)");
+  assert.match(heldout[0].label, /teacher-free/);
+  const restored = await page.reload();
+  assert.equal(restored.eval("state.kind"), "evaluation");
+  assert.equal(restored.eval("chosen()[0].id"), "native-eval");
 });
 
 test("recognition shows dev, minibatch accuracy and final test without action labels or fabricated accuracy", async () => {
@@ -173,17 +208,24 @@ test("data browser prefixes catalog requests and image/movie endpoints", async (
         if (!elements.has(id)) elements.set(id, new Element());
         return elements.get(id);
       },
+      createElement: tag => new Element(tag),
     },
     URLSearchParams,
     fetch: async route => {
       requests.push(route);
-      return {ok: true, json: async () => ({runs: []})};
+      return {
+        ok: true, headers: {get: () => "application/json"},
+        json: async () => route.endsWith("/api/runs")
+          ? {runs: [run("train", "sft"), run("infer", "evaluation")]}
+          : {items: [], total: 0},
+      };
     },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/so101/dashboard/data.js"), "utf8"), context);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(requests, ["/lego-robot/api/runs",
     "/lego-robot/api/data/all?offset=0&limit=24&view=examples&task=all&difficulty=all&object_count=all&expert_outcome=all&expert_acceptance=all"]);
+  assert.deepEqual(elements.get("data-run").children.map(option => option.value), ["train"]);
   vm.runInContext('trainingContext = "run/id"', context);
   assert.equal(vm.runInContext('endpoint({image: "overview"})', context),
     "/lego-robot/api/data/run%2Fid?image=overview");

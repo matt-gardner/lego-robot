@@ -478,7 +478,7 @@ $("detail-overview").addEventListener("error", () => {
   $("detail-overview").alt = "Saved overview snapshot unavailable";
 });
 get(`${basePath}/api/runs`).then(result => {
-  const runs = result.runs.filter(run => !run.error);
+  const runs = result.runs.filter(run => !run.error && run.kind !== "evaluation");
   for (const run of runs) {
     const option = text("option", run.name); option.value = run.id; $("data-run").append(option);
   }
