@@ -29,7 +29,7 @@ from so101.bucket_dashboard import BucketDashboard
 
 
 ASSETS = Path(__file__).with_name("dashboard")
-LOG_NAMES = ("trajectory_rl.json", "rl_training.json", "sft_training.json")
+LOG_NAMES = ("trajectory_rl.json", "rl_training.json", "sft_training.json", "grasp_evaluation.json")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -117,12 +117,50 @@ def recognition_metrics(row: dict) -> dict:
     return point
 
 
+def normalize_grasp_evaluation(data: dict) -> dict:
+    if data["optimizer"] is not None:
+        raise ValueError("GRASP evaluation must not contain optimizer updates")
+    series = []
+    for partition, cells in data["cells_by_recovery_partition"].items():
+        points = []
+        for cell in cells:
+            if cell["piece_count"] is not None:
+                continue
+            total, successes = cell["total"], cell["successes"]
+            if not 0 <= successes <= total or total <= 0 or not 0 <= cell["assistance"] <= 1:
+                raise ValueError("Invalid GRASP evaluation counts")
+            points.append({
+                "step": cell["assistance"] * 100,
+                "samples": total,
+                "success_rate": successes / total,
+            })
+        series.append({"phase": "eval", "task": partition,
+                       "points": sorted(points, key=lambda point: point["step"])})
+    heldout = next((item["points"] for item in series
+                    if item["task"] == "recovery-heldout"), [])
+    return {
+        "kind": "evaluation", "axis": "Saved-state assistance (%)",
+        "series": series, "latest_train": None,
+        "latest_eval": heldout[-1] if heldout else None, "best_eval": None,
+        "progress": {"completed": len(data["groups"]), "expected": data["expected_rollouts"],
+                     "complete": data["complete"]},
+        "config": {key: data[key] for key in (
+            "optimizer", "policy_sha256_before", "horizon", "seed", "assistance_profile",
+            "measured_assistance_levels", "recovery_training_scene_families",
+            "partition_scope", "action_steps", "expert_prefix_assistance",
+        )},
+        "curriculum": None,
+    }
+
+
 def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = None) -> dict:
     """Keep scalar plot data only; never ship per-frame or parameter data."""
+    if data.get("kind") == "grasp_assistance_evaluation":
+        return normalize_grasp_evaluation(data)
     series: dict[tuple[str, str], list[dict]] = defaultdict(list)
     steps = data.get("steps", [])
     recognition = data.get("kind") == "piece_recognition_sft"
-    sft = data.get("kind") == "sft" or recognition
+    sft = data.get("kind") in ("sft", "grasp_recovery_sft") or recognition
     trajectory = not sft and "validation" in data
     axis = "Optimizer step"
     if sft:
@@ -136,6 +174,10 @@ def normalize_log(data: dict, jerk_references: ReferenceJerkMargins | None = Non
                     "train_top1", "train_top3", "train_top5", "train_accuracy_n",
                 )},
             })
+            if data.get("kind") == "grasp_recovery_sft":
+                point = series[("train", "all")][-1]
+                point["samples_seen"] = row["step"] * data["run_config"]["batch_size"]
+                point["learning_rate"] = data["run_config"]["learning_rate"]
     elif trajectory:
         for row in steps:
             groups = row.get("groups", [])
@@ -330,11 +372,12 @@ class RunStore:
                 return cached
             data = json.loads(path.read_text())
             if not isinstance(data, dict) or not (
-                data.get("kind") in ("sft", "piece_recognition_sft") or any(
+                data.get("kind") in ("sft", "piece_recognition_sft", "grasp_recovery_sft",
+                                     "grasp_assistance_evaluation") or any(
                     key in data for key in ("validation", "rollouts", "episode_metrics")
                 )
             ):
-                raise ValueError("File does not contain a supported training log")
+                raise ValueError("File does not contain a supported training or evaluation log")
             jerk_references = None
             split_path = path.with_name("data_split.json")
             if data.get("kind") not in ("sft", "piece_recognition_sft") and "validation" in data and split_path.exists():

@@ -16,6 +16,23 @@ Frozen and
 fine-tuned runs retain their relative parent paths. Recognition losses are never
 combined with action SFT or RL; action-evaluation charts are not shown for them.
 
+## GRASP policy evaluation
+
+The training observatory also discovers nested `grasp_evaluation.json` files
+with kind `grasp_assistance_evaluation`. These appear in **Policy evaluation**,
+separate from RL, SFT and recognition. The result publisher writes that atomic
+adapter and a checked-remote-process heartbeat after each transport refresh.
+Curves use saved-state assistance percentages and completed-rollout denominators,
+not optimizer steps. Recovery-training and recovery-heldout scenes are separate;
+recovery-heldout is not an original-SFT test split. Missing cells remain
+unmeasured. Raw `results.json` and input provenance remain unchanged.
+After each successful mirror and remote unit health check, call
+`so101.publish_grasp_evaluation.publish_evaluation(results_path, published_output,
+state="running")`; use `completed` after successful completion. Refresh every
+20 seconds; model weights and sample tensors are not dashboard publications.
+Recovery-fitting logs (`kind: grasp_recovery_sft`) appear in SFT with the actual
+sample count (optimizer updates times batch size), never inferred action success.
+
 ## Live data buckets (schema 1)
 
 Distance-assisted child pilots (`tags.task_assistance.kind:

@@ -9,6 +9,91 @@ import pytest
 
 import so101.rl_dashboard as rl_dashboard
 from so101.rl_dashboard import RunStore, active_run_outputs, make_server, normalize_log
+from so101.publish_grasp_evaluation import publish_evaluation
+
+
+def grasp_evaluation_log():
+    return {
+        "optimizer": None, "groups": [{}, {}, {}, {}], "expected_rollouts": 6,
+        "complete": False, "policy_sha256_before": "a" * 64, "horizon": 300,
+        "seed": 123, "assistance_profile": "grasp",
+        "measured_assistance_levels": [.8, .75], "recovery_training_scene_families": ["scene"],
+        "partition_scope": "Recovery-heldout is not original-SFT heldout",
+        "action_steps": 16, "expert_prefix_assistance": False,
+        "cells_by_recovery_partition": {
+            "recovery-heldout": [
+                {"assistance": .8, "piece_count": None, "successes": 0, "total": 2},
+                {"assistance": .75, "piece_count": None, "successes": 1, "total": 1},
+                {"assistance": .8, "piece_count": 3, "successes": 0, "total": 2},
+            ],
+            "recovery-training": [
+                {"assistance": .8, "piece_count": None, "successes": 1, "total": 1},
+            ],
+        },
+    }
+
+
+def test_grasp_evaluation_publication_is_discovered_without_fake_training(tmp_path):
+    source = tmp_path / "source.json"
+    original = json.dumps(grasp_evaluation_log())
+    source.write_text(original)
+    output = tmp_path / "outputs/nested/grasp/recovery-population-eval"
+    publish_evaluation(source, output, state="running")
+    store = RunStore(tmp_path / "outputs")
+    identity, path = next(iter(store.discover().items()))
+    first = store.load(identity, path)
+    assert first["error"] is None
+    assert first["kind"] == "evaluation"
+    assert first["axis"] == "Saved-state assistance (%)"
+    assert first["latest_train"] is None
+    assert first["progress"] == {"completed": 4, "expected": 6, "complete": False}
+    curves = {series["task"]: series for series in first["series"]}
+    assert list(curves) == ["recovery-heldout", "recovery-training"]
+    assert curves["recovery-heldout"]["phase"] == "eval"
+    assert [(row["step"], row["success_rate"], row["samples"])
+            for row in curves["recovery-heldout"]["points"]] == [(75, 1, 1), (80, 0, 2)]
+    assert curves["recovery-training"]["points"][0]["success_rate"] == 1
+    assert first["config"]["optimizer"] is None
+    assert source.read_text() == original
+    assert {path.name for path in output.iterdir()} == {"grasp_evaluation.json", "remote_status.json"}
+    assert json.loads((output / "remote_status.json").read_text())["state"] == "running"
+    data = grasp_evaluation_log()
+    data["groups"].extend([{}, {}])
+    data["cells_by_recovery_partition"]["recovery-heldout"][1]["total"] = 3
+    data["complete"] = True
+    source.write_text(json.dumps(data))
+    publish_evaluation(source, output, state="completed")
+    second = store.load(identity, path)
+    assert second["revision"] != first["revision"]
+    assert second["progress"] == {"completed": 6, "expected": 6, "complete": True}
+    assert json.loads((output / "remote_status.json").read_text())["state"] == "completed"
+
+
+@pytest.mark.parametrize("change", [
+    {"optimizer": "AdamW"},
+    {"complete": True},
+    {"expected_rollouts": 3},
+    {"groups": []},
+])
+def test_grasp_evaluation_rejects_misleading_publication(tmp_path, change):
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({**grasp_evaluation_log(), **change}))
+    output = tmp_path / "output"
+    with pytest.raises(ValueError):
+        publish_evaluation(source, output, state="running")
+    assert not output.exists()
+
+
+def test_completed_recovery_sft_is_visible_with_actual_sample_axis():
+    result = normalize_log({
+        "kind": "grasp_recovery_sft",
+        "run_config": {"batch_size": 4, "learning_rate": 1e-4},
+        "steps": [{"step": 2, "loss": .3, "action_loss": .3}],
+    })
+    assert result["kind"] == "sft"
+    assert result["latest_train"]["samples_seen"] == 8
+    assert result["latest_train"]["learning_rate"] == 1e-4
+    assert result["latest_eval"] is None
 
 
 def test_nested_recognition_log_is_not_action_sft_or_rl(tmp_path):

@@ -66,7 +66,15 @@ const sftSections = [
     metrics: sections.at(-1).metrics.map(metric => metric.key === "gradient_norm"
       ? {...metric, note: "Logged pre-clip gradient norm for supervised training."} : metric)},
 ];
-const runKinds = ["rl", "sft", "recognition"];
+const evaluationSections = ["recovery-heldout", "recovery-training"].map(task => ({
+  id: `evaluation-${task}`, title: `${task} policy success`, open: true,
+  note: "Teacher-free inference · recovery-scene partition, not an original-SFT test split · incomplete cells are not failures.",
+  metrics: [
+    {key: "success_rate", title: "Success rate", unit: "%", percent: true, bounds: [0, 100]},
+    {key: "samples", title: "Completed rollouts", unit: ""},
+  ].map(metric => ({...metric, phase: "eval", task})),
+}));
+const runKinds = ["rl", "sft", "recognition", "evaluation"];
 const supervised = kind => kind === "sft" || kind === "recognition";
 const recognitionSections = [
   {id: "recognition-training-accuracy", title: "Training minibatch accuracy", open: true,
@@ -103,7 +111,7 @@ const savedSelections = Object.fromEntries(runKinds.map(kind => {
   return [kind, Array.isArray(value) && value.every(id => typeof id === "string" && id.length > 0) ? value : null];
 }));
 const savedSections = readStorage("rl-section-open");
-const sectionOpen = Object.fromEntries([...sections, ...sftSections, ...recognitionSections]
+const sectionOpen = Object.fromEntries([...sections, ...sftSections, ...recognitionSections, ...evaluationSections]
   .filter(section => record(savedSections) && typeof savedSections[section.id] === "boolean")
   .map(section => [section.id, savedSections[section.id]]));
 const storedPreferences = readStorage("so101-dashboard-preferences");
@@ -177,6 +185,10 @@ function updateStepCounters() {
     const since = summary.active === true
       ? `since update ${run?.last_step_time_estimated ? "~" : ""}${duration(elapsed)}`
       : "";
+    if (runKind(summary) === "evaluation") {
+      return text("span", `${prefix}teacher-free evaluation · ${summary.progress?.completed ?? 0}/${summary.progress?.expected ?? "?"} completed rollouts` +
+        (remote ? ` · report ${duration(reportAge)}` : ""));
+    }
     const counter = text("span",
       `${prefix}${phase} · step ${latestStep ?? "—"} · optimizer ${duration(run?.latest_train?.step_seconds)}` +
       (since ? ` · ${since}` : "") +
@@ -246,13 +258,15 @@ function renderRuns() {
     const swatch = text("span", "", "swatch");
     const latest = run.latest_train?.step ?? "—";
     meta.append(swatch, document.createTextNode(
-      `step ${latest}${supervised(state.kind) ? ` · loss ${num(run.latest_train?.loss)}` : ""} · ${state.kind === "recognition" ? "dev top1" : "eval"} ${pct(state.kind === "recognition" ? run.latest_eval?.top1 : run.latest_eval?.success_rate)}`));
+      state.kind === "evaluation"
+        ? `${run.progress?.completed ?? 0}/${run.progress?.expected ?? "?"} completed rollouts`
+        : `step ${latest}${supervised(state.kind) ? ` · loss ${num(run.latest_train?.loss)}` : ""} · ${state.kind === "recognition" ? "dev top1" : "eval"} ${pct(state.kind === "recognition" ? run.latest_eval?.top1 : run.latest_eval?.success_rate)}`));
     meta.append(document.createElement("br"), document.createTextNode(
       `${run.archived ? "Archive · " : ""}Log updated ${run.updated_at ? new Date(run.updated_at).toLocaleString() : "unavailable"}`));
     if (run.remote) {
       meta.append(document.createElement("br"), document.createTextNode(
         `Cloud: ${run.remote.state} · contact ${duration(run.remote.contact_age_seconds)} ago` +
-        ` · backup step ${run.remote.backup?.step ?? "none"}`));
+        (state.kind === "evaluation" ? "" : ` · backup step ${run.remote.backup?.step ?? "none"}`)));
     }
     wrapper.append(label, meta);
     fragment.append(wrapper);
@@ -274,7 +288,16 @@ function renderDetails() {
   const latest = run?.latest_eval;
   const sft = supervised(state.kind);
   const recognition = state.kind === "recognition";
-  const cards = recognition ? [
+  const evaluation = state.kind === "evaluation";
+  $("recent-title").textContent = evaluation ? "Measured assistance levels" : "Recent steps";
+  const cards = evaluation ? [
+    ["Completed rollouts", `${run?.progress?.completed ?? 0}/${run?.progress?.expected ?? "?"}`,
+      run?.progress?.complete ? "Evaluation complete" : "Partial population; incomplete cells are not failures"],
+    ["Recovery-heldout success", pct(latest?.success_rate),
+      latest ? `${latest.step}% saved-state assistance · n=${latest.samples}` : "No recovery-heldout rollouts completed"],
+    ["Policy updates", "None", "Teacher-free inference with a frozen checkpoint"],
+    ["Scene split", "Recovery-specific", "Recovery-heldout is not an original-SFT held-out benchmark"],
+  ] : recognition ? [
     ["Latest dev top1 / top3 / top5", latest ? `${pct(latest.top1)} / ${pct(latest.top3)} / ${pct(latest.top5)}` : "—",
       latest ? `Step ${latest.step} · ${latest.n} box-view observations` : "No dev evaluation logged"],
     ["Dev macro top1", pct(latest?.macro_top1), latest ? `${latest.families} part IDs · unweighted` : "No dev evaluation logged"],
@@ -330,12 +353,15 @@ function renderDetails() {
   const training = points(run, "train", "all").slice(-10);
   const cutoff = training[0]?.step ?? Infinity;
   const preceding = points(run, "eval", "all").filter(row => sft || row.step < cutoff).slice(-2);
-  const recent = [
+  const recent = evaluation ? (run?.series || []).flatMap(series =>
+    series.points.map(row => ({...row, phase: series.task}))) : [
     ...preceding.map(row => ({...row, phase: "eval"})),
     ...training.map(row => ({...row, phase: "train"})),
   ];
   if (sft) recent.sort((a, b) => a.step - b.step || (a.phase === "eval" ? 1 : -1));
-  const headings = recognition
+  const headings = evaluation
+    ? ["Saved-state assistance (%)", "Recovery partition", "Success", "Completed rollouts"]
+    : recognition
     ? ["Step", "Phase", "Loss", "Top1", "Top3", "Top5", "Macro top1", "Observations", "LR"]
     : sft
     ? ["Step", "Phase", "Loss", "Success", "Efficiency", "Eval RMS jerk", "Wrong object", "LR", "Grad norm", "Step time (s)"]
@@ -345,14 +371,18 @@ function renderDetails() {
     if (label === "Jerk gap / eval RMS") th.title = "Training: jerk minus reference margin. Validation: absolute RMS jerk (no margin logged).";
     return th;
   }));
-  $("recent-note").textContent = recognition
+  $("recent-note").textContent = evaluation
+    ? "Teacher-free completed rollouts only. Recovery-training and recovery-heldout scenes remain separate; no optimizer steps or unassisted-validation claim."
+    : recognition
     ? latest?.scope || "Recognition-only training and dev evaluation. Counts are box-view observations, not independent pieces."
     : sft
     ? "Most recent 10 loss-only optimizer steps and two latest validation rows. Success, efficiency, absolute RMS jerk and wrong-object metrics are evaluation only."
     : "Most recent 10 optimizer steps, plus the two preceding validation-only rows. Training success includes assisted and discarded trajectories; validation is unassisted.";
   $("recent").replaceChildren(...recent.map(row => {
     const tr = text("tr", "", row.phase === "eval" ? "eval-row" : "");
-    const values = recognition ? [
+    const values = evaluation ? [
+      row.step, row.phase, pct(row.success_rate), row.samples,
+    ] : recognition ? [
       row.step, row.phase === "eval" ? "Dev evaluation" : "Recognition loss",
       row.phase === "train" ? num(row.loss) : "—",
       pct(row.top1), pct(row.top3), pct(row.top5), pct(row.macro_top1), row.n ?? "—", exp(row.learning_rate),
@@ -409,7 +439,7 @@ function seriesFor(metric) {
       });
       if (!values.some(point => finite(point.value))) continue;
       result.push({
-        label: `${shortName(run)} · ${series.task} · ${series.phase === "eval" ? (state.kind === "recognition" ? "dev" : "validation") : "train"}`,
+        label: `${shortName(run)} · ${series.task} · ${series.phase === "eval" ? (state.kind === "recognition" ? "dev" : state.kind === "evaluation" ? "teacher-free" : "validation") : "train"}`,
         values, color: color(run.id), axis: supervised(state.kind) ? "Training samples seen" : run.axis,
         dash: series.phase === "eval" ? [6, 4] : [],
       });
@@ -438,7 +468,7 @@ class Chart {
     this.panel = text("section", "", "panel plot");
     this.canvas = document.createElement("canvas");
     this.canvas.setAttribute("role", "img");
-    this.canvas.setAttribute("aria-label", `${section.querySelector("h2").textContent}: ${metric.title} versus ${supervised(section.dataset.kind) ? "training samples seen" : "optimizer step"}${metric.logLog ? ", both axes logarithmic" : ""}`);
+    this.canvas.setAttribute("aria-label", `${section.querySelector("h2").textContent}: ${metric.title} versus ${supervised(section.dataset.kind) ? "training samples seen" : section.dataset.kind === "evaluation" ? "saved-state assistance percentage" : "optimizer step"}${metric.logLog ? ", both axes logarithmic" : ""}`);
     this.legend = text("div", "", "legend");
     const heading = text("h2", metric.title);
     this.panel.append(heading);
@@ -609,7 +639,9 @@ class Chart {
       if (!values.length) continue;
       const point = values.reduce((best, p) => Math.abs(this.x(p.x) - pixel) < Math.abs(this.x(best.x) - pixel) ? p : best);
       const value = this.metric.scientific ? point.raw.toExponential(2) : point.raw.toFixed(2);
-      const line = text("div", `${series.label} · ${supervised(state.kind) ? `${point.x} samples · ` : ""}step ${point.step}: ${value}${this.metric.unit === "%" ? "%" : ` ${this.metric.unit}`}`);
+      const position = state.kind === "evaluation" ? `${point.step}% assistance · n=${point.samples}` :
+        `${supervised(state.kind) ? `${point.x} samples · ` : ""}step ${point.step}`;
+      const line = text("div", `${series.label} · ${position}: ${value}${this.metric.unit === "%" ? "%" : ` ${this.metric.unit}`}`);
       if (state.kind === "recognition") line.append(document.createTextNode(
         ` · n=${point.n ?? point.train_accuracy_n ?? "unreported"} box-view observations`));
       line.style.color = series.color;
@@ -675,7 +707,7 @@ async function refresh() {
       }
       state.initialized = true;
     }
-    for (const kind of ["sft", "recognition"]) if (!state[`${kind}Initialized`]) {
+    for (const kind of ["sft", "recognition", "evaluation"]) if (!state[`${kind}Initialized`]) {
       const sftCatalog = state.catalog.filter(run => runKind(run) === kind);
       const existing = new Set(sftCatalog.map(run => run.id));
       for (const id of selections[kind]) if (!existing.has(id)) selections[kind].delete(id);
@@ -745,6 +777,7 @@ for (const definition of [
   ...sections.map(section => ({...section, kind: "rl"})),
   ...sftSections.map(section => ({...section, kind: "sft"})),
   ...recognitionSections.map(section => ({...section, kind: "recognition"})),
+  ...evaluationSections.map(section => ({...section, kind: "evaluation"})),
 ]) {
   const section = document.createElement("details");
   section.id = `section-${definition.id}`;

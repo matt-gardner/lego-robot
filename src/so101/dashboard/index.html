@@ -13,6 +13,7 @@
     <button id="tab-rl" role="tab" aria-selected="true" aria-controls="training-panel">RL</button>
     <button id="tab-sft" role="tab" aria-selected="false" aria-controls="training-panel" tabindex="-1">SFT</button>
     <button id="tab-recognition" role="tab" aria-selected="false" aria-controls="training-panel" tabindex="-1">Recognition</button>
+    <button id="tab-evaluation" role="tab" aria-selected="false" aria-controls="training-panel" tabindex="-1">Policy evaluation</button>
   </nav>
   <div id="step-timing" class="step-timing" role="status" aria-label="Selected run timing"></div>
   <div id="error" role="alert" hidden></div>
@@ -34,7 +35,7 @@
       <section id="recognition-results" class="panel details" hidden></section>
       <div id="plots" class="plot-sections"></div>
       <section class="panel details">
-        <div class="section-title"><h2>Recent steps</h2><select id="focus" aria-label="Run for recent steps"></select></div>
+        <div class="section-title"><h2 id="recent-title">Recent steps</h2><select id="focus" aria-label="Run for recent steps"></select></div>
         <p id="recent-note" class="hint">Most recent 10 optimizer steps, plus the two preceding validation-only rows. Training success includes assisted and discarded trajectories; validation is unassisted.</p>
         <div class="table-wrap"><table><thead><tr id="recent-head"><th>Step</th><th>Phase</th><th>Success</th><th>Efficiency</th><th title="Training: jerk minus reference margin. Validation: absolute RMS jerk (no margin logged).">Jerk gap / eval RMS</th><th>Wrong object</th><th>LR</th><th>Grad norm</th><th>Assistance</th></tr></thead><tbody id="recent"></tbody></table></div>
         <details><summary>Run configuration &amp; assistance curriculum</summary><pre id="config"></pre></details>
