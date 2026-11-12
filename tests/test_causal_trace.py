@@ -10,6 +10,51 @@ from so101.simulation_corpus import CorpusEpisode
 from so101 import train_trajectory_rl as trainer
 
 
+@pytest.mark.parametrize("runtime", [[], ["--device", "cpu", "--renderer", "cpu-pathtrace"]])
+def test_evaluator_routes_runtime_and_records_provenance(tmp_path, monkeypatch, runtime):
+    from so101 import probe_grasp_assistance as probe
+
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({
+        "kind": "paired-original-pose-grasp-rollouts-v1", "levels": [.75],
+        "files_sha256": {}, "entries": [],
+    }))
+    bounds = tmp_path / "bounds.json"
+    bounds.write_text(json.dumps({"expert_bounds": {"grasp": {}}}))
+    output = tmp_path / "results.json"
+    calls = {}
+
+    def controller_factory(checkpoint, device, *args, **kwargs):
+        calls["device"] = device
+        return SimpleNamespace(policy=SimpleNamespace(
+            config=SimpleNamespace(chunk_size=50), eval=lambda: None,
+        ))
+
+    def simulation_factory(model_root, **kwargs):
+        calls["renderer"] = kwargs["backend"]
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(probe, "EntityPolicy", controller_factory)
+    monkeypatch.setattr(probe, "create_simulation", simulation_factory)
+    monkeypatch.setattr(probe, "trainable_parameters", lambda *args: None)
+    monkeypatch.setattr(probe, "policy_digest", lambda *args: "pinned")
+    monkeypatch.setattr("sys.argv", [
+        "probe", "--plan", str(plan), "--checkpoint", str(tmp_path),
+        "--model-root", str(tmp_path), "--bounds", str(bounds), "--output", str(output),
+        "--deadline", "9999999999", "--expected-policy-sha256", "pinned", *runtime,
+    ])
+    probe.main()
+    result = json.loads(output.read_text())
+    assert calls == {"device": "cpu" if runtime else "cuda",
+                     "renderer": "cpu-pathtrace" if runtime else "gpu-pathtrace"}
+    assert result["device"] == calls["device"]
+    assert result["renderer"] == calls["renderer"]
+    assert result["runtime_scope"] == (
+        "alternate-runtime-diagnostic-not-gpu-equivalent" if runtime else "historical-gpu-runtime"
+    )
+    assert result["policy_sha256_after"] == "pinned"
+
+
 def test_trace_limit_is_explicit_and_never_exceeded(tmp_path):
     path = tmp_path / "trace.jsonl"
     trace = CausalTrace(path, {"seed": 1}, 1024)

@@ -1093,6 +1093,11 @@ created exclusively; the byte limit produces an explicit incomplete/truncated
 receipt rather than silently dropping events. A fresh directory is required.
 Default evaluation, physics and grading are unchanged. These traces diagnose
 command/state divergence; command thresholds are not grasp-success labels.
+For explicitly CPU-only diagnostics, use `--device cpu --renderer cpu-pathtrace`.
+The defaults remain CUDA and GPU path tracing. CPU path tracing requires Mitsuba's
+LLVM backend plus a working headless MuJoCo GL context; qualify actual scene
+rendering first. Results and trace headers record both selections. Alternate
+runtime diagnostics do not establish GPU pixel or rollout equivalence.
 
 Launch the prepared detached Docker command on the **existing** GPU through the
 managed mirror, not a bare trainer (the prepared command mounts frozen data and

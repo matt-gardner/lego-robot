@@ -67,6 +67,9 @@ def main():
     parser.add_argument("--horizon", type=int, default=300)
     parser.add_argument("--action-steps", type=int, default=16)
     parser.add_argument("--full-state-checkpoint", action="store_true")
+    parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument("--renderer", choices=("gpu-pathtrace", "cpu-pathtrace"),
+                        default="gpu-pathtrace")
     parser.add_argument("--seed", type=int, default=17551000)
     parser.add_argument("--deadline", type=int, required=True)
     parser.add_argument("--levels", type=float, nargs="+")
@@ -122,7 +125,7 @@ def main():
         episodes.append(family)
     selected = select_parent_families(episodes, args.parent_task_id)
     controller = EntityPolicy(
-        args.checkpoint, "cuda", True, full_state_checkpoint=args.full_state_checkpoint,
+        args.checkpoint, args.device, True, full_state_checkpoint=args.full_state_checkpoint,
     )
     if args.action_steps > controller.policy.config.chunk_size:
         raise ValueError("Action steps exceed the policy's predicted chunk size")
@@ -142,13 +145,17 @@ def main():
         "recovery_training_scene_families": args.training_scene_family,
         "partition_scope": "Recovery-heldout excludes recovery-SFT scenes only, not the original SFT population",
         "action_steps": args.action_steps, "denoising_noise_scale": .1, "renderer_samples": 16,
-        "renderer": "gpu-pathtrace", "label_renderer": "native-id-segmentation-no-msaa-v1",
+        "device": args.device,
+        "renderer": args.renderer, "label_renderer": "native-id-segmentation-no-msaa-v1",
+        "runtime_scope": ("historical-gpu-runtime" if
+                          args.device == "cuda" and args.renderer == "gpu-pathtrace"
+                          else "alternate-runtime-diagnostic-not-gpu-equivalent"),
         "expert_prefix_assistance": 0, "groups": [], "cells": [],
         "cells_by_recovery_partition": {},
         "scope": "Paired TRAIN screening; Wilson intervals are descriptive, parents are correlated",
     }
     atomic_json(args.output, result)
-    sim = create_simulation(args.model_root, backend="gpu-pathtrace", samples=16)
+    sim = create_simulation(args.model_root, backend=args.renderer, samples=16)
     try:
         for level in reversed(levels):
             for index, family in selected:
@@ -163,6 +170,7 @@ def main():
                         args.causal_trace_dir / f"parent-{index}-level-{level:g}.jsonl",
                         {"source": str(episode.source), "seed": args.seed + index,
                          "policy_sha256": before, "action_steps": args.action_steps,
+                         "device": args.device, "renderer": args.renderer,
                          "denoising_noise_scale": .1, "horizon": args.horizon},
                         args.causal_trace_max_bytes,
                     )
