@@ -1083,6 +1083,16 @@ still checked, and each selected parent retains its original seed index.
 The evaluator defaults to 16 action steps between observations. Set
 `--action-steps` explicitly to test shorter feedback intervals; the actual
 interval is recorded in the result and changes neither physics nor grading.
+For future failure diagnosis, the paired evaluator accepts
+`--causal-trace-dir /output/causal-traces` with an optional
+`--causal-trace-max-bytes` (default 8 MiB **per rollout**). This opt-in JSONL
+records observation tensor identities (image hashes, not pixels), numeric
+observation values, pre-sampling RNG state, sampled action chunks, bounded and
+applied commands, and native pre/post state and target contacts. Files are
+created exclusively; the byte limit produces an explicit incomplete/truncated
+receipt rather than silently dropping events. A fresh directory is required.
+Default evaluation, physics and grading are unchanged. These traces diagnose
+command/state divergence; command thresholds are not grasp-success labels.
 
 Launch the prepared detached Docker command on the **existing** GPU through the
 managed mirror, not a bare trainer (the prepared command mounts frozen data and

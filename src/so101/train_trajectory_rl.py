@@ -33,6 +33,7 @@ from so101.control_model.modeling_entity_smolvla import (
     save_entity_checkpoint,
 )
 from so101.evaluate_entity_sim import EntityPolicy
+from so101.causal_trace import CausalTrace, native_snapshot
 from so101.robot_sim import (
     BeamSimulation,
     MODEL_ROOT,
@@ -296,6 +297,7 @@ def _rollout(
     fixed_horizon: bool = False,
     record_path_noise: bool = False,
     independent_rng: bool = False,
+    causal_trace: CausalTrace | None = None,
 ) -> Generator[SamplingRequest, tuple[torch.Tensor, list[FlowTransition]], Trajectory]:
     if "native_entry" in episode.metadata:
         cached = getattr(sim, "_native_simulation", None)
@@ -315,7 +317,7 @@ def _rollout(
     return (yield from _rollout_on_sim(
         sim, controller, episode, rollout_seed, horizon, action_steps, bounds,
         store_decisions, start_proximity, denoising_noise_scale, capture_path,
-        fixed_horizon, record_path_noise, independent_rng,
+        fixed_horizon, record_path_noise, independent_rng, causal_trace,
     ))
 
 
@@ -323,6 +325,7 @@ def _rollout_on_sim(
     sim, controller, episode, rollout_seed, horizon, action_steps, bounds,
     store_decisions, start_proximity=0., denoising_noise_scale=None, capture_path=None,
     fixed_horizon=False, record_path_noise=False, independent_rng=False,
+    causal_trace=None,
 ):
     rollout_start = time.monotonic()
     target, destination, entities = reset_from_episode(sim, episode)
@@ -360,6 +363,9 @@ def _rollout_on_sim(
                 if capture_path is not None else None)
     avoid_obstacles = episode.metadata.get("constraints", {}).get("avoid_obstacles", False)
     constraint_violation = bool(avoid_obstacles and sim.obstacle_contact_events)
+    if causal_trace is not None and not isinstance(sim, NativePileSimulation):
+        raise ValueError("Causal tracing requires the native simulation contact contract")
+    chunk_index = 0
     while executed < horizon and (fixed_horizon or not success and not wrong_object) and not constraint_violation:
         phase = control_phase(
             sim,
@@ -375,6 +381,8 @@ def _rollout_on_sim(
         )
         observation_seconds += time.monotonic() - observation_start
         inference_start = time.monotonic()
+        if causal_trace is not None:
+            causal_trace.decision(inputs, controller, chunk_index, executed, phase)
         controller.policy.eval()
         denoising_path = None
         frozen_observation = None
@@ -397,20 +405,32 @@ def _rollout_on_sim(
             * controller.action_std
             + controller.action_mean
         )
+        if causal_trace is not None:
+            causal_trace.write("sampled_chunk", {
+                "chunk": chunk_index, "executed": executed,
+                "normalized_actions": normalized[:, :6].float().cpu().tolist(),
+                "model_commands": actions.tolist(),
+            })
         inference_seconds += time.monotonic() - inference_start
         chunk_steps = 0
         chunk_attempts = 0
         invalid = False
         chunk_length = min(len(actions), action_steps, horizon - executed)
         history_steps = controller.config.history_steps
-        for action in actions[:chunk_length]:
+        for action_index, action in enumerate(actions[:chunk_length]):
             simulation_start = time.monotonic()
             chunk_attempts += 1
+            pre = native_snapshot(sim, target) if causal_trace is not None else None
             try:
                 goal, _ = sim.bounded_policy_action(action)
             except ValueError as error:
                 invalid = True
                 invalid_action_error = str(error)
+                if causal_trace is not None:
+                    causal_trace.write("rejected_action", {
+                        "chunk": chunk_index, "offset": action_index, "executed": executed,
+                        "model_command": action.tolist(), "pre": pre, "error": str(error),
+                    })
                 print(json.dumps({
                     "event": "policy_action_rejected", "command": episode.task,
                     "source": str(episode.source), "seed": rollout_seed,
@@ -419,6 +439,14 @@ def _rollout_on_sim(
                 break
             sim.step(goal, "trajectory_rl")
             encoded = sim.encode(goal)
+            if causal_trace is not None:
+                causal_trace.write("applied_action", {
+                    "chunk": chunk_index, "offset": action_index, "executed": executed,
+                    "model_normalized": normalized[action_index, :6].float().cpu().tolist(),
+                    "model_command": action.tolist(), "bounded_goal_radians": goal.tolist(),
+                    "applied_command": encoded.tolist(), "pre": pre,
+                    "post": native_snapshot(sim, target),
+                })
             simulation_seconds += time.monotonic() - simulation_start
             # Only the trailing history survives until the next policy decision.
             if chunk_steps >= chunk_length - history_steps:
@@ -452,6 +480,7 @@ def _rollout_on_sim(
                 success = False
             if constraint_violation or not fixed_horizon and (success or wrong_object):
                 break
+        chunk_index += 1
         if store_decisions and (chunk_steps or denoising_path is not None):
             decisions.append(DecisionSample(
                 cpu_copy(inputs),
@@ -526,11 +555,12 @@ def rollout(
     capture_path: Path | None = None,
     fixed_horizon: bool = False,
     record_path_noise: bool = False,
+    causal_trace: CausalTrace | None = None,
 ) -> Trajectory:
     iterator = _rollout(
         sim, controller, episode, rollout_seed, horizon, action_steps, bounds,
         store_decisions, start_proximity, denoising_noise_scale, capture_path,
-        fixed_horizon, record_path_noise,
+        fixed_horizon, record_path_noise, causal_trace=causal_trace,
     )
     try:
         request = next(iterator)

@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 
 from so101.calibrate_trajectory_rl import policy_digest
+from so101.causal_trace import CausalTrace
 from so101.cloud_checkpoint import atomic_json
 from so101.evaluate_entity_sim import EntityPolicy
 from so101.pile_task_runtime import load_problem
@@ -73,11 +74,19 @@ def main():
                         default="52cabd5b2d5df41b3825f323ffba3f56601725b0a25b24dc16cd923310b5f831")
     parser.add_argument("--training-scene-family", action="append", default=[])
     parser.add_argument("--parent-task-id", action="append")
+    parser.add_argument("--causal-trace-dir", type=Path,
+                        help="Opt-in bounded per-rollout command/state/contact JSONL (image hashes, not pixels)")
+    parser.add_argument("--causal-trace-max-bytes", type=int, default=8 * 1024 * 1024,
+                        help="Maximum bytes per rollout trace, including an explicit truncation receipt")
     args = parser.parse_args()
     if args.horizon <= 0 or args.action_steps <= 0 or args.deadline <= time.time():
         raise ValueError("Positive horizon, action steps and future deadline required")
     if args.output.exists():
         raise FileExistsError("Reconcile existing rollout results before retrying")
+    if args.causal_trace_max_bytes < 1024:
+        raise ValueError("Causal trace byte limit must be at least 1024")
+    if args.causal_trace_dir is not None:
+        args.causal_trace_dir.mkdir(parents=True, exist_ok=False)
     plan = json.loads(args.plan.read_bytes())
     if plan["kind"] != "paired-original-pose-grasp-rollouts-v1":
         raise ValueError("Unknown GRASP rollout protocol")
@@ -147,8 +156,25 @@ def main():
                     result["stop_reason"] = "deadline"
                     return
                 episode = family[level]
-                trajectory = rollout(sim, controller, episode, args.seed + index,
-                                     args.horizon, args.action_steps, bounds, False, 0., .1)
+                trace = None
+                complete = False
+                if args.causal_trace_dir is not None:
+                    trace = CausalTrace(
+                        args.causal_trace_dir / f"parent-{index}-level-{level:g}.jsonl",
+                        {"source": str(episode.source), "seed": args.seed + index,
+                         "policy_sha256": before, "action_steps": args.action_steps,
+                         "denoising_noise_scale": .1, "horizon": args.horizon},
+                        args.causal_trace_max_bytes,
+                    )
+                try:
+                    trace_args = {"causal_trace": trace} if trace is not None else {}
+                    trajectory = rollout(sim, controller, episode, args.seed + index,
+                                         args.horizon, args.action_steps, bounds, False, 0., .1,
+                                         **trace_args)
+                    complete = True
+                finally:
+                    if trace is not None:
+                        trace.close(complete)
                 result["groups"].append({
                     "level": level, "source": str(episode.source),
                     "parent_task_id": episode.metadata["parent_task_id"],
