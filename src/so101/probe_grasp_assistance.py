@@ -64,6 +64,7 @@ def main():
     for name in ("plan", "checkpoint", "model-root", "bounds", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--horizon", type=int, default=300)
+    parser.add_argument("--action-steps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=17551000)
     parser.add_argument("--deadline", type=int, required=True)
     parser.add_argument("--levels", type=float, nargs="+")
@@ -72,8 +73,8 @@ def main():
     parser.add_argument("--training-scene-family", action="append", default=[])
     parser.add_argument("--parent-task-id", action="append")
     args = parser.parse_args()
-    if args.horizon <= 0 or args.deadline <= time.time():
-        raise ValueError("Positive horizon and future deadline required")
+    if args.horizon <= 0 or args.action_steps <= 0 or args.deadline <= time.time():
+        raise ValueError("Positive horizon, action steps and future deadline required")
     if args.output.exists():
         raise FileExistsError("Reconcile existing rollout results before retrying")
     plan = json.loads(args.plan.read_bytes())
@@ -111,6 +112,8 @@ def main():
         episodes.append(family)
     selected = select_parent_families(episodes, args.parent_task_id)
     controller = EntityPolicy(args.checkpoint, "cuda", True)
+    if args.action_steps > controller.policy.config.chunk_size:
+        raise ValueError("Action steps exceed the policy's predicted chunk size")
     trainable_parameters(controller, "all")
     controller.policy.eval()
     before = policy_digest(controller.policy)
@@ -126,7 +129,7 @@ def main():
         "measured_assistance_levels": levels,
         "recovery_training_scene_families": args.training_scene_family,
         "partition_scope": "Recovery-heldout excludes recovery-SFT scenes only, not the original SFT population",
-        "action_steps": 16, "denoising_noise_scale": .1, "renderer_samples": 16,
+        "action_steps": args.action_steps, "denoising_noise_scale": .1, "renderer_samples": 16,
         "renderer": "gpu-pathtrace", "label_renderer": "native-id-segmentation-no-msaa-v1",
         "expert_prefix_assistance": 0, "groups": [], "cells": [],
         "cells_by_recovery_partition": {},
@@ -142,7 +145,7 @@ def main():
                     return
                 episode = family[level]
                 trajectory = rollout(sim, controller, episode, args.seed + index,
-                                     args.horizon, 16, bounds, False, 0., .1)
+                                     args.horizon, args.action_steps, bounds, False, 0., .1)
                 result["groups"].append({
                     "level": level, "source": str(episode.source),
                     "parent_task_id": episode.metadata["parent_task_id"],

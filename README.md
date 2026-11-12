@@ -1060,6 +1060,9 @@ training scenes and recovery-heldout scenes. Without an explicit training-scene
 list, results are unpartitioned rather than implicitly claimed as held out.
 Repeat `--parent-task-id` for a bounded parent subset; all frozen inputs are
 still checked, and each selected parent retains its original seed index.
+The evaluator defaults to 16 action steps between observations. Set
+`--action-steps` explicitly to test shorter feedback intervals; the actual
+interval is recorded in the result and changes neither physics nor grading.
 
 Launch the prepared detached Docker command on the **existing** GPU through the
 managed mirror, not a bare trainer (the prepared command mounts frozen data and
