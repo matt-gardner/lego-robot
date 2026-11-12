@@ -1017,6 +1017,23 @@ Training defaults to `--mixed-success-only`: groups with no successes or all
 successes still inform difficulty calibration, but are discarded before task,
 jerk, or action-boundary backward. They do not consume the accepted-group
 quota; another problem is sampled within the configured attempt limit.
+For inference-only **original-pose GRASP assistance** measurements, freeze the
+admissions with `python scripts/prepare_grasp_rollouts.py --admissions
+/absolute/admissions.json --output /new/bundle`. This selects up to four TRAIN
+parents per pile size, prioritizing distinct original scene families; smaller
+admitted populations remain smaller rather than being duplicated. Preserve the
+generated plan and input archive together. Restore archived files at their
+original absolute paths, then run `python -m so101.probe_grasp_assistance
+--plan /bundle/plan.json --checkpoint /original/SFT7296 --model-root /model
+--bounds /frozen/data_split.json --output /new/results.json --deadline UNIX_SECONDS`.
+The fixed SFT policy is checked by digest and never updated. Each selected
+parent uses the same seed across all twenty saved-state levels, highest
+assistance first, with horizon 300 by default. These are native task resets,
+not expert trajectory prefixes. Results retain actual counts by level and
+pile size, descriptive Wilson intervals, and input provenance; they do not
+establish held-out accuracy or readiness for training. Recover results
+continuously during execution and own GPU shutdown when useful work ends.
+
 With `--calibrate-assistance --batch-rollouts --group-size 4`, synchronous
 calibration retries the **same problem**: four passes reduce assistance; four
 failures increase it; only mixed groups contribute training gradients.
