@@ -17,7 +17,7 @@ def publish_evaluation(results: Path, destination: Path, *, state: str) -> None:
     )
     if data["optimizer"] is not None or expected <= 0 or not 0 <= completed <= expected or measured != completed:
         raise ValueError("Inconsistent inference-only GRASP population")
-    if data["complete"] != (completed == expected) or (state == "completed" and not data["complete"]):
+    if (data["complete"] and completed != expected) or (state == "completed" and not data["complete"]):
         raise ValueError("GRASP completion state does not match the measured population")
     now = time.time()
     destination.mkdir(parents=True, exist_ok=True)

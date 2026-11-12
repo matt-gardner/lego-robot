@@ -85,6 +85,19 @@ def test_unmeasured_grasp_evaluation_remains_pending_not_zero_success(tmp_path):
     assert result["latest_eval"] is None
 
 
+def test_last_measured_cell_can_precede_final_policy_verification(tmp_path):
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({**grasp_evaluation_log(), "expected_rollouts": 4}))
+    output = tmp_path / "outputs"
+    publish_evaluation(source, output, state="running")
+    data = json.loads((output / "grasp_evaluation.json").read_text())
+    assert len(data["groups"]) == data["expected_rollouts"]
+    assert not data["complete"]
+    assert json.loads((output / "remote_status.json").read_text())["state"] == "running"
+    with pytest.raises(ValueError, match="completion state"):
+        publish_evaluation(source, output, state="completed")
+
+
 @pytest.mark.parametrize("change", [
     {"optimizer": "AdamW"},
     {"complete": True},
