@@ -1044,6 +1044,14 @@ dimensions are excluded from the flow loss. This is training-subset fitting,
 not evidence of improved autonomous performance. Evaluate teacher-free native
 rollouts separately at 70/75/80% and exclude the recorded original training scene
 families from held-out comparisons.
+The default `--trainable-scope action-output` preserves projection-only fitting.
+For an explicitly bounded policy-capacity diagnostic,
+`--trainable-scope action-expert --learning-rate 1e-5` also updates the pretrained
+action-expert transformer and action-input projection while keeping vision,
+entity features and all other policy parameters frozen. The objective, native
+physics and teacher-free evaluation remain unchanged. Lower demonstration loss
+is not evidence of better closed-loop control; check trained-scene rollouts and
+then separate recovery-heldout scenes before any broad comparison.
 The same paired evaluator accepts `--levels .7 .75 .8
 --expected-policy-sha256 UPDATED_POLICY_DIGEST --training-scene-family
 ORIGINAL_TRAINING_SCENE_FAMILY`. It retains the full frozen input validation and

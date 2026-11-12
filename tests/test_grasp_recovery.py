@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from so101.fit_grasp_recovery import recovery_batch, recovery_loss
+from so101.fit_grasp_recovery import recovery_batch, recovery_loss, recovery_parameters
 
 
 def sample(valid):
@@ -38,3 +38,37 @@ def test_loss_ignores_padded_steps_and_non_robot_dimensions():
 def test_rejects_empty_or_out_of_range_teacher_targets(valid):
     with pytest.raises(ValueError, match="future-action length"):
         recovery_batch([sample(valid), sample(1)], 32, "cpu")
+
+
+@pytest.mark.parametrize("scope", ["action-output", "action-expert"])
+def test_recovery_scope_updates_only_selected_action_layers(scope):
+    policy = torch.nn.Module()
+    policy.model = torch.nn.Module()
+    model = policy.model
+    model.vision = torch.nn.Linear(2, 2)
+    model.entity_features = torch.nn.Linear(2, 2)
+    model.vlm_with_expert = torch.nn.Module()
+    model.vlm_with_expert.lm_expert = torch.nn.Linear(2, 2)
+    model.action_in_proj = torch.nn.Linear(2, 2)
+    model.action_out_proj = torch.nn.Linear(2, 6)
+    for parameter in policy.parameters():
+        torch.nn.init.constant_(parameter, .2)
+    before = {name: parameter.detach().clone() for name, parameter in policy.named_parameters()}
+    optimizer = torch.optim.SGD(recovery_parameters(policy, scope), lr=.1)
+    features = model.vision(torch.ones(2, 2)) + model.entity_features(torch.ones(2, 2))
+    output = model.action_out_proj(model.vlm_with_expert.lm_expert(model.action_in_proj(features)))
+    output.square().mean().backward()
+    optimizer.step()
+    for name, parameter in policy.named_parameters():
+        expected = name.startswith("model.action_out_proj.") or (
+            scope == "action-expert" and name.startswith((
+                "model.action_in_proj.", "model.vlm_with_expert.lm_expert.",
+            ))
+        )
+        assert parameter.requires_grad == expected
+        assert (not torch.equal(before[name], parameter)) == expected
+
+
+def test_unknown_recovery_scope_is_rejected():
+    with pytest.raises(ValueError, match="Unknown recovery trainable scope"):
+        recovery_parameters(torch.nn.Linear(2, 2), "vision")

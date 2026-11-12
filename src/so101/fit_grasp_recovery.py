@@ -1,4 +1,4 @@
-"""Bounded action-output SFT on verified native recovery demonstrations."""
+"""Bounded policy SFT on verified native recovery demonstrations."""
 from __future__ import annotations
 
 import argparse
@@ -51,6 +51,25 @@ def recovery_loss(action_losses, valid):
     return (action_losses[..., :6] * valid[..., None]).sum() / (valid.sum() * 6)
 
 
+def recovery_parameters(policy: torch.nn.Module, scope: str):
+    modules = {
+        "action-output": ("model.action_out_proj",),
+        "action-expert": ("model.vlm_with_expert.lm_expert",
+                          "model.action_in_proj", "model.action_out_proj"),
+    }
+    if scope not in modules:
+        raise ValueError(f"Unknown recovery trainable scope: {scope}")
+    selected = [policy.get_submodule(name) for name in modules[scope]]
+    for parameter in policy.parameters():
+        parameter.requires_grad_(False)
+    parameters = [parameter for module in selected for parameter in module.parameters()]
+    if not parameters:
+        raise ValueError("No maintained recovery parameters found")
+    for parameter in parameters:
+        parameter.requires_grad_(True)
+    return parameters
+
+
 def fit(args):
     if args.steps < 1 or args.batch_size < 2 or args.batch_size % 2 or args.learning_rate <= 0:
         raise ValueError("Expected positive update count, positive LR, and positive even batch")
@@ -74,11 +93,7 @@ def fit(args):
     before = policy_digest(controller.policy)
     if before != report["policy_sha256"]:
         raise ValueError("Demonstration source policy differs from the requested initial policy")
-    for name, parameter in controller.policy.named_parameters():
-        parameter.requires_grad_(name.startswith("model.action_out_proj."))
-    parameters = [parameter for parameter in controller.policy.parameters() if parameter.requires_grad]
-    if not parameters:
-        raise ValueError("No maintained action-output parameters found")
+    parameters = recovery_parameters(controller.policy, args.trainable_scope)
     controller.policy.eval()
     optimizer = torch.optim.AdamW(parameters, lr=args.learning_rate)
     rng = np.random.default_rng(args.seed)
@@ -91,7 +106,7 @@ def fit(args):
         "run_config": {
             "output": str(args.output), "steps": args.steps, "batch_size": args.batch_size,
             "learning_rate": args.learning_rate, "seed": args.seed, "device": args.device,
-            "trainable_scope": "action-output", "action_only": True,
+            "trainable_scope": args.trainable_scope, "action_only": True,
             "trainable_parameters": sum(parameter.numel() for parameter in parameters),
         },
         "dataset": report,
@@ -147,6 +162,8 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=17553001)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--trainable-scope", choices=("action-output", "action-expert"),
+                        default="action-output")
     fit(parser.parse_args())
 
 
