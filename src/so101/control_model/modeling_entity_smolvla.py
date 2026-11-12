@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import copy
@@ -84,10 +84,13 @@ class EntityModelConfig:
     history_steps: int = 4
     role_token_length: int = 8
     depth_input: bool = True
+    current_grasp_prediction: bool = False
 
     def __post_init__(self) -> None:
         if self.max_entities <= 0 or self.history_steps <= 0 or self.role_token_length <= 0:
             raise ValueError("Entity model dimensions must be positive")
+        if type(self.current_grasp_prediction) is not bool:
+            raise ValueError("Current grasp prediction must be a boolean")
 
 
 class EntityVLAFlowMatching(VLAFlowMatching):
@@ -156,6 +159,34 @@ class EntityVLAFlowMatching(VLAFlowMatching):
             nn.SiLU(),
             nn.Linear(expert_hidden, 9),
         )
+        if entity_config.current_grasp_prediction:
+            self.current_grasp_head = nn.Linear(text_hidden, 2)
+
+    def enable_current_grasp_prediction(self) -> EntityModelConfig:
+        if not self.entity_config.current_grasp_prediction:
+            reference = self.entity_norm.weight
+            self.current_grasp_head = nn.Linear(reference.numel(), 2).to(
+                device=reference.device, dtype=reference.dtype,
+            )
+            self.entity_config = replace(self.entity_config, current_grasp_prediction=True)
+        return self.entity_config
+
+    def current_grasp_logits(self, observation: tuple) -> Tensor:
+        """Predict bilateral contact and current native grasp, never future actions."""
+        if not self.entity_config.current_grasp_prediction:
+            raise ValueError("Current grasp prediction is not enabled")
+        if len(observation) != 15:
+            raise ValueError("Current grasp requires the 15 observation-only inputs")
+        prefix, pad, attention, _ = self._prefix_with_entities(*observation)
+        # Prefill forces the actor's observation-only path in cross-attention models.
+        (features, _), _ = self.vlm_with_expert.forward(
+            attention_mask=make_att_2d_masks(pad, attention),
+            position_ids=torch.cumsum(pad, dim=1) - 1,
+            past_key_values=None, inputs_embeds=[prefix, None], use_cache=True,
+        )
+        entities = observation[-1].shape[1]
+        features = features[:, -entities:].to(dtype=self.current_grasp_head.weight.dtype)
+        return self.current_grasp_head(features).float()
 
     def _entity_embeddings(
         self,
@@ -641,11 +672,16 @@ def save_entity_checkpoint(
     *,
     exist_ok: bool = False,
 ) -> None:
+    if entity_config.current_grasp_prediction != hasattr(policy.model, "current_grasp_head"):
+        raise ValueError("Current-grasp configuration and model weights disagree")
     path.mkdir(parents=True, exist_ok=exist_ok)
     temporary = path / "model.pt.tmp"
     torch.save(policy.state_dict(), temporary)
     temporary.replace(path / "model.pt")
-    (path / "entity_config.json").write_text(json.dumps(asdict(entity_config), indent=2))
+    config_data = asdict(entity_config)
+    if not entity_config.current_grasp_prediction:
+        config_data.pop("current_grasp_prediction")
+    (path / "entity_config.json").write_text(json.dumps(config_data, indent=2))
     (path / "metadata.json").write_text(json.dumps({
         "source_checkpoint": source_checkpoint,
         "normalization": normalization,
@@ -671,6 +707,13 @@ def load_entity_checkpoint(path: Path, device: str) -> tuple[SmolVLAPolicy, Enti
         policy.model.vlm_with_expert.lm_expert.to(dtype=dtypes[name])
     source_state = torch.load(path / "model.pt", map_location="cpu", weights_only=True)
     target_state = policy.state_dict()
+    grasp_keys = {"model.current_grasp_head.weight", "model.current_grasp_head.bias"}
+    if entity_config.current_grasp_prediction:
+        if any(key not in source_state or source_state[key].shape != target_state[key].shape
+               for key in grasp_keys):
+            raise ValueError("Enabled current-grasp checkpoint lacks compatible trained head weights")
+    elif grasp_keys & source_state.keys():
+        raise ValueError("Current-grasp checkpoint weights require the matching entity configuration")
     if source_state.keys() == target_state.keys() and all(
         key in source_state and source_state[key].shape == value.shape
         for key, value in target_state.items()

@@ -1052,6 +1052,18 @@ entity features and all other policy parameters frozen. The objective, native
 physics and teacher-free evaluation remain unchanged. Lower demonstration loss
 is not evidence of better closed-loop control; check trained-scene rollouts and
 then separate recovery-heldout scenes before any broad comparison.
+For an opt-in current-state auxiliary diagnostic, use
+`--trainable-scope action-expert-grasp --grasp-labels /labels-v1.json
+--grasp-loss-weight 0.1 --learning-rate 1e-5`. The versioned label bundle must bind
+the recorded sample/manifest hashes, frozen task identity and exact CPU replay.
+It supervises bilateral contact separately from the instantaneous native GRASP
+predicate, not future dwell success or universal loaded/held state. Unknown and
+padded entities are masked; unrepresented scene pieces are not padded entities.
+The new head reads only the observation prefix. Its gradients train shared entity
+and motion-history features alongside the action expert; the vision backbone
+stays frozen. Exported configuration enables the head, and loading requires its
+matching weights. Legacy checkpoints/default fitting remain unchanged. This
+interface does not authorize another GPU allocation or establish policy gains.
 The same paired evaluator accepts `--levels .7 .75 .8
 --expected-policy-sha256 UPDATED_POLICY_DIGEST --training-scene-family
 ORIGINAL_TRAINING_SCENE_FAMILY`. It retains the full frozen input validation and
