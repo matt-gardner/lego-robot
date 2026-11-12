@@ -199,7 +199,9 @@ def fit(args):
             samples, args.data, args.grasp_labels, samples_sha256,
         )
     metadata = json.loads((args.checkpoint / "metadata.json").read_text())
-    controller = EntityPolicy(args.checkpoint, args.device, True)
+    controller = EntityPolicy(
+        args.checkpoint, args.device, True, full_state_checkpoint=args.full_state_checkpoint,
+    )
     trainable_parameters(controller, "all")
     source_digest = policy_digest(controller.policy)
     if source_digest != report["policy_sha256"]:
@@ -222,6 +224,7 @@ def fit(args):
             "output": str(args.output), "steps": args.steps, "batch_size": args.batch_size,
             "learning_rate": args.learning_rate, "seed": args.seed, "device": args.device,
             "trainable_scope": args.trainable_scope, "action_only": not auxiliary,
+            "full_state_checkpoint": args.full_state_checkpoint,
             "grasp_loss_weight": args.grasp_loss_weight,
             "trainable_parameters": sum(parameter.numel() for parameter in parameters),
         },
@@ -290,6 +293,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--full-state-checkpoint", action="store_true",
+                        help="Construct from source configuration and strictly load all saved tensors without base weights")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=4)

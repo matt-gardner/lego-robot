@@ -65,6 +65,7 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--horizon", type=int, default=300)
     parser.add_argument("--action-steps", type=int, default=16)
+    parser.add_argument("--full-state-checkpoint", action="store_true")
     parser.add_argument("--seed", type=int, default=17551000)
     parser.add_argument("--deadline", type=int, required=True)
     parser.add_argument("--levels", type=float, nargs="+")
@@ -111,7 +112,9 @@ def main():
             raise ValueError("Missing paired assistance levels")
         episodes.append(family)
     selected = select_parent_families(episodes, args.parent_task_id)
-    controller = EntityPolicy(args.checkpoint, "cuda", True)
+    controller = EntityPolicy(
+        args.checkpoint, "cuda", True, full_state_checkpoint=args.full_state_checkpoint,
+    )
     if args.action_steps > controller.policy.config.chunk_size:
         raise ValueError("Action steps exceed the policy's predicted chunk size")
     trainable_parameters(controller, "all")

@@ -1064,6 +1064,14 @@ and motion-history features alongside the action expert; the vision backbone
 stays frozen. Exported configuration enables the head, and loading requires its
 matching weights. Legacy checkpoints/default fitting remain unchanged. This
 interface does not authorize another GPU allocation or establish policy gains.
+For an explicitly complete checkpoint, the recovery trainer and paired evaluator
+accept `--full-state-checkpoint`. This constructs the
+actor from its original source configuration/processor and strictly loads every
+saved model tensor, without fetching pretrained base weights. Original pinned
+configuration/tokenizer/processor files must still be available; set
+`HF_HUB_OFFLINE=1` for an offline run. Missing or incompatible tensors fail rather
+than receiving randomly initialized replacements. Omit this flag for historical
+partial checkpoints, whose pretrained-weight loading and migration are unchanged.
 The same paired evaluator accepts `--levels .7 .75 .8
 --expected-policy-sha256 UPDATED_POLICY_DIGEST --training-scene-family
 ORIGINAL_TRAINING_SCENE_FAMILY`. It retains the full frozen input validation and

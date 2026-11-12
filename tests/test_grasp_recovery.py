@@ -338,12 +338,16 @@ def test_joint_recovery_fit_uses_bound_current_labels_and_exports_head(tmp_path,
         "source_checkpoint": "fake", "normalization": {},
     }))
     controller = SimpleNamespace(policy=policy, config=policy.model.entity_config)
-    monkeypatch.setattr(fitter, "EntityPolicy", lambda *args: controller)
+    def controller_factory(*args, **kwargs):
+        assert kwargs["full_state_checkpoint"]
+        return controller
+    monkeypatch.setattr(fitter, "EntityPolicy", controller_factory)
     monkeypatch.setattr(fitter, "trainable_parameters", lambda *args: None)
     output = tmp_path / "fit"
     fitter.fit(SimpleNamespace(
         steps=1, batch_size=2, learning_rate=.001, output=output, data=data,
-        checkpoint=checkpoint, device="cpu", trainable_scope="action-expert-grasp",
+        checkpoint=checkpoint, device="cpu", full_state_checkpoint=True,
+        trainable_scope="action-expert-grasp",
         grasp_labels=labels, grasp_loss_weight=.2, seed=10,
     ))
     log = json.loads((output / "sft_training.json").read_text())
@@ -353,3 +357,55 @@ def test_joint_recovery_fit_uses_bound_current_labels_and_exports_head(tmp_path,
     assert json.loads((output / "checkpoint/entity_config.json").read_text())["current_grasp_prediction"]
     state = torch.load(output / "training_state.pt", weights_only=False)
     assert "model.current_grasp_head.weight" in state["model"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_full_state_checkpoint_needs_configs_not_pretrained_weights(tmp_path, monkeypatch, enabled):
+    path = tmp_path / "checkpoint"
+    policy, _ = grasp_policy()
+    if enabled:
+        policy.model.enable_current_grasp_prediction()
+    modeling.save_entity_checkpoint(path, policy, policy.model.entity_config, "fake", {})
+    config = SimpleNamespace(load_vlm_weights=True, device="cuda")
+    monkeypatch.setattr(modeling.SmolVLAConfig, "from_pretrained", lambda _: config)
+
+    class ConfigOnlyPolicy:
+        def __new__(cls, requested):
+            assert requested is config and not requested.load_vlm_weights
+            assert requested.device == "cpu"
+            return grasp_policy()[0]
+
+        @classmethod
+        def from_pretrained(cls, *_):
+            pytest.fail("Full-state load must not read pretrained weights")
+
+    monkeypatch.setattr(modeling, "SmolVLAPolicy", ConfigOnlyPolicy)
+    monkeypatch.setattr(modeling, "attach_entity_modules",
+                        lambda restored, config: restored.model.init_entity_modules(config))
+    restored, _, _ = modeling.load_entity_checkpoint(path, "cpu", full_state=True)
+    for key, value in policy.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[key], value, rtol=0, atol=0)
+    state = torch.load(path / "model.pt", weights_only=True)
+    del state[next(iter(state))]
+    torch.save(state, path / "model.pt")
+    with pytest.raises(ValueError, match="every model tensor"):
+        modeling.load_entity_checkpoint(path, "cpu", full_state=True)
+
+
+def test_default_partial_checkpoint_keeps_pretrained_missing_weights(tmp_path, monkeypatch):
+    policy, _ = grasp_policy()
+    path = tmp_path / "checkpoint"
+    modeling.save_entity_checkpoint(path, policy, policy.model.entity_config, "fake", {})
+    state = torch.load(path / "model.pt", weights_only=True)
+    missing = next(name for name in state if "vlm_with_expert" in name)
+    del state[missing]
+    torch.save(state, path / "model.pt")
+    pretrained, _ = grasp_policy()
+    with torch.no_grad():
+        pretrained.state_dict()[missing].fill_(.75)
+    monkeypatch.setattr(modeling.SmolVLAPolicy, "from_pretrained", lambda _: pretrained)
+    monkeypatch.setattr(modeling, "attach_entity_modules",
+                        lambda restored, config: restored.model.init_entity_modules(config))
+    restored, _, _ = modeling.load_entity_checkpoint(path, "cpu")
+    torch.testing.assert_close(restored.state_dict()[missing],
+                               torch.full_like(restored.state_dict()[missing], .75))

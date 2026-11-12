@@ -14,6 +14,7 @@ from transformers.cache_utils import Cache
 
 from lerobot.policies.common.flow_matching import euler_integrate
 from lerobot.policies.common.vla_utils import make_att_2d_masks, pad_vector, resize_with_pad
+from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, VLAFlowMatching
 
 from so101.control_model.flow_rl import (
@@ -691,10 +692,18 @@ def save_entity_checkpoint(
     }, indent=2))
 
 
-def load_entity_checkpoint(path: Path, device: str) -> tuple[SmolVLAPolicy, EntityModelConfig, dict]:
+def load_entity_checkpoint(
+    path: Path, device: str, *, full_state: bool = False,
+) -> tuple[SmolVLAPolicy, EntityModelConfig, dict]:
     metadata = json.loads((path / "metadata.json").read_text())
     entity_config = EntityModelConfig(**json.loads((path / "entity_config.json").read_text()))
-    policy = SmolVLAPolicy.from_pretrained(metadata["source_checkpoint"])
+    if full_state:
+        config = SmolVLAConfig.from_pretrained(metadata["source_checkpoint"])
+        config.device = device
+        config.load_vlm_weights = False
+        policy = SmolVLAPolicy(config)
+    else:
+        policy = SmolVLAPolicy.from_pretrained(metadata["source_checkpoint"])
     attach_entity_modules(policy, entity_config)
     if "action_expert_dtype" in metadata:
         dtypes = {
@@ -720,6 +729,8 @@ def load_entity_checkpoint(path: Path, device: str) -> tuple[SmolVLAPolicy, Enti
     ):
         policy.load_state_dict(source_state)
     else:
+        if full_state:
+            raise ValueError("Full-state checkpoint requires every model tensor with matching shape")
         migrated = {
             key: (
                 source_state[key]

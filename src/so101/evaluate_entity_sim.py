@@ -93,14 +93,18 @@ class EntityPolicy:
         ensemble_tasks: tuple[str, ...] | None = None,
         ensemble_score_penalty: float = 0.,
         loaded_policy: tuple[SmolVLAPolicy, EntityModelConfig, dict] | None = None,
+        full_state_checkpoint: bool = False,
     ):
         if action_samples <= 0:
             raise ValueError("action_samples must be positive")
         if sample_aggregation not in ("mean", "smoothest", "goal", "oracle"):
             raise ValueError("Unsupported sample aggregation")
-        self.policy, self.config, normalization = (
-            loaded_policy if loaded_policy is not None else load_entity_checkpoint(checkpoint, device)
-        )
+        if loaded_policy is None:
+            loaded_policy = (
+                load_entity_checkpoint(checkpoint, device, full_state=True)
+                if full_state_checkpoint else load_entity_checkpoint(checkpoint, device)
+            )
+        self.policy, self.config, normalization = loaded_policy
         self.ensemble_policies = []
         for ensemble_checkpoint in ensemble_checkpoints:
             ensemble_policy, ensemble_config, ensemble_normalization = (
