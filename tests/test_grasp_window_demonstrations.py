@@ -4,6 +4,34 @@ import pytest
 
 from so101.grasp_window_demonstrations import diverse_pilot, freeze_intake, main, sha256, window_tasks
 from so101.simulation_corpus import load_corpus
+import so101.grasp_window_demonstrations as demonstrations
+
+
+@pytest.mark.parametrize("backend", [None, "gpu-pathtrace"])
+def test_render_routes_explicit_backend_and_preserves_cpu_default(tmp_path, monkeypatch, backend):
+    intake = tmp_path / "intake.json"
+    intake.write_text("{}")
+    trace = tmp_path / "trace.json"
+    trace.write_text("{}")
+    status = tmp_path / "physical.json"
+    status.write_text(json.dumps({
+        "complete": True, "intake_sha256": sha256(intake),
+        "reports": [{"accepted": True, "trace": str(trace), "trace_sha256": sha256(trace)}],
+    }))
+    selected = []
+
+    def render(path, output, model_root, rgb_renderer):
+        selected.append((path, rgb_renderer))
+        return {"source": str(output)}
+
+    monkeypatch.setattr(demonstrations, "render_window", render)
+    argv = ["windows", "render", "--traces", str(status), "--intake", str(intake),
+            "--output", str(tmp_path / "collection"), "--model-root", str(tmp_path)]
+    if backend:
+        argv += ["--rgb-renderer", backend]
+    monkeypatch.setattr("sys.argv", argv)
+    main()
+    assert selected == [(trace, backend or "cpu-pathtrace")]
 
 
 def family(kind):

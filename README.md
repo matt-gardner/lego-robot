@@ -1117,7 +1117,8 @@ physical reset invariants, including inherited contacts and PLACE progress,
 before executing demonstration controls.
 
 The `render --traces STATUS_JSON --intake INTAKE_JSON --output COLLECTION --model-root MODEL`
-subcommand renders accepted windows with CPU path tracing and dedicated
+subcommand renders accepted windows with CPU path tracing by default; use
+`--rgb-renderer gpu-pathtrace` for CUDA path tracing. Both use dedicated
 zero-MSAA entity labels, checking every replayed qpos against the physical
 trace. Its `grasp-window-sft-v1` collection is consumable by
 `EntityTrajectoryDataset`; reset action history uses the saved initial joint

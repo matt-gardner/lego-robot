@@ -269,7 +269,11 @@ def generate_window(entry: dict) -> dict:
         sim.close()
 
 
-def render_window(trace_path: Path, output: Path, model_root: Path) -> dict:
+def render_window(
+    trace_path: Path, output: Path, model_root: Path, backend: str = "cpu-pathtrace",
+) -> dict:
+    if backend not in ("cpu-pathtrace", "gpu-pathtrace"):
+        raise ValueError(f"Unsupported window RGB renderer: {backend}")
     trace = json.loads(trace_path.read_text())
     if not trace["accepted"]:
         raise ValueError("Rejected physical windows cannot supply SFT observations")
@@ -280,7 +284,7 @@ def render_window(trace_path: Path, output: Path, model_root: Path) -> dict:
         {"native_entry": trace["entry"], "native_task_id": trace["initial_task_id"],
          "task": trace["task"]},
     )
-    sim = NativePileSimulation(episode, model_root, backend="cpu-pathtrace", samples=16, threads=1)
+    sim = NativePileSimulation(episode, model_root, backend=backend, samples=16, threads=1)
     # Keep path-traced RGB separate from the maintained exact zero-MSAA ID context.
     sim._segmentation_image = sim.native.segmentation_image
     try:
@@ -338,7 +342,7 @@ def render_window(trace_path: Path, output: Path, model_root: Path) -> dict:
             "render_source_sha256": SOURCE_SHA256,
             "frames_sha256": sha256(output / "frames.jsonl"),
             "maximum_replay_qpos_error": maximum_error,
-            "rgb_renderer": "cpu-pathtrace", "rgb_samples": 16,
+            "rgb_renderer": backend, "rgb_samples": 16,
             "label_renderer": "native-id-segmentation-no-msaa-v1",
             "acceptance": trace["acceptance"],
         })
@@ -365,6 +369,8 @@ def main():
     render.add_argument("--intake", type=Path, required=True)
     render.add_argument("--output", type=Path, required=True)
     render.add_argument("--model-root", type=Path, required=True)
+    render.add_argument("--rgb-renderer", choices=("cpu-pathtrace", "gpu-pathtrace"),
+                        default="cpu-pathtrace")
     args = parser.parse_args()
     resuming = args.command == "generate" and args.resume
     if args.output.exists() and not resuming:
@@ -391,7 +397,9 @@ def main():
             path = Path(report["trace"])
             if sha256(path) != report["trace_sha256"]:
                 raise ValueError("Verified physical trace changed")
-            reports.append(render_window(path, args.output / path.stem, args.model_root))
+            reports.append(render_window(
+                path, args.output / path.stem, args.model_root, args.rgb_renderer,
+            ))
             atomic_json(args.output / "status.json", {"complete": False, "episodes": reports})
         atomic_json(args.output / "collection.json", {
             "kind": "grasp-window-sft-v1", "status": "complete",
