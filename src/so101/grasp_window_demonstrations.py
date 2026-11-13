@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import hashlib
 import json
 import math
+import multiprocessing
 from pathlib import Path
+import uuid
 
 import cv2
 import mujoco
@@ -371,16 +374,20 @@ def main():
     render.add_argument("--model-root", type=Path, required=True)
     render.add_argument("--rgb-renderer", choices=("cpu-pathtrace", "gpu-pathtrace"),
                         default="cpu-pathtrace")
+    render.add_argument("--workers", type=int, default=1)
+    render.add_argument("--resume", action="store_true")
     args = parser.parse_args()
-    resuming = args.command == "generate" and args.resume
+    resuming = args.command in ("generate", "render") and args.resume
     if args.output.exists() and not resuming:
         raise FileExistsError("Reconcile existing output before restarting")
     if resuming and not args.output.is_dir():
-        raise ValueError("No existing physical generation to resume")
+        raise ValueError("No existing generation to resume")
     if args.command == "freeze":
         atomic_json(args.output, freeze_intake(args.prior_grasp, args.inventory, args.receipts))
         return
     if args.command == "render":
+        if args.workers < 1:
+            raise ValueError("Positive render worker count required")
         status = json.loads(args.traces.read_text())
         if not status["complete"]:
             raise ValueError("Require completed physics generation before rendering")
@@ -389,18 +396,71 @@ def main():
         accepted = [report for report in status["reports"] if report["accepted"]]
         if not accepted:
             raise ValueError("No verified windows to render; no SFT dataset produced")
-        args.output.mkdir(parents=True)
-        atomic_json(args.output / "intake.json", json.loads(args.intake.read_text()))
-        atomic_json(args.output / "physical-generation.json", status)
-        reports = []
+        if not resuming:
+            args.output.mkdir(parents=True)
+            atomic_json(args.output / "intake.json", json.loads(args.intake.read_text()))
+            atomic_json(args.output / "physical-generation.json", status)
+        elif (json.loads((args.output / "intake.json").read_text())
+              != json.loads(args.intake.read_text())
+              or json.loads((args.output / "physical-generation.json").read_text()) != status):
+            raise ValueError("Render resume requires the same frozen intake and physical traces")
+        completed = {}
+        checkpoint = args.output / "status.json"
+        previous = json.loads(checkpoint.read_text()) if resuming and checkpoint.exists() else {}
+        by_source = {str(args.output / Path(row["trace"]).stem): row for row in accepted}
+        for report in previous.get("episodes", []):
+            source = report["source"]
+            if source not in by_source or source in completed:
+                raise ValueError("Unexpected or duplicate completed render episode")
+            directory = Path(source)
+            metadata = json.loads((directory / "episode.json").read_text())
+            expected = by_source[source]
+            if (metadata["source_trace_sha256"] != expected["trace_sha256"]
+                    or metadata["rgb_renderer"] != args.rgb_renderer
+                    or not math.isfinite(metadata["maximum_replay_qpos_error"])
+                    or metadata["maximum_replay_qpos_error"] > 1e-8
+                    or sha256(directory / "frames.jsonl") != metadata["frames_sha256"]
+                    or sha256(directory / "physical-trace.json") != metadata["trace_sha256"]):
+                raise ValueError("Completed render provenance changed")
+            frames = [json.loads(line) for line in (directory / "frames.jsonl").read_text().splitlines()]
+            if len(frames) != report["frames"] or any(
+                not (directory / row["image"]).is_file() for row in frames
+            ):
+                raise ValueError("Completed render frames are missing")
+            completed[source] = report
+        pending = []
         for report in accepted:
             path = Path(report["trace"])
             if sha256(path) != report["trace_sha256"]:
                 raise ValueError("Verified physical trace changed")
-            reports.append(render_window(
-                path, args.output / path.stem, args.model_root, args.rgb_renderer,
-            ))
+            destination = args.output / path.stem
+            if str(destination) in completed:
+                continue
+            if destination.exists():
+                interrupted = args.output / ".interrupted"
+                interrupted.mkdir(exist_ok=True)
+                destination.rename(interrupted / f"{path.stem}-{uuid.uuid4().hex}")
+            pending.append((path, destination, args.model_root, args.rgb_renderer))
+
+        def record(report):
+            completed[report["source"]] = report
+            reports = [completed[key] for key in by_source if key in completed]
             atomic_json(args.output / "status.json", {"complete": False, "episodes": reports})
+
+        if args.workers == 1:
+            for arguments in pending:
+                record(render_window(*arguments))
+        else:
+            executor = ProcessPoolExecutor(
+                max_workers=args.workers, mp_context=multiprocessing.get_context("spawn"),
+            )
+            try:
+                futures = [executor.submit(render_window, *arguments) for arguments in pending]
+                for future in as_completed(futures):
+                    record(future.result())
+            finally:
+                executor.shutdown(wait=True, cancel_futures=True)
+        reports = [completed[key] for key in by_source]
         atomic_json(args.output / "collection.json", {
             "kind": "grasp-window-sft-v1", "status": "complete",
             "successful_episodes": [report["source"] for report in reports],

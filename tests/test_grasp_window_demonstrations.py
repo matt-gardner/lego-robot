@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 
 import pytest
@@ -8,7 +9,10 @@ import so101.grasp_window_demonstrations as demonstrations
 
 
 @pytest.mark.parametrize("backend", [None, "gpu-pathtrace"])
-def test_render_routes_explicit_backend_and_preserves_cpu_default(tmp_path, monkeypatch, backend):
+@pytest.mark.parametrize("workers", [1, 2])
+def test_render_routes_explicit_backend_and_preserves_cpu_default(
+    tmp_path, monkeypatch, backend, workers,
+):
     intake = tmp_path / "intake.json"
     intake.write_text("{}")
     trace = tmp_path / "trace.json"
@@ -25,13 +29,73 @@ def test_render_routes_explicit_backend_and_preserves_cpu_default(tmp_path, monk
         return {"source": str(output)}
 
     monkeypatch.setattr(demonstrations, "render_window", render)
+    def executor(max_workers, mp_context):
+        assert max_workers == workers
+        assert mp_context.get_start_method() == "spawn"
+        return ThreadPoolExecutor(max_workers=max_workers)
+
+    monkeypatch.setattr(demonstrations, "ProcessPoolExecutor", executor)
     argv = ["windows", "render", "--traces", str(status), "--intake", str(intake),
-            "--output", str(tmp_path / "collection"), "--model-root", str(tmp_path)]
+            "--output", str(tmp_path / "collection"), "--model-root", str(tmp_path),
+            "--workers", str(workers)]
     if backend:
         argv += ["--rgb-renderer", backend]
     monkeypatch.setattr("sys.argv", argv)
     main()
     assert selected == [(trace, backend or "cpu-pathtrace")]
+
+
+@pytest.mark.parametrize("corruption", [None, "trace", "frames", "image", "backend"])
+def test_render_resume_preserves_completed_episode_and_checks_artifacts(
+    tmp_path, monkeypatch, corruption,
+):
+    intake = tmp_path / "intake.json"
+    intake.write_text("{}")
+    trace = tmp_path / "trace.json"
+    trace.write_text("{}")
+    physical = {"complete": True, "intake_sha256": sha256(intake), "reports": [
+        {"accepted": True, "trace": str(trace), "trace_sha256": sha256(trace)},
+    ]}
+    status = tmp_path / "physical.json"
+    status.write_text(json.dumps(physical))
+    output = tmp_path / "collection"
+    episode = output / "trace"
+    episode.mkdir(parents=True)
+    (output / "intake.json").write_text("{}")
+    (output / "physical-generation.json").write_text(json.dumps(physical))
+    (episode / "physical-trace.json").write_text("{}")
+    (episode / "frames.jsonl").write_text('{"image":"frame.png"}\n')
+    (episode / "frame.png").write_bytes(b"retained-image")
+    metadata = {
+        "source_trace_sha256": sha256(trace), "trace_sha256": sha256(episode / "physical-trace.json"),
+        "frames_sha256": sha256(episode / "frames.jsonl"), "rgb_renderer": "gpu-pathtrace",
+        "maximum_replay_qpos_error": 0.0,
+    }
+    if corruption in ("trace", "frames"):
+        (episode / ("physical-trace.json" if corruption == "trace" else "frames.jsonl")).write_text("changed")
+    elif corruption == "image":
+        (episode / "frame.png").unlink()
+    elif corruption == "backend":
+        metadata["rgb_renderer"] = "cpu-pathtrace"
+    (episode / "episode.json").write_text(json.dumps(metadata))
+    report = {"source": str(episode), "frames": 1}
+    (output / "status.json").write_text(json.dumps({"complete": False, "episodes": [report]}))
+    monkeypatch.setattr("sys.argv", [
+        "windows", "render", "--traces", str(status), "--intake", str(intake),
+        "--output", str(output), "--model-root", str(tmp_path),
+        "--rgb-renderer", "gpu-pathtrace", "--resume", "--workers", "2",
+    ])
+    monkeypatch.setattr(demonstrations, "render_window",
+                        lambda *args: pytest.fail("Completed episode was rendered again"))
+    if corruption:
+        with pytest.raises(ValueError):
+            main()
+    else:
+        main()
+        assert json.loads((output / "status.json").read_text()) == {
+            "complete": True, "episodes": [report],
+        }
+        assert (episode / "frame.png").read_bytes() == b"retained-image"
 
 
 def family(kind):

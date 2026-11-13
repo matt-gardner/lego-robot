@@ -1120,7 +1120,13 @@ The `render --traces STATUS_JSON --intake INTAKE_JSON --output COLLECTION --mode
 subcommand renders accepted windows with CPU path tracing by default; use
 `--rgb-renderer gpu-pathtrace` for CUDA path tracing. Both use dedicated
 zero-MSAA entity labels, checking every replayed qpos against the physical
-trace. Its `grasp-window-sft-v1` collection is consumable by
+trace. `--workers N` renders independent windows in spawned processes on the
+same machine/GPU, retaining serial physics within each window. `--resume`
+retains completed episodes after checking frozen inputs, trace/frame hashes,
+renderer selection, replay error, and image presence; interrupted partial
+episodes are preserved under `.interrupted` and rendered again. Stop the
+previous renderer before resuming into its output directory.
+Its `grasp-window-sft-v1` collection is consumable by
 `EntityTrajectoryDataset`; reset action history uses the saved initial joint
 state rather than the first future demonstration command. Use unpaired/balanced
 sampling: independent accepted windows do not invent paired-command coverage.
