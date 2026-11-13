@@ -1131,6 +1131,24 @@ Its `grasp-window-sft-v1` collection is consumable by
 `EntityTrajectoryDataset`; reset action history uses the saved initial joint
 state rather than the first future demonstration command. Use unpaired/balanced
 sampling: independent accepted windows do not invent paired-command coverage.
+The prepared new-window SFT run uses the original complete checkpoint, a fresh
+optimizer, and the same retained rendering GPU. Its managed launch is:
+
+```bash
+python3 scripts/sync_gpu_dashboard.py \
+  --host 172.31.37.60 --instance-id i-0341fce6da23f99c5 \
+  --known-hosts /home/claude/.ssh/lego_window_217_known_hosts \
+  --job-id 30dd055923a64e8ea8fdeef65f41182e \
+  --container-name lego-window-sft-230 \
+  --remote-root /opt/dlami/nvme/grasp-window-217/sft-output-226 \
+  --output /mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/grasp-window-20261113/sft \
+  --launch-command /opt/dlami/nvme/grasp-window-217/sft-training-command.json
+```
+
+The immutable command selects the qualified `collection-final-v1`, 384 updates,
+batch 128 with microbatch 8 and true accumulation, LR `1e-5`, seed 61000,
+history 4, and the original policy's unchanged 50-action horizon. Run the
+launcher persistently; it also owns the 20-second dashboard mirror.
 Episode success
 means **window completion only**, not successful full GRASP or PLACE, and these
 collections are rejected as full-task rollout references. Original family
