@@ -1064,7 +1064,8 @@ and motion-history features alongside the action expert; the vision backbone
 stays frozen. Exported configuration enables the head, and loading requires its
 matching weights. Legacy checkpoints/default fitting remain unchanged. This
 interface does not authorize another GPU allocation or establish policy gains.
-For an explicitly complete checkpoint, the recovery trainer and paired evaluator
+For an explicitly complete checkpoint, the recovery trainer, standard collection
+SFT trainer (`train_entity_sim --resume CHECKPOINT`), and paired evaluator
 accept `--full-state-checkpoint`. This constructs the
 actor from its original source configuration/processor and strictly loads every
 saved model tensor, without fetching pretrained base weights. Original pinned

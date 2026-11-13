@@ -491,7 +491,10 @@ def train(
     initialize_only: bool = False,
     gradient_accumulation: bool = False,
     micro_batch_size: int = 16,
+    full_state_checkpoint: bool = False,
 ) -> None:
+    if full_state_checkpoint and resume is None:
+        raise ValueError("Full-state checkpoint loading requires --resume")
     if micro_batch_size <= 0 or micro_batch_size % 2:
         raise ValueError("Supervised microbatch size must be positive and even")
     if initialize_only and (
@@ -553,7 +556,7 @@ def train(
         policy = base.to(device).train()
     else:
         policy, loaded_config, normalization = load_entity_checkpoint(
-            resume, device
+            resume, device, full_state=full_state_checkpoint,
         )
         if loaded_config != entity_config:
             raise ValueError(
@@ -622,6 +625,8 @@ def train(
         },
     }
     validation_interval_changed = False
+    if full_state_checkpoint:
+        log["run_config"]["full_state_checkpoint"] = True
     if resume_state is not None:
         assert device_rng_plan is not None
         state = resume_state
@@ -895,6 +900,8 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--full-state-checkpoint", action="store_true",
+                        help="Load every saved model tensor without downloading pretrained base weights")
     parser.add_argument(
         "--paired-batches",
         action=argparse.BooleanOptionalAction,
@@ -984,6 +991,7 @@ def main() -> None:
         args.initialize_only,
         args.gradient_accumulation,
         args.micro_batch_size,
+        args.full_state_checkpoint,
     )
 
 

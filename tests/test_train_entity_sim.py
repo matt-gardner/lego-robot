@@ -24,10 +24,40 @@ def test_storage_cli_changes_only_storage_selection(monkeypatch, tmp_path):
     trainer.main()
     monkeypatch.setattr(sys, "argv", argv + ["--episode-storage", str(tmp_path / "v1.sqlite")])
     trainer.main()
-    assert calls[0][:-4] == calls[1][:-4]
-    assert calls[0][-4] is None
-    assert str(calls[1][-4]) == str(tmp_path / "v1.sqlite")
-    assert calls[0][-3:] == calls[1][-3:] == (False, False, 16)
+    assert calls[0][:-5] == calls[1][:-5]
+    assert calls[0][-5] is None
+    assert str(calls[1][-5]) == str(tmp_path / "v1.sqlite")
+    assert calls[0][-4:] == calls[1][-4:] == (False, False, 16, False)
+
+
+@pytest.mark.parametrize("full_state", [False, True])
+def test_sft_routes_explicit_full_state_loading(monkeypatch, tmp_path, full_state):
+    collection = tmp_path / "collection"
+    collection.mkdir()
+    (collection / "collection.json").write_text('{"successful_episodes": []}')
+    checkpoint = tmp_path / "checkpoint"
+    def load(path, device, *, full_state):
+        assert path == checkpoint and device == "cpu"
+        assert full_state is expected
+        raise RuntimeError("Checkpoint loader reached")
+    expected = full_state
+    monkeypatch.setattr(trainer, "load_entity_checkpoint", load)
+    argv = ["train", "--collection", str(collection), "--output", str(tmp_path / "output"),
+            "--resume", str(checkpoint), "--device", "cpu"]
+    if full_state:
+        argv.append("--full-state-checkpoint")
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(RuntimeError, match="Checkpoint loader reached"):
+        trainer.main()
+
+
+def test_sft_full_state_requires_explicit_checkpoint(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", [
+        "train", "--collection", str(tmp_path), "--output", str(tmp_path / "output"),
+        "--full-state-checkpoint",
+    ])
+    with pytest.raises(ValueError, match="requires --resume"):
+        trainer.main()
 
 
 def test_initialize_only_saves_fresh_state_without_evaluation_or_updates(monkeypatch, tmp_path):
