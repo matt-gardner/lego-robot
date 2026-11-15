@@ -59,16 +59,18 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   };
   const payload={
     manifest:{snapshot_id:"snapshot"},
-    problems:{buckets:[{id:"b",population_total:2,tasks:[{task:"push",population_total:1},{task:"place",population_total:1}]},
+    problems:{buckets:[{id:"current:3-pieces",population_total:2,tasks:[{task:"push",population_total:1},{task:"place",population_total:1}]},
         {id:"corpus:old",population_total:1,tasks:[{task:"grasp",population_total:1}]}],
-      problems:[{id:"first",bucket:"b",task:"push",initial_images:[{camera:"wrist",width:320,height:240,
+      problems:[{id:"first",bucket:"current:3-pieces",task:"push",source:{scene_id:"scene-first"},initial_images:[{camera:"wrist",width:320,height:240,
         target_annotations:[
           {role:"source_object",target_bbox_xyxy:[12,20,100,150]},
           {role:"destination",entity_kind:"goal_marker",target_bbox_xyxy:[200,100,230,130]},
         ]}]},
-        {id:"second",bucket:"b",task:"place",initial_images:[]},
+        {id:"second",bucket:"current:3-pieces",task:"place",initial_images:[]},
         {id:"old",bucket:"corpus:old",task:"grasp",source:{kind:"legacy"},initial_images:[]}]},
     calibration:{protocol:{rollouts_per_group:4},groups:[{problem_id:"first",assistance:0,attempts:4,successes:4}]},
+    admitted_piles:[{id:"admission:camera",scene_id:"scene-first",image_kind:"admitted-pile-camera",
+      tags:{piece_count:3},dataset_snapshot_id:"camera-snapshot",initial_images:[{camera:"external"}]}],
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
     {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
@@ -79,6 +81,8 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   const bucketSection=elements.get("problems").children[0];
   assert.equal(bucketSection.open,true);
   const pileCard=bucketSection.children[1].children[0];
+  assert.match(pileCard.children[0].children[0].children[0].src,/problem=admission%3Acamera/);
+  assert.match(pileCard.children[0].children[0].children[0].src,/snapshot=camera-snapshot/);
   assert.equal(pileCard.className,"pile-group");
   assert.ok(!pileCard.open);
   assert.equal(pileCard.children.length,1);
@@ -120,7 +124,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.ok(plotted.some(e=>e.textContent==="Assistance"));
   assert.ok(plotted.some(e=>e.textContent==="Success rate"));
   measured.listeners.click();
-  assert.equal(elements.get("bucket").value,"b");
+  assert.equal(elements.get("bucket").value,"current:3-pieces");
   assert.match(elements.get("count").textContent,/2 matching problems/);
   payload.manifest.progress={phase:"expert_reference_qualification",reference_attempts:35,
     reference_accepted:17,policy_calibration_status:"pending",policy_rollouts:0};
@@ -153,7 +157,7 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
     {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(elements.get("search").value,"first");
-  assert.equal(elements.get("bucket").value,"b");
+  assert.equal(elements.get("bucket").value,"current:3-pieces");
   assert.equal(elements.get("problems").children[0].open,false);
   payload.admitted_piles=[{id:"admission:new",tags:{piece_count:40},initial_images:[]}];
   saved.clear();elements.clear();

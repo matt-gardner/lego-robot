@@ -103,6 +103,9 @@ class BucketDashboard:
             if len(pointers) > 100:
                 raise ValueError("Too many bucket publications")
             publications = [self.publication(str(path.relative_to(self.root))) for path in pointers]
+        camera_pointer = self.root / "publications/native-pile-camera-images-v1/current.json"
+        if selection and selection.exists() and camera_pointer.exists():
+            publications.append(self.publication(str(camera_pointer.relative_to(self.root))))
         problems, groups, buckets, datasets, identities = [], [], [], [], set()
         for publication in publications:
             manifest = publication["manifest"]
@@ -118,13 +121,18 @@ class BucketDashboard:
                           for group in publication["calibration"]["groups"])
             buckets.extend(publication["problems"]["buckets"])
         admissions = self.admitted_piles()
+        for publication in publications:
+            for pile in publication.get("admitted_piles", []):
+                admissions.append({**pile, "dataset_snapshot_id": publication["manifest"]["snapshot_id"],
+                                   "snapshot_directory": publication["snapshot_directory"]})
         for pile in admissions:
             for problem in pile.pop("tasks"):
                 if problem["id"] not in identities:
                     identities.add(problem["id"])
                     problems.append(problem)
         task_scenes = {p.get("source", {}).get("scene_id") for p in problems}
-        admissions = [p for p in admissions if p["scene_id"] not in task_scenes]
+        admissions = [p for p in admissions if p["scene_id"] not in task_scenes
+                      or p.get("image_kind") == "admitted-pile-camera"]
         pilots = self.distance_pilots(pointers)
         revision = hashlib.sha256(json.dumps(
             [[p["snapshot_id"] for p in datasets], admissions,
@@ -396,6 +404,7 @@ class BucketDashboard:
                             "complete": manifest.get("complete", False),
                             "qualification_status": manifest.get("measurement_status", "unknown")},
             "snapshot_directory": str(Path(relative).parent),
+            "admitted_piles": manifest.get("admitted_piles", []),
         }
         if compose:
             self.live_metrics(publication)

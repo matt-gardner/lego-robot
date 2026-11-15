@@ -61,6 +61,26 @@ def test_duplicate_ids_are_not_merged(tmp_path):
         BucketDashboard(tmp_path).snapshot()
 
 
+def test_camera_publication_keeps_single_pile_image_alongside_boxed_tasks(tmp_path):
+    image = b"\x89PNG\r\n\x1a\ncamera"
+    directory = publish(tmp_path, {
+        "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "camera",
+        "problems": [{"id": "task", "source": {"scene_id": "scene"},
+                      "initial_images": [{"path": "task.png", "sha256": hashlib.sha256(image).hexdigest()}]}],
+        "admitted_piles": [{"id": "admission:pile", "scene_id": "scene", "tasks": [],
+                            "image_kind": "admitted-pile-camera",
+                            "initial_images": [{"path": "pile.png", "sha256": hashlib.sha256(image).hexdigest()}]}],
+        "groups": [],
+    })
+    (directory / "pile.png").write_bytes(image)
+    (directory / "task.png").write_bytes(image)
+    browser = BucketDashboard(tmp_path)
+    snapshot = browser.snapshot()
+    # Standalone compatibility publications use the same image endpoint.
+    assert browser.image("task", 0) == (image, "image/png")
+    assert snapshot["admitted_piles"][0]["id"] == "admission:pile"
+
+
 def test_auto_discovers_independent_publications_and_preserves_images(tmp_path):
     for name in ("native", "photo"):
         root = tmp_path / name

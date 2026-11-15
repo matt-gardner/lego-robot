@@ -204,6 +204,7 @@ async function start() {
     const problems=data.problems.problems.filter(p=>p.source?.kind!=="legacy");
     const groups=data.calibration.groups;
     const admitted=data.admitted_piles || [];
+    const cameraPiles=new Map(admitted.filter(p=>p.image_kind==="admitted-pile-camera").map(p=>[p.scene_id,p]));
     const admissionBucket=p=>`current:${p.tags.piece_count}-pieces`;
     function admissionCard(pile) {
         const card=node("article",undefined,"pile-group");
@@ -215,7 +216,8 @@ async function start() {
           image.addEventListener("error",()=>image.replaceWith(node("p","Pile preview unavailable / failed integrity check","missing")));
           card.append(image);
         } else card.append(node("p","Pile preview not rendered yet","missing"));
-        card.append(node("p","Admitted pile · task pool pending · policy rates unmeasured."));
+        card.append(node("p",pile.image_kind==="admitted-pile-camera" ? pile.status :
+          "Admitted pile · task pool pending · policy rates unmeasured."));
         return card;
     }
     const buckets=(data.problems.buckets || []).filter(b=>!b.id.startsWith("corpus:"));
@@ -260,7 +262,7 @@ async function start() {
         coverage.append(node("p",`${task}: ${measured.length}/${tp.length} problems · ${rollouts} rollouts`));
       }
       const ap=admitted.filter(p=>admissionBucket(p)===id);
-      if(ap.length) coverage.append(node("p",`${ap.length} admitted piles · task pool pending`));
+      if(ap.length) coverage.append(node("p",`${ap.length} admitted piles · ${ap.every(p=>p.image_kind==="admitted-pile-camera") ? "camera renders; policy unmeasured" : "task pool pending"}`));
       }
       draw();
       const ap=admitted.filter(p=>admissionBucket(p)===id);
@@ -293,6 +295,7 @@ async function start() {
       const hierarchy=groupPiles(filtered);
       const filteredAdmissions=admitted.filter(p=>(!bucket||admissionBucket(p)===bucket)&&!task&&(!q||JSON.stringify(p).toLowerCase().includes(q)));
       for(const pile of filteredAdmissions) {
+        if(pile.image_kind==="admitted-pile-camera" && filtered.some(p=>pileIdentity(p)===pile.scene_id)) continue;
         const id=admissionBucket(pile);
         let group=hierarchy.find(b=>b.bucket===id);
         if(!group){group={bucket:id,piles:[]};hierarchy.push(group);}
@@ -318,10 +321,11 @@ async function start() {
           const scene=representative.tags?.scene || {};
           const summary=node("button",undefined,"pile-card"), preview=node("div",undefined,"pile-preview");
           summary.type="button";
-          const image=representative.initial_images?.[0];
+          const previewSource=cameraPiles.get(pile.id) || representative;
+          const image=previewSource.initial_images?.[0];
           if (image) {
           const img=node("img");img.loading="lazy";img.alt=`Initial pile ${pileIndex+1}`;
-          img.src=`api/buckets/image?problem=${encodeURIComponent(representative.id)}&index=0&snapshot=${encodeURIComponent(representative.dataset_snapshot_id || data.manifest.snapshot_id)}`;
+          img.src=`api/buckets/image?problem=${encodeURIComponent(previewSource.id)}&index=0&snapshot=${encodeURIComponent(previewSource.dataset_snapshot_id || data.manifest.snapshot_id)}`;
           img.addEventListener("error",()=>{img.replaceWith(node("p","Initial image unavailable / failed integrity check","missing"));});
           preview.append(img);
           } else preview.append(node("p","Initial scene images not published.","missing"));

@@ -35,6 +35,33 @@ sample count (optimizer updates times batch size), never inferred action success
 
 ## Live data buckets (schema 1)
 
+### Catalog admitted-pile camera images
+
+`so101.native_pile_dashboard_images` freezes a named published catalog pile
+snapshot by SHA256, validates each admission and its five bound scene files,
+and renders serially with `MUJOCO_GL=osmesa` (CPU only). Pass `--snapshot`,
+`--sha256`, and `--root` (the shared bucket dashboard root); `--limit-scenes`
+permits a bounded first batch. Repeating the same command verifies and reuses
+completed scene receipts. Changing the renderer contract requires a new output
+version, not overwriting existing completed derivatives.
+
+The `publications/native-pile-camera-images-v1/current.json` channel points to
+an immutable hash-pinned manifest under `native-pile-camera-images-v1/<input SHA>`.
+It enumerates the entire selected task population, explicit missing-image counts,
+and one external-camera image per completed pile, separately from exact-reset
+task-scene camera images. Source-object boxes are yellow; visible destination-marker
+boxes are cyan. Boxes are measured from the same camera's geometry segmentation;
+offscreen/occluded entities retain `not_visible` and no invented box. Pile overview
+images are never substituted for task camera frames. The task camera has a fixed
+look-at point at (.22, 0, the model's table height), distance .45 m, azimuth 135
+degrees and elevation -65 degrees, with MuJoCo's actual projection recorded.
+It is explicitly not a policy camera: the bound models contain only `wrist_cam`,
+which looks away from the pile at the home-pose reset. These are TRAIN start-state
+visualizations, not policy evaluations, expert references, or SFT qualification.
+The consumer adds this channel alongside current selected pools and retains the
+single pile image even when corresponding task images are present. Source data,
+frozen validation sets, negatives, and producer previews remain untouched.
+
 Distance-assisted child pilots (`tags.task_assistance.kind:
 direct-task-distance-v2`) remain available in API metadata but are not rendered
 as sections below the bucket table. Numeric expert-prefix assistance zero does
