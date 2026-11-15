@@ -223,12 +223,15 @@ def settle_data(
     stationarity_metric: str = "legacy-component-v1",
     contact_solver: str = "model-default",
     check_stop=lambda: None,
+    final_contact_only: bool = False,
+    final_shift_allowance: int = 0, final_shift_limit_m: float = .005,
+    final_extension_seconds: float = 0., final_extension_count: int = 1,
 ) -> tuple[mujoco.MjModel, mujoco.MjData, dict]:
     """Settle initialized robot controls and catalog objects without resetting."""
     limits = (maximum_seconds, stationary_seconds, velocity_tolerance, contact_limit_m)
     if any(not math.isfinite(value) or value <= 0 for value in limits):
         raise ValueError("Settling parameters must be positive and finite")
-    if stationarity_metric not in {"legacy-component-v1", "surface-speed-v2"}:
+    if stationarity_metric not in {"legacy-component-v1", "surface-speed-v2", "displacement-v3"}:
         raise ValueError(f"Unknown stationarity metric: {stationarity_metric}")
     if contact_solver not in {"model-default", "pyramidal-v1"}:
         raise ValueError(f"Unknown contact solver: {contact_solver}")
@@ -245,14 +248,41 @@ def settle_data(
         addresses.append((obj, int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])))
     maximum_penetration = 0.
     stationary_since = None
+    window = None
+    speeds = [math.inf]
+    shifts = []
+    radii = []
+    for obj, _, _ in addresses:
+        body = model.body(obj["instance_id"]).id
+        geoms = range(int(model.body_geomadr[body]),
+                      int(model.body_geomadr[body] + model.body_geomnum[body]))
+        radii.append(max((float(np.linalg.norm(model.geom_pos[g]) + model.geom_rbound[g])
+                          for g in geoms), default=0.))
     steps = 0
-    while data.time < deadline:
+    extensions = 0
+    while True:
+        if data.time >= deadline:
+            # Large piles keep a few isolated millimetre micro-slips; at the deadline accept the
+            # last full window when only those few pieces moved and each moved a bounded distance.
+            moving = [s for s, v in zip(shifts, speeds) if v > velocity_tolerance]
+            if (stationarity_metric == "displacement-v3" and shifts
+                    and len(moving) <= final_shift_allowance
+                    and max(moving, default=0.) <= final_shift_limit_m):
+                break
+            # A late slip can land in the final window; judge again after it stops.
+            if final_extension_seconds and extensions < final_extension_count:
+                extensions += 1
+                deadline += final_extension_seconds
+                continue
+            raise ValueError(
+                "Catalog scene did not settle before physics timeout: "
+                f"{len(moving)} moving pieces, largest shift {1000 * max(shifts, default=0.):.2f}mm")
         if steps % 100 == 0:
             check_stop()
         steps += 1
         penetration = max((max(0., -float(contact.dist)) for contact in data.contact), default=0.)
         maximum_penetration = max(maximum_penetration, penetration)
-        if penetration > contact_limit_m:
+        if penetration > contact_limit_m and not final_contact_only:
             contact = min(data.contact, key=lambda item: float(item.dist))
             geometries = [model.geom(int(index)).name
                           for index in (contact.geom1, contact.geom2)]
@@ -264,6 +294,26 @@ def settle_data(
             raise ValueError("Non-finite catalog scene physics")
         if any(warning.number for warning in data.warning):
             raise ValueError("MuJoCo emitted a warning while settling catalog scene")
+        if stationarity_metric == "displacement-v3":
+            # Instantaneous contact-solver jitter spikes speed while pieces stay put;
+            # judge stillness by each piece's net surface displacement over the window.
+            if window is None:
+                window = (data.time, [data.qpos[q:q + 7].copy() for _, q, _ in addresses])
+            elif data.time - window[0] >= stationary_seconds:
+                speeds, shifts = [], []
+                for (_, q, _), start, radius in zip(addresses, window[1], radii):
+                    relative = np.empty(4)
+                    mujoco.mju_mulQuat(relative, data.qpos[q + 3:q + 7],
+                                       np.r_[start[3], -start[4:7]])
+                    angle = 2 * math.atan2(np.linalg.norm(relative[1:]), abs(relative[0]))
+                    shift = np.linalg.norm(data.qpos[q:q + 3] - start[:3]) + angle * radius
+                    shifts.append(shift)
+                    speeds.append(shift / (data.time - window[0]))
+                if max(speeds) <= velocity_tolerance:
+                    break
+                window = None
+            mujoco.mj_step(model, data)
+            continue
         speeds = [
             body_surface_speed_bound(model, data, model.body(obj["instance_id"]).id)
             if stationarity_metric == "surface-speed-v2"
@@ -277,8 +327,9 @@ def settle_data(
         if stationary_since is not None and data.time - stationary_since >= stationary_seconds:
             break
         mujoco.mj_step(model, data)
-    else:
-        raise ValueError("Catalog scene did not settle before physics timeout")
+    final_penetration = max((max(0., -float(c.dist)) for c in data.contact), default=0.)
+    if final_penetration > contact_limit_m:
+        raise ValueError(f"Settled scene contact penetration exceeded limit: {final_penetration:.6f}m")
     objects = [
         {"instance_id": obj["instance_id"], "part_id": obj["part_id"],
          "qpos": data.qpos[q:q + 7].tolist(), "qvel": data.qvel[v:v + 6].tolist()}
@@ -288,8 +339,12 @@ def settle_data(
     snapshot.update(maximum_penetration_m=maximum_penetration, objects=objects)
     snapshot["stationarity"] = {
         "metric": stationarity_metric, "tolerance": velocity_tolerance,
-        "units": "m/s" if stationarity_metric == "surface-speed-v2" else "mixed m/s and rad/s",
+        "units": "m/s" if stationarity_metric != "legacy-component-v1" else "mixed m/s and rad/s",
         "continuous_seconds": stationary_seconds, "maximum_final_speed": max(speeds),
+        "final_shift_allowance": final_shift_allowance,
+        "final_shift_limit_m": final_shift_limit_m,
+        "final_shifting_pieces": sum(v > velocity_tolerance for v in speeds),
+        "final_extensions_used": extensions,
     }
     snapshot["contact_solver"] = {"profile": contact_solver, "cone": int(model.opt.cone)}
     return model, data, snapshot

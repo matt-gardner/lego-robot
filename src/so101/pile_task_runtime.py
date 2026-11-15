@@ -20,7 +20,7 @@ MAXIMUM_ASSISTANCE_PRELOAD_N = 1.
 LABEL_RENDERER_PROFILE = "native-id-segmentation-no-msaa-v1"
 
 
-def load_problem(entry: dict, task_id: str) -> dict:
+def _load_scene(entry: dict) -> tuple[Path, dict]:
     root = Path(entry["root"])
     if not root.is_absolute() or root.is_symlink():
         raise ValueError("Problem root must be an absolute non-symlink path")
@@ -35,6 +35,10 @@ def load_problem(entry: dict, task_id: str) -> dict:
     scene = json.loads((root / "problem.json").read_text())
     if scene["scene_id"] != entry["scene_id"] or scene["scene_family_id"] != entry["scene_family_id"]:
         raise ValueError("Problem scene/family differs from admission entry")
+    return root, scene
+
+
+def _select_problem(root: Path, scene: dict, task_id: str) -> dict:
     tasks = [task for task in scene["tasks"] if task["task_id"] == task_id]
     if len(tasks) != 1 or tasks[0]["grader_version"] != GRADER_VERSION:
         raise ValueError("Unknown task or unsupported grader")
@@ -46,6 +50,16 @@ def load_problem(entry: dict, task_id: str) -> dict:
     if len({item["body_name"] for item in scene["instances"]}) != len(identities):
         raise ValueError("Multiple instances refer to the same body")
     return {"root": root, "scene": scene, "task": tasks[0]}
+
+
+def load_problem(entry: dict, task_id: str) -> dict:
+    root, scene = _load_scene(entry)
+    return _select_problem(root, scene, task_id)
+
+
+def load_problems(entry: dict) -> list[dict]:
+    root, scene = _load_scene(entry)
+    return [_select_problem(root, scene, task["task_id"]) for task in scene["tasks"]]
 
 
 @dataclass

@@ -19,8 +19,15 @@ from so101.robot_sim import MODEL_ROOT
 
 
 def support_graph(model: mujoco.MjModel, data: mujoco.MjData, names: list[str]) -> dict:
-    """Measure contact connectivity to the table, not graspability or clutch fit."""
+    """Measure contact connectivity to the table, not graspability or clutch fit.
+
+    Static scene obstacles (``pile_obstacle_*``) are ground like the table.
+    """
     table = model.geom("table").id
+    grounds = {table} | {
+        geom for geom in range(model.ngeom)
+        if int(model.geom_bodyid[geom]) == 0
+        and (model.geom(geom).name or "").startswith("pile_obstacle_")}
     bodies = {model.body(name).id: name for name in names}
     edges = set()
     maximum_penetration = 0.
@@ -29,19 +36,47 @@ def support_graph(model: mujoco.MjModel, data: mujoco.MjData, names: list[str]) 
         if contact.dist > .0001:
             continue
         endpoints = [
-            "table" if geom == table else bodies.get(int(model.geom_bodyid[geom]))
+            "table" if geom in grounds else bodies.get(int(model.geom_bodyid[geom]))
             for geom in (int(contact.geom1), int(contact.geom2))
         ]
         if all(endpoint is not None for endpoint in endpoints) and endpoints[0] != endpoints[1]:
             edges.add(tuple(sorted(endpoints)))
-    reached = {"table"}
-    while True:
-        expanded = reached | {node for edge in edges if reached.intersection(edge) for node in edge}
-        if expanded == reached:
+    def connect() -> set:
+        reached = {"table"}
+        while True:
+            expanded = reached | {node for edge in edges if reached.intersection(edge) for node in edge}
+            if expanded == reached:
+                return reached
+            reached = expanded
+
+    reached = connect()
+    # A piece rocking on the stiff table can rest a few micrometres apart at the sampled
+    # instant, producing no contact with zero margin; measure those gaps directly.
+    geoms = {}
+    for geom in range(model.ngeom):
+        name = bodies.get(int(model.geom_bodyid[geom]))
+        if name is not None and model.geom_contype[geom] | model.geom_conaffinity[geom]:
+            geoms.setdefault(name, []).append(geom)
+    fromto = np.zeros(6)
+    while unreached := sorted(set(names) - reached):
+        added = False
+        for name in unreached:
+            centre = data.xpos[model.body(name).id]
+            neighbours = [("table", sorted(grounds))] + [
+                (other, geoms.get(other, [])) for other in reached - {"table"}
+                if np.linalg.norm(data.xpos[model.body(other).id] - centre) < .1
+            ]
+            for other, targets in neighbours:
+                if any(mujoco.mj_geomDistance(model, data, geom, target, .001, fromto) <= .0001
+                       for geom in geoms.get(name, []) for target in targets):
+                    edges.add(tuple(sorted((name, other))))
+                    added = True
+                    break
+        if not added:
             break
-        reached = expanded
+        reached = connect()
     return {
-        "metric": "table-contact-connectivity-v1",
+        "metric": "table-contact-connectivity-v2",
         "edges": sorted(edges), "table_connected_objects": sorted(reached - {"table"}),
         "unsupported_objects": sorted(set(names) - reached),
         "object_object_edges": sum("table" not in edge for edge in edges),

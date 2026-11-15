@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import signal
 import threading
+import time
 from tempfile import TemporaryDirectory
 import xml.etree.ElementTree as ET
 
@@ -34,21 +35,89 @@ MINIMUM_FREE_BYTES = 10 * 1024**3
 MAXIMUM_POOL_BYTES = 4 * 1024**3
 
 
-def resource_check(root: Path, maximum_pool_bytes: int = MAXIMUM_POOL_BYTES) -> None:
+def scheduled_pile(sequence: int, *, airborne: bool = False) -> tuple[int, str]:
+    counts = (48, 64, 80, 100) if airborne else (3, 12, 5, 16, 8, 24, 3, 32, 5, 48, 8, 64)
+    count = counts[sequence % len(counts)]
+    mode = ("monochrome", "few", "many")[
+        (sequence % len(counts) + sequence // len(counts)) % 3]
+    return count, mode
+
+
+def attempt_resource_limits(count: int, full_catalog: bool = False) -> tuple[int, int, int]:
+    if not 2 <= count <= 128:
+        raise ValueError("Unsupported piece count for attempt budget")
+    # Mixed-family parts carry more collision geoms and settle longer than compact basics.
+    cpu_seconds = max(58, (18 if full_catalog else 8) * count)
+    return cpu_seconds, cpu_seconds + 1, max(120, 2 * cpu_seconds)
+
+
+OBSTACLE_KINDS = ("wall", "corner", "step", "ramp")
+
+
+def _box(center_xy, yaw: float, half_size, *, tilt: float = 0., kind: str) -> dict:
+    hx, hy, hz = half_size
+    z = hx * np.sin(tilt) + hz * np.cos(tilt) if tilt else hz
+    rotation = np.empty(4)
+    mujoco.mju_euler2Quat(rotation, np.array([0., -tilt, yaw]), "XYZ")
+    return {"kind": kind, "position_relative_to_scene_m": [float(center_xy[0]), float(center_xy[1]), float(z)],
+            "half_size_m": [float(hx), float(hy), float(hz)], "quaternion": rotation.tolist()}
+
+
+def sample_obstacles(seed: int, sequence: int, count: int) -> list[dict]:
+    """Static boxes overlapping the drop region so the pile settles against or onto them."""
+    rng = np.random.default_rng(np.random.SeedSequence([seed, sequence, 202]))
+    half_width = max(.012, .04*np.sqrt(count/48))
+    kind = OBSTACLE_KINDS[int(rng.integers(len(OBSTACLE_KINDS)))]
+    yaw = float(rng.uniform(0., 2*np.pi))
+    outward = np.array([np.cos(yaw), np.sin(yaw)])
+    if kind in ("wall", "corner"):
+        walls = [yaw] if kind == "wall" else [yaw, yaw + np.pi/2]
+        return [_box(np.array([np.cos(angle), np.sin(angle)]) * half_width * rng.uniform(.5, .9),
+                     angle, (.004, 1.6*half_width, .015), kind=kind) for angle in walls]
+    if kind == "step":
+        return [_box(outward * half_width * rng.uniform(.5, .8), yaw,
+                     (.6*half_width, 1.4*half_width, .006), kind=kind)]
+    return [_box(outward * half_width * rng.uniform(.4, .6), yaw,
+                 (.8*half_width, 1.4*half_width, .003), tilt=float(np.radians(rng.uniform(10., 20.))),
+                 kind=kind)]
+
+
+def obstacle_bounds(obstacle: dict, origin) -> tuple[np.ndarray, np.ndarray]:
+    matrix = np.empty(9)
+    mujoco.mju_quat2Mat(matrix, np.asarray(obstacle["quaternion"]))
+    corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+    points = (corners * obstacle["half_size_m"]) @ matrix.reshape(3, 3).T
+    points += np.asarray(origin) + obstacle["position_relative_to_scene_m"]
+    return points.min(axis=0), points.max(axis=0)
+
+
+def resource_check(root: Path, maximum_pool_bytes: int | None = MAXIMUM_POOL_BYTES) -> None:
     stats = os.statvfs(root)
     if stats.f_bavail * stats.f_frsize < MINIMUM_FREE_BYTES:
         raise BlockingIOError("Pile generation requires 10GiB available")
     memory = memory_state()
     if memory["available_bytes"] < 2 * 1024**3:
         raise BlockingIOError(f"Pile generation memory admission paused: {memory}")
-    used = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
-    if used + 512 * 1024**2 > maximum_pool_bytes:
-        raise BlockingIOError("Pile pool budget reached; preserving existing problems")
+    if maximum_pool_bytes is not None:
+        used = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+        if used + 512 * 1024**2 > maximum_pool_bytes:
+            raise BlockingIOError("Pile pool budget reached; preserving existing problems")
 
 
-def propose_pile(catalog, seed: int, sequence: int, count: int, color_mode: str) -> dict:
+def propose_pile(catalog, seed: int, sequence: int, count: int, color_mode: str,
+                 *, airborne: bool = False, full_catalog: bool = False) -> dict:
     if not 2 <= count <= 128 or color_mode not in ("monochrome", "few", "many"):
         raise ValueError("Unsupported piece count or color mode")
+    if airborne and count >= 24 and not full_catalog:
+        basic = tuple(part for part in catalog.parts
+                      if part.family in {"brick", "plate", "tile", "slope"})
+        if not basic:
+            raise ValueError("Large airborne curriculum has no basic LEGO parts")
+        if count >= 48:
+            basic = tuple(part for part in basic if max(part.dimensions_m) <= .020)
+            if not basic:
+                raise ValueError("High-count airborne curriculum has no compact basic LEGO parts")
+        catalog = replace(catalog, parts=basic)
     rng = np.random.default_rng(np.random.SeedSequence([seed, sequence]))
     selected = rng.choice(len(catalog.parts), size=min(count, len(catalog.parts)), replace=False)
     subset = replace(catalog, parts=tuple(catalog.parts[int(index)] for index in selected))
@@ -65,6 +134,11 @@ def propose_pile(catalog, seed: int, sequence: int, count: int, color_mode: str)
         obj["position_relative_to_scene_m"] = [10. + index, 0., 1.]
     plan["generator"] = "native-pile-tasks-v1"
     plan["drop_strategy"] = "sequential-low-clearance-v1"
+    if airborne:
+        plan["sampling_profile"] = (
+            "all-eligible-families-v1" if full_catalog or count < 24 else
+            "compact-basic-parts-for-high-count-v1" if count >= 48 else
+            "basic-families-for-large-piles-v1")
     plan["color_mode"] = color_mode
     plan["destinations"] = [
         {"destination_id": "destination_0", "position_relative_to_scene_m": [0., -.14, .00002]},
@@ -120,6 +194,182 @@ def drop_pieces_sequentially(sim) -> None:
     finally:
         for body, _, _, gravity in slots:
             sim.model.body_gravcomp[body] = gravity
+
+
+def drop_pieces_airborne(sim) -> None:
+    """Insert airborne batches while preserving every existing integration-state field."""
+    tree = ET.fromstring(sim.xml)
+    option = tree.find("option")
+    if option is None:
+        option = ET.SubElement(tree, "option")
+    option.attrib.update({
+        "timestep": ".001", "cone": "elliptic", "solver": "Newton",
+        "iterations": "100", "ls_iterations": "50", "impratio": "1",
+        "tolerance": "1e-8", "ccd_tolerance": "1e-6", "noslip_iterations": "10",
+    })
+    objects = sim.plan["objects"]
+    world = tree.find("worldbody")
+    if world is None:
+        raise ValueError("Airborne scene lacks worldbody")
+    donors = [world.find(f"body[@name='{obj['instance_id']}']") for obj in objects]
+    if any(body is None for body in donors):
+        raise ValueError("Airborne object is absent from worldbody")
+    contact = tree.find("contact")
+    if contact is None:
+        contact = ET.SubElement(tree, "contact")
+    original_contacts = list(contact)
+    # Piece-piece contacts at solref .002 (2x the 1 ms timestep) chatter indefinitely
+    # when parts wedge; .005 with a 1 mm impedance transition settles them.
+    for body in donors:
+        for geom in body.findall("geom"):
+            if geom.get("group") == "3":
+                geom.set("solref", ".005 1")
+                geom.set("solimp", ".9 .95 .001 .5 2")
+    table = world.find("geom[@name='table']")
+    if table is not None:
+        friction = np.fromstring(table.get("friction", ".7 .005 .0001"), sep=" ")
+        friction[0] = 1.
+
+        floor_pairs = [
+            ET.Element("pair", geom1="table", geom2=geom.get("name"), condim="3",
+                       friction=" ".join(map(str, [friction[0], *friction] + [friction[2]])),
+                       solref=".002 1", solimp=".99 .999 .0001 .5 2",
+                       margin="0", gap="0")
+            for body in donors for geom in body.findall("geom") if geom.get("group") == "3"
+        ]
+    else:
+        floor_pairs = []
+    reference = sim.model
+    local = []
+    for obj in objects:
+        body = reference.body(obj["instance_id"]).id
+        chunks = []
+        for geom in range(int(reference.body_geomadr[body]),
+                          int(reference.body_geomadr[body]+reference.body_geomnum[body])):
+            if reference.geom_group[geom] != 2:
+                continue
+            mesh = int(reference.geom_dataid[geom])
+            start, count = reference.mesh_vertadr[mesh], reference.mesh_vertnum[mesh]
+            matrix = np.empty(9)
+            mujoco.mju_quat2Mat(matrix, reference.geom_quat[geom])
+            chunks.append(reference.mesh_vert[start:start+count] @ matrix.reshape(3, 3).T
+                          + reference.geom_pos[geom])
+        if not chunks:
+            raise ValueError("Airborne piece lacks visual source vertices")
+        local.append(np.concatenate(chunks))
+    rng = np.random.default_rng(np.random.SeedSequence(
+        [sim.plan["seed"], sim.plan["sequence"], 101]))
+    fields = [value for value in mujoco.mjtState.__members__.values()
+              if int(value) > 0 and not int(value) & (int(value)-1)
+              and int(value) & int(mujoco.mjtState.mjSTATE_INTEGRATION)]
+
+    def state(model, data, field):
+        values = np.empty(mujoco.mj_stateSize(model, field))
+        mujoco.mj_getState(model, data, values, field)
+        return values
+
+    active = 0
+    events = []
+    batch_size = 1 if len(objects) <= 8 else 4
+    half_width = max(.012, .04*np.sqrt(len(objects)/48))
+    for stop in range(batch_size, len(objects)+batch_size, batch_size):
+        stop = min(stop, len(objects))
+        highest = TABLE_Z
+        static = [obstacle_bounds(obstacle, sim.scene_origin)
+                  for obstacle in sim.plan.get("obstacles", [])]
+        active_bounds = list(static)
+        for index in range(active):
+            body = sim.model.body(objects[index]["instance_id"]).id
+            address = int(sim.model.jnt_qposadr[sim.model.body_jntadr[body]])
+            pose = sim.data.qpos[address:address+7]
+            matrix = np.empty(9)
+            mujoco.mju_quat2Mat(matrix, pose[3:])
+            world_points = local[index] @ matrix.reshape(3, 3).T + pose[:3]
+            lower, upper = world_points.min(axis=0), world_points.max(axis=0)
+            active_bounds.append((lower, upper))
+            highest = max(highest, float(upper[2]))
+        placements, boxes, surfaces = [], list(static), []
+        for index in range(active, stop):
+            for _ in range(10000):
+                quaternion = rng.normal(size=4)
+                quaternion /= np.linalg.norm(quaternion)
+                matrix = np.empty(9)
+                mujoco.mju_quat2Mat(matrix, quaternion)
+                points = local[index] @ matrix.reshape(3, 3).T
+                xy = sim.scene_origin[:2]+rng.uniform(-half_width, half_width, 2)
+                low_xy, high_xy = points[:,:2].min(axis=0)+xy, points[:,:2].max(axis=0)+xy
+                surface = max([TABLE_Z]+[
+                    float(hi[2]) for lo, hi in active_bounds
+                    if np.all(high_xy >= lo[:2]) and np.all(low_xy <= hi[:2])
+                ])
+                position = np.r_[xy, surface+.01-points[:, 2].min()]
+                lower, upper = points.min(axis=0)+position, points.max(axis=0)+position
+                if all(np.max(np.maximum(lower-hi, lo-upper)) >= .001
+                       for lo, hi in boxes):
+                    break
+            else:
+                raise ValueError("Airborne random placement exhausted")
+            placements.append((position, quaternion))
+            boxes.append((lower, upper))
+            surfaces.append(surface)
+        for body in donors:
+            if body in list(world):
+                world.remove(body)
+        world.extend(donors[:stop])
+        names = {g.get("name") for body in donors[:stop] for g in body.findall("geom")}
+        for pair in list(contact):
+            contact.remove(pair)
+        contact.extend(original_contacts)
+        contact.extend(pair for pair in floor_pairs if pair.get("geom2") in names)
+        xml = ET.tostring(tree, encoding="unicode")
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        if active:
+            for name in ("body_mass", "body_inertia", "body_ipos", "body_iquat",
+                         "geom_pos", "geom_quat", "geom_friction", "geom_solref",
+                         "geom_solimp", "geom_condim", "geom_contype", "geom_conaffinity"):
+                previous = getattr(sim.model, name)
+                if previous.tobytes() != getattr(model, name)[:len(previous)].tobytes():
+                    raise ValueError(f"Airborne expansion changed {name}")
+        for field in fields:
+            old = state(sim.model, sim.data, field)
+            new = state(model, data, field)
+            copied = min(len(old), len(new))
+            new[:copied] = old[:copied]
+            mujoco.mj_setState(model, data, new, field)
+            if active and state(model, data, field)[:len(old)].tobytes() != old.tobytes():
+                raise ValueError("Airborne expansion changed an existing state field")
+        for index, (position, quaternion) in enumerate(placements, active):
+            body = model.body(objects[index]["instance_id"]).id
+            joint = int(model.body_jntadr[body])
+            q, v = int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])
+            data.qpos[q:q+7] = np.r_[position, quaternion]
+            data.qvel[v:v+6] = 0.
+        before = state(model, data, mujoco.mjtState.mjSTATE_INTEGRATION)
+        mujoco.mj_forward(model, data)
+        if before.tobytes() != state(model, data, mujoco.mjtState.mjSTATE_INTEGRATION).tobytes():
+            raise ValueError("Airborne forward changed integration state")
+        if np.any(model.body_gravcomp) or np.any(data.tree_asleep >= 0):
+            raise ValueError("Airborne pieces must remain awake under ordinary gravity")
+        sim.model, sim.data, sim.xml = model, data, xml
+        active = stop
+        events.append({"count": stop, "simulation_time_s": float(data.time),
+                       "highest_existing_visual_z_m": highest,
+                       "clearance_profile": "local-overlapping-visual-bounds-v1",
+                       "placements": [
+                           {"instance_id": objects[index]["instance_id"],
+                            "position_m": position.tolist(), "quaternion": quaternion.tolist(),
+                            "local_surface_top_m": surface}
+                           for index, ((position, quaternion), surface) in enumerate(
+                               zip(placements, surfaces), stop-len(placements))
+                       ]})
+        if stop < len(objects):
+            for _ in range(100):
+                mujoco.mj_step(model, data)
+                if (np.any(data.warning.number) or not np.isfinite(data.qpos).all()
+                        or not np.isfinite(data.qvel).all()):
+                    raise ValueError("MuJoCo emitted a warning while settling catalog scene")
+    sim.plan["airborne_spawn_events"] = events
 
 
 def describe_scene(sim, plan: dict) -> tuple[list[dict], list[dict], dict]:
@@ -215,13 +465,36 @@ def add_settled_view_walls(sim, plan: dict) -> None:
             raise ValueError("Settled VIEW wall intersects existing scene")
 
 
+def remove_view_walls(sim) -> None:
+    tree = ET.fromstring(sim.xml)
+    for index in range(2):
+        name = f"pile_view_obstruction_{index}"
+        position = [.22, 0., -10. - index]
+        sim.model.geom_pos[sim.model.geom(name).id] = position
+        tree.find(f".//geom[@name='{name}']").set("pos", " ".join(map(str, position)))
+    sim.xml = ET.tostring(tree, encoding="unicode")
+    mujoco.mj_forward(sim.model, sim.data)
+
+
 def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int,
-                   count: int, color_mode: str, model_root: Path = MODEL_ROOT) -> dict:
+                   count: int, color_mode: str, model_root: Path = MODEL_ROOT,
+                   airborne: bool = False, full_catalog: bool = False,
+                   obstacles: bool = False) -> dict:
+    started = time.monotonic()
     sim = None
     # Binary models embed meshes: no catalog-path lifetime dependency after compilation.
     with catalog_read_lock(catalog_path) as manifest:
         catalog = load_catalog(manifest)
-        plan = propose_pile(catalog, seed, sequence, count, color_mode)
+        plan = propose_pile(catalog, seed, sequence, count, color_mode, airborne=airborne,
+                            full_catalog=full_catalog)
+        if obstacles:
+            if not airborne:
+                raise ValueError("Obstacle scenes require airborne drops")
+            plan["obstacles"] = sample_obstacles(seed, sequence, count)
+        if airborne:
+            plan["drop_strategy"] = "airborne-batches-v5-10mm-local-clearance"
+            plan["scene_id"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
+            plan["pair_id"] = plan["scene_id"]
         with TemporaryDirectory(prefix="pile-task-model-") as directory:
             robot_root = Path(directory)
             robot = ET.parse(model_root / "so101.xml")
@@ -229,7 +502,7 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
             if size is None:
                 size = ET.SubElement(robot.getroot(), "size")
             size.attrib.clear()
-            size.set("memory", "256M")
+            size.set("memory", "1G")
             world = robot.getroot().find("worldbody")
             if world is None:
                 raise ValueError("Robot model lacks worldbody")
@@ -239,29 +512,59 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
                     "pos": f".22 0 {-10 - index}",
                     "size": ".035 .006 .045", "rgba": ".25 .25 .25 1",
                 })
+            origin = np.array([.22, 0., TABLE_Z])
+            for index, obstacle in enumerate(plan.get("obstacles", [])):
+                ET.SubElement(world, "geom", {
+                    "name": f"pile_obstacle_{index}", "type": "box",
+                    "pos": " ".join(map(str, origin + obstacle["position_relative_to_scene_m"])),
+                    "quat": " ".join(map(str, obstacle["quaternion"])),
+                    "size": " ".join(map(str, obstacle["half_size_m"])),
+                    "rgba": ".55 .45 .35 1", "friction": "1 .005 .0001",
+                    "solref": ".002 1", "solimp": ".99 .999 .0001 .5 2",
+                })
             robot.write(robot_root / "so101.xml")
             for name in ("revision.json", "assets"):
                 (robot_root / name).symlink_to((model_root / name).resolve())
             try:
                 sim = CatalogSimulation(
                     catalog, plan, model_root=robot_root, render=False, record_images=False,
-                    contact_solver="pyramidal-v1", stationarity_metric="surface-speed-v2",
+                    contact_solver="model-default" if airborne else "pyramidal-v1",
+                    stationarity_metric="displacement-v3" if airborne else "surface-speed-v2",
+                    velocity_tolerance=.001 if airborne else .005,
                     initial_arm_position=(.14, -.12, .09),
-                    initialize_objects=drop_pieces_sequentially,
+                    initialize_objects=drop_pieces_airborne if airborne else drop_pieces_sequentially,
+                    final_contact_only=airborne,
+                    contact_limit_m=.002 if airborne else .001,
+                    settle_options={"stationary_seconds": 1.,
+                                    "final_shift_allowance": max(3, len(plan["objects"]) // 10),
+                                    "final_shift_limit_m": .005,
+                                    "final_extension_seconds": 2.,
+                                    # Mixed-family piles creep for longer (diag18: slips until 12.5 s).
+                                    "final_extension_count": 3 if full_catalog else 1} if airborne else None,
                 )
             except mujoco.FatalError as error:
                 if "mj_stackAlloc: out of memory" not in str(error):
                     raise
                 raise ValueError(f"Pile constraint arena exhausted: {error}") from error
     try:
-        add_settled_view_walls(sim, plan)
+        try:
+            add_settled_view_walls(sim, plan)
+        except ValueError as error:
+            if "Settled VIEW wall intersects" not in str(error):
+                raise
+            # The pile is valid; only the optional VIEW obstruction is withdrawn.
+            remove_view_walls(sim)
+            plan["view_walls"] = "omitted-intersects-pile"
         instances, tasks, tags = describe_scene(sim, plan)
         support = support_graph(sim.model, sim.data, list(sim.object_metadata))
-        if support["unsupported_objects"] or not support["object_object_edges"]:
+        if support["unsupported_objects"] or (not airborne and not support["object_object_edges"]):
             raise ValueError("Settled proposal is not a table-connected contacting pile")
         tags["contact_graph"] = support
+        tags["obstacles"] = [obstacle["kind"] for obstacle in plan.get("obstacles", [])]
+        tags["inter_object_contact_required"] = not airborne
         tags["view_obstructions"] = {
-            "kind": "two-post-settling-opaque-panels", "count": 2,
+            "kind": "two-post-settling-opaque-panels",
+            "count": 0 if plan.get("view_walls") else 2,
             "initial_target_occlusion_measured": False,
         }
         scene = {
@@ -279,6 +582,8 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
             ).hexdigest(),
             "source_assets": {part.part_id: dict(part.assets) for part in catalog.parts
                               if part.part_id in {obj["part_id"] for obj in plan["objects"]}},
+            "drop_strategy": plan["drop_strategy"],
+            "simulation_seconds": float(sim.data.time),
         }
         if mujoco.mj_sizeModel(sim.model) > 512 * 1024**2:
             raise BlockingIOError("Compiled pile exceeds 512MiB admitted model reserve")
@@ -315,6 +620,11 @@ def generate_scene(catalog_path: Path, output: Path, *, seed: int, sequence: int
         finally:
             restored.close()
         atomic_json(output / "admission.json", entry)
+        atomic_json(output / "generation_timing.json", {
+            "wall_seconds": time.monotonic()-started,
+            "simulation_seconds": float(sim.data.time),
+            "drop_strategy": plan["drop_strategy"],
+        })
         return entry
     finally:
         if sim is not None:
@@ -330,6 +640,7 @@ def candidate_rejection(error: ValueError) -> bool:
         "Settled proposal is not a table-connected contacting pile",
         "Pile constraint arena exhausted:",
         "Settled VIEW wall intersects existing scene",
+        "Airborne random placement exhausted",
     ))
 
 
@@ -346,7 +657,8 @@ def recover_entry(output: Path) -> dict | None:
 
 
 def _run(root: Path, catalog: Path, *, seed: int, attempts: int,
-         stopping: threading.Event) -> None:
+         stopping: threading.Event, airborne: bool = False,
+         full_catalog: bool = False, obstacles: bool = False) -> None:
     root.mkdir(parents=True, exist_ok=True)
     stopping = stopping or threading.Event()
     sequence = 0
@@ -357,21 +669,20 @@ def _run(root: Path, catalog: Path, *, seed: int, attempts: int,
         if (root / "STOP").exists():
             return
         try:
-            resource_check(root)
+            resource_check(root, None if airborne else MAXIMUM_POOL_BYTES)
         except BlockingIOError as error:
             atomic_json(root / "status.json", {"status": "paused", "reason": str(error)})
             stopping.wait(5)
             continue
-        counts = (3, 12, 5, 16, 8, 24, 3, 32, 5, 48, 8, 64)
-        count = counts[sequence % len(counts)]
-        mode = ("monochrome", "few", "many")[(sequence + sequence // len(counts)) % 3]
+        count, mode = scheduled_pile(sequence, airborne=airborne)
         receipt = {"sequence": sequence, "piece_count": count, "color_mode": mode}
         try:
             output = root / f"scene_{sequence:09d}"
             entry = recover_entry(output)
             if entry is None:
                 entry = generate_scene(catalog, output, seed=seed, sequence=sequence,
-                                       count=count, color_mode=mode)
+                                       count=count, color_mode=mode, airborne=airborne,
+                                       full_catalog=full_catalog, obstacles=obstacles)
             receipt.update(status="complete", scene=entry)
         except BlockingIOError as error:
             atomic_json(root / "status.json", {"status": "blocked", "reason": str(error)})
@@ -387,12 +698,14 @@ def _run(root: Path, catalog: Path, *, seed: int, attempts: int,
 
 
 def run(root: Path, catalog: Path, *, seed: int, attempts: int = 0,
-        stopping: threading.Event | None = None) -> None:
+        stopping: threading.Event | None = None, airborne: bool = False,
+        full_catalog: bool = False, obstacles: bool = False) -> None:
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".generator.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         _run(root, catalog, seed=seed, attempts=attempts,
-             stopping=stopping or threading.Event())
+             stopping=stopping or threading.Event(), airborne=airborne,
+             full_catalog=full_catalog, obstacles=obstacles)
 
 
 def main() -> None:
@@ -401,6 +714,12 @@ def main() -> None:
     parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=20261110)
     parser.add_argument("--attempts", type=int, default=0, help="0 continuously replenishes the pool")
+    parser.add_argument("--airborne", action="store_true",
+                        help="Spawn moving batches at 10mm clearance instead of settling each piece")
+    parser.add_argument("--full-catalog", action="store_true",
+                        help="Sample large piles from every eligible part, not only compact basics")
+    parser.add_argument("--obstacles", action="store_true",
+                        help="Drop airborne piles against a sampled static wall/corner/step/ramp")
     args = parser.parse_args()
     if args.attempts < 0:
         parser.error("--attempts must be nonnegative")
@@ -408,7 +727,8 @@ def main() -> None:
     stopping = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
-    run(args.root, args.catalog, seed=args.seed, attempts=args.attempts, stopping=stopping)
+    run(args.root, args.catalog, seed=args.seed, attempts=args.attempts, stopping=stopping,
+        airborne=args.airborne, full_catalog=args.full_catalog, obstacles=args.obstacles)
 
 
 if __name__ == "__main__":

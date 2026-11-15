@@ -8,7 +8,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from so101.cloud_checkpoint import atomic_json
-from so101.pile_task_runtime import load_problem
+from so101.pile_task_runtime import load_problems
 
 
 def publish_pool(root: Path) -> dict:
@@ -25,8 +25,7 @@ def publish_pool(root: Path) -> dict:
         scene = json.loads((scene_root / "problem.json").read_text())
         if not scene["tasks"]:
             raise ValueError("Admitted scene has no tasks")
-        for task in scene["tasks"]:
-            load_problem(entry, task["task_id"])
+        load_problems(entry)
         tree = ET.parse(scene_root / "model.xml")
         compiler = tree.find("compiler")
         meshdir = Path(compiler.get("meshdir", ".")) if compiler is not None else Path(".")

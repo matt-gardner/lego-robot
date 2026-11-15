@@ -36,7 +36,11 @@ class CatalogSimulation(BeamSimulation):
         record_images: bool = True,
         initial_arm_position: tuple[float, float, float] = (.20, 0., .09),
         initialize_objects: Callable[["CatalogSimulation"], None] | None = None,
+        final_contact_only: bool = False,
+        contact_limit_m: float = .001,
+        settle_options: dict | None = None,
     ):
+        settle_options = settle_options or {}
         self.before_recording_write = before_recording_write
         if not record_images and render:
             raise ValueError("Trajectory-only recording must disable rendering")
@@ -110,6 +114,8 @@ class CatalogSimulation(BeamSimulation):
         _, _, self.settled_snapshot = settle_data(
             self.model, self.data, self.xml, plan, contact_solver=contact_solver,
             stationarity_metric=stationarity_metric, velocity_tolerance=velocity_tolerance,
+            final_contact_only=final_contact_only, contact_limit_m=contact_limit_m,
+            **settle_options,
         )
         self.yaws = {name: self.object_yaw(name) for name in names}
         self.initial = {

@@ -8,14 +8,95 @@ import mujoco
 import numpy as np
 import pytest
 
+from scripts import produce_pile_tasks as production
 from so101 import pile_task_generator as generator
+from so101 import pile_pool as pool
 from so101 import pile_task_runtime as runtime
 from so101 import pile_task_worker as worker
 from so101.lego_curriculum import Catalog, Part
-from so101.lego_scene import capture_scene_state
+from so101.lego_scene import capture_scene_state, settle_data
 
 
-def test_continuous_schedule_revisits_small_piles_after_largest_range(tmp_path, monkeypatch):
+DRIFT_XML = """<mujoco><option gravity="0 0 0"/><worldbody>
+<body name="still"><freejoint/><geom size=".01"/></body>
+<body name="drift" pos=".1 0 0"><freejoint/><geom size=".01"/></body>
+</worldbody></mujoco>"""
+
+
+@pytest.mark.parametrize("allowance,limit,settles", [(0, .005, False), (1, .005, True),
+                                                     (1, .001, False)])
+def test_final_shift_allowance_accepts_only_few_bounded_movers(allowance, limit, settles):
+    model = mujoco.MjModel.from_xml_string(DRIFT_XML)
+    data = mujoco.MjData(model)
+    data.qvel[6] = .002
+    plan = {"scene_id": "s", "catalog_sha256": "c", "objects": [
+        {"instance_id": name, "part_id": "p"} for name in ("still", "drift")]}
+    settle = lambda: settle_data(
+        model, data, DRIFT_XML, plan, maximum_seconds=2., stationary_seconds=1.,
+        velocity_tolerance=.001, stationarity_metric="displacement-v3",
+        final_shift_allowance=allowance, final_shift_limit_m=limit)
+    if settles:
+        assert settle()[2]["stationarity"]["final_shifting_pieces"] == 1
+    else:
+        with pytest.raises(ValueError, match="did not settle"):
+            settle()
+
+
+@pytest.mark.parametrize("extensions,settles", [(1, False), (3, True)])
+def test_repeated_final_extensions_wait_out_slow_creep(extensions, settles):
+    xml = DRIFT_XML.replace('<body name="drift" pos=".1 0 0"><freejoint/>',
+                            '<body name="drift" pos=".1 0 0"><joint type="free" damping=".004"/>')
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    data.qvel[6] = .01
+    plan = {"scene_id": "s", "catalog_sha256": "c", "objects": [
+        {"instance_id": name, "part_id": "p"} for name in ("still", "drift")]}
+    settle = lambda: settle_data(
+        model, data, xml, plan, maximum_seconds=2., stationary_seconds=1.,
+        velocity_tolerance=.001, stationarity_metric="displacement-v3",
+        final_extension_seconds=1., final_extension_count=extensions)
+    if settles:
+        assert settle()[2]["stationarity"]["final_extensions_used"] == 2
+    else:
+        with pytest.raises(ValueError, match="did not settle"):
+            settle()
+
+
+@pytest.mark.parametrize("sequence,limits", [(0, (384, 385, 768)),
+                                           (2, (640, 641, 1280)),
+                                           (3, (800, 801, 1600))])
+def test_controller_applies_size_scaled_child_limits(tmp_path, monkeypatch, sequence, limits):
+    piles = tmp_path / "piles"
+    piles.mkdir()
+    for previous in range(sequence):
+        (piles / f"attempt_{previous:09d}.json").write_text("{}")
+    monkeypatch.setattr(production, "prepare", lambda *_: (Path("/unused"), Path("/unused")))
+    monkeypatch.setattr(production, "resource_check", lambda *_: None)
+    monkeypatch.setattr(production.sys, "argv", [
+        "produce_pile_tasks", "--root", str(tmp_path), "--until", "2099-01-01T00:00:00+00:00",
+        "--maximum-attempts", "1"])
+    original_run = production.subprocess.run
+
+    def run(command, **kwargs):
+        assert kwargs["timeout"] == limits[2]
+        prefix = command[2].split("from so101.pile_task_generator")[0]
+        probe = original_run([command[0], "-c", prefix + "print(resource.getrlimit(resource.RLIMIT_CPU))"],
+                             capture_output=True, text=True, check=True)
+        assert probe.stdout.strip() == str(limits[:2])
+        count, mode = generator.scheduled_pile(sequence, airborne=True)
+        (piles / f"attempt_{sequence:09d}.json").write_text(json.dumps({
+            "status": "rejected", "piece_count": count, "color_mode": mode}))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(production.subprocess, "run", run)
+    production.main()
+    attempt = json.loads((tmp_path / "progress.json").read_text())["attempts"][0]
+    assert (attempt["cpu_soft_limit_seconds"], attempt["cpu_hard_limit_seconds"],
+            attempt["wall_limit_seconds"]) == limits
+
+
+@pytest.mark.parametrize("airborne", [False, True])
+def test_continuous_schedule_revisits_small_piles_after_largest_range(tmp_path, monkeypatch, airborne):
     for sequence in range(11):
         (tmp_path / f"attempt_{sequence:09d}.json").write_text("{}")
     proposals = []
@@ -24,13 +105,17 @@ def test_continuous_schedule_revisits_small_piles_after_largest_range(tmp_path, 
         proposals.append((kwargs["count"], kwargs["color_mode"]))
         raise ValueError("Settled proposal is not a table-connected contacting pile")
 
-    monkeypatch.setattr(generator, "resource_check", lambda *_: None)
+    budgets = []
+    monkeypatch.setattr(generator, "resource_check", lambda _root, budget: budgets.append(budget))
     monkeypatch.setattr(generator, "generate_scene", generate)
     generator._run(tmp_path, Path("/unused"), seed=123, attempts=36,
-                   stopping=threading.Event())
-    assert [count for count, _ in proposals[:3]] == [64, 3, 12]
-    assert len(set(proposals)) == 27
-    assert sum(count <= 8 for count, _ in proposals) == 18
+                   stopping=threading.Event(), airborne=airborne)
+    assert [count for count, _ in proposals[:3]] == ([100, 48, 64] if airborne else [64, 3, 12])
+    if airborne:
+        assert {count for count, _ in proposals} == {48, 64, 80, 100}
+    assert len(set(proposals)) == (12 if airborne else 27)
+    assert sum(count <= 8 for count, _ in proposals) == (0 if airborne else 18)
+    assert budgets == [None if airborne else generator.MAXIMUM_POOL_BYTES] * 36
     assert json.loads((tmp_path / "attempt_000000012.json").read_text())["status"] == "rejected"
 
 
@@ -73,6 +158,86 @@ def test_random_catalog_sampling_and_monochrome_are_reproducible():
     assert {obj["part_id"] for obj in plan["objects"]} != {
         obj["part_id"] for obj in other["objects"]
     }
+
+
+@pytest.mark.parametrize("distant_peak", [False, True])
+def test_airborne_batches_preserve_moving_state_without_per_piece_settling(monkeypatch, distant_peak):
+    bodies = "".join(
+        f'<body name="piece{i}" pos="{10+i} 0 1"><freejoint/>'
+        '<geom type="mesh" mesh="visual" group="2" contype="0" conaffinity="0"/>'
+        f'<geom name="collision{i}" type="box" group="3" size=".004 .004 .004"/></body>'
+        for i in range(6))
+    xml = (
+        '<mujoco><asset><mesh name="visual" vertex="-.004 -.004 -.004 '
+        '.004 -.004 -.004 -.004 .004 -.004 .004 .004 -.004 '
+        '-.004 -.004 .004 .004 -.004 .004 -.004 .004 .004 .004 .004 .004"/>'
+        f'</asset><worldbody><geom name="table" type="plane" size="1 1 .1" '
+        f'friction=".7 .005 .0001" pos="0 0 {generator.TABLE_Z}"/>'
+        f'{bodies}</worldbody></mujoco>')
+    model = mujoco.MjModel.from_xml_string(xml)
+    sim = SimpleNamespace(
+        model=model, data=mujoco.MjData(model), xml=xml,
+        scene_origin=np.array([0., 0., generator.TABLE_Z]),
+        plan={"seed": 123, "sequence": 0, "objects": [
+            {"instance_id": f"piece{i}", "part_id": "fixture"} for i in range(6)]},
+    )
+    original_step = mujoco.mj_step
+    previous = []
+
+    def step(model, data):
+        original_step(model, data)
+        if distant_peak:
+            poses = data.qpos.reshape(-1, 7)
+            poses[:, 0] = np.arange(len(poses)) + 1.
+            poses[:, 2] = .5
+        previous[:] = [data.qpos.copy(), data.qvel.copy(), data.qacc_warmstart.copy()]
+
+    monkeypatch.setattr(mujoco, "mj_step", step)
+    monkeypatch.setattr(generator, "settle_data",
+                        lambda *_args, **_kwargs: pytest.fail("Per-piece settling invoked"))
+    generator.drop_pieces_airborne(sim)
+    assert sim.model.nbody == 7
+    assert sim.data.time == pytest.approx(.5)
+    np.testing.assert_array_equal(sim.data.qpos[:len(previous[0])], previous[0])
+    np.testing.assert_array_equal(sim.data.qvel[:len(previous[1])], previous[1])
+    np.testing.assert_array_equal(sim.data.qacc_warmstart[:len(previous[2])], previous[2])
+    assert np.all(sim.model.body_gravcomp == 0)
+    assert np.all(sim.data.tree_asleep < 0)
+    assert sim.model.npair == 6
+    np.testing.assert_allclose(sim.model.pair_friction,
+                               np.tile([1., 1., .005, .0001, .0001], (6, 1)))
+    assert [event["count"] for event in sim.plan["airborne_spawn_events"]] == list(range(1, 7))
+    assert not np.allclose(sim.data.qpos.reshape(6, 7)[:, 3:], [1, 0, 0, 0])
+    if distant_peak:
+        event = sim.plan["airborne_spawn_events"][-1]
+        assert event["highest_existing_visual_z_m"] > .5
+        placement = event["placements"][0]
+        assert placement["local_surface_top_m"] == generator.TABLE_Z
+        matrix = np.empty(9)
+        mujoco.mju_quat2Mat(matrix, np.array(placement["quaternion"]))
+        bottom = placement["position_m"][2] - .004 * np.abs(matrix.reshape(3, 3)[2]).sum()
+        assert bottom == pytest.approx(generator.TABLE_Z + .01)
+
+
+def test_large_airborne_stratum_separates_size_from_specialized_shapes():
+    parts = tuple(Part(str(i), "brick" if i < 10 else "round",
+                       (.008, .016 if i < 5 else .032, .01), "", ()) for i in range(20))
+    catalog = Catalog("fixture", "abc", parts, Path("/unused"))
+    large = generator.propose_pile(catalog, 123, 0, 24, "many", airborne=True)
+    assert len(large["objects"]) == 24
+    assert all(int(obj["part_id"]) < 10 for obj in large["objects"])
+    assert any(int(obj["part_id"]) >= 5 for obj in large["objects"])
+    high_count = generator.propose_pile(catalog, 123, 0, 48, "many", airborne=True)
+    assert len(high_count["objects"]) == 48
+    assert all(int(obj["part_id"]) < 5 for obj in high_count["objects"])
+    largest = generator.propose_pile(catalog, 123, 0, 100, "many", airborne=True)
+    assert len(largest["objects"]) == len({obj["instance_id"] for obj in largest["objects"]}) == 100
+    assert all(int(obj["part_id"]) < 5 for obj in largest["objects"])
+    small = generator.propose_pile(catalog, 123, 0, 8, "many", airborne=True)
+    assert any(int(obj["part_id"]) >= 10 for obj in small["objects"])
+    oversized = Catalog("fixture", "abc", parts[5:10], Path("/unused"))
+    with pytest.raises(ValueError, match="no compact basic"):
+        generator.propose_pile(oversized, 123, 0, 48, "many", airborne=True)
 
 
 def test_hidden_target_has_no_box_and_identity_survives_unburying():
@@ -138,7 +303,9 @@ def test_label_renderer_failure_preserves_rgb_sampling(monkeypatch):
     assert model.vis.quality.offsamples == samples
 
 
-def test_native_binary_reset_roundtrip_and_file_tampering(tmp_path):
+def test_native_binary_reset_roundtrip_and_file_tampering(tmp_path, monkeypatch):
+    tmp_path = tmp_path / "scene_test"
+    tmp_path.mkdir()
     xml = """<mujoco><worldbody><geom name="table" type="plane" size="1 1 .1"/>
       <body name="piece" pos="0 0 .1"><freejoint/><geom name="piece_geom" size=".01"/>
       </body></worldbody></mujoco>"""
@@ -149,7 +316,8 @@ def test_native_binary_reset_roundtrip_and_file_tampering(tmp_path):
                                    "catalog_sha256": "catalog"}, status="settled")
     task = {"task_id": "task", "task_type": "view", "target_instance_id": "piece",
             "grader_version": runtime.GRADER_VERSION, "goal": {"dwell_steps": 2}}
-    problem = {"scene_id": "scene", "scene_family_id": "family", "tasks": [task],
+    problem = {"scene_id": "scene", "scene_family_id": "family",
+               "tasks": [task, {**task, "task_id": "second_task"}],
                "instances": [{"instance_id": "piece", "body_name": "piece",
                               "geom_names": ["piece_geom"]}]}
     mujoco.mj_saveModel(model, str(tmp_path / "model.mjb"), None)
@@ -170,6 +338,26 @@ def test_native_binary_reset_roundtrip_and_file_tampering(tmp_path):
         assert sim.data.time == data.time
     finally:
         sim.close()
+    entry["split"] = "train"
+    (tmp_path / "admission.json").write_text(json.dumps(entry))
+    reads = {}
+    original_read = Path.read_bytes
+
+    def read(path):
+        reads[path.name] = reads.get(path.name, 0) + 1
+        return original_read(path)
+
+    with monkeypatch.context() as context:
+        context.setattr(Path, "read_bytes", read)
+        assert pool.publish_pool(tmp_path.parent)["scenes"] == 1
+    assert all(reads[name] == 1 for name in entry["files_sha256"])
+    problem["tasks"][1]["grader_version"] = "unsupported"
+    (tmp_path / "problem.json").write_text(json.dumps(problem))
+    entry["files_sha256"]["problem.json"] = hashlib.sha256(
+        (tmp_path / "problem.json").read_bytes()).hexdigest()
+    (tmp_path / "admission.json").write_text(json.dumps(entry))
+    with pytest.raises(ValueError, match="unsupported grader"):
+        pool.publish_pool(tmp_path.parent)
     (tmp_path / "problem.json").write_text("{}")
     with pytest.raises(ValueError, match="changed"):
         runtime.load_problem(entry, "task")
@@ -231,9 +419,20 @@ def test_resource_admission_uses_available_memory_not_nonzero_psi(tmp_path, monk
     state = {"pressure": True, "available_bytes": 3 * 1024**3}
     monkeypatch.setattr(generator, "memory_state", lambda: state)
     generator.resource_check(tmp_path)
+    with (tmp_path / "large.mjb").open("wb") as stream:
+        stream.truncate(4 * 1024**3)
+    with pytest.raises(BlockingIOError, match="pool budget"):
+        generator.resource_check(tmp_path)
+    generator.resource_check(tmp_path, None)
     state["available_bytes"] = 2 * 1024**3 - 1
     with pytest.raises(BlockingIOError, match="memory admission"):
-        generator.resource_check(tmp_path)
+        generator.resource_check(tmp_path, None)
+    state["available_bytes"] = 3 * 1024**3
+    monkeypatch.setattr(generator.os, "statvfs", lambda _: SimpleNamespace(
+        f_bavail=9 * 1024**3, f_frsize=1,
+    ))
+    with pytest.raises(BlockingIOError, match="10GiB"):
+        generator.resource_check(tmp_path, None)
 
 
 def test_native_grader_sustained_view_and_hidden_target_reset_stability():
@@ -400,3 +599,16 @@ def test_native_destination_requires_support_and_place_requires_prior_lift(task_
     data.qpos[2] += .1
     mujoco.mj_forward(model, data)
     assert not runtime.task_predicate(sim, problem)
+
+
+def test_obstacles_are_deterministic_and_reach_the_drop_region():
+    kinds = set()
+    for sequence in range(40):
+        obstacles = generator.sample_obstacles(7, sequence, 64)
+        assert obstacles == generator.sample_obstacles(7, sequence, 64)
+        kinds.add(obstacles[0]["kind"])
+        for obstacle in obstacles:
+            low, high = generator.obstacle_bounds(obstacle, (.22, 0., generator.TABLE_Z))
+            assert low[2] >= generator.TABLE_Z - 1e-9
+            assert np.hypot(*(np.clip((.22, 0.), low[:2], high[:2]) - (.22, 0.))) < .05
+    assert kinds == set(generator.OBSTACLE_KINDS)
