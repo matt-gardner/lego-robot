@@ -83,6 +83,9 @@ def render_scene(entry, directory):
     try:
         # Disable multisampling for RGB and labels so both use identical pixel coverage.
         sim.model.vis.quality.offsamples = 0
+        # Compiled scene statistics can include distant drop geometry: use metric clipping.
+        sim.model.vis.map.znear = .001 / sim.model.stat.extent
+        sim.model.vis.map.zfar = 5. / sim.model.stat.extent
         renderer = mujoco.Renderer(sim.model, height=240, width=320)
         restore_scene(sim.model, sim.data,
                       json.loads((problems[0]["root"] / "integration_state.json").read_bytes()),

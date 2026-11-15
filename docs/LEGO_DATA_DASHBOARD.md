@@ -55,6 +55,9 @@ offscreen/occluded entities retain `not_visible` and no invented box. Pile overv
 images are never substituted for task camera frames. The task camera has a fixed
 look-at point at (.22, 0, the model's table height), distance .45 m, azimuth 135
 degrees and elevation -65 degrees, with MuJoCo's actual projection recorded.
+Both cameras use appearance-only metric clipping at 1 mm and 5 m; compiled
+scene extents can otherwise put the near plane beyond the pile. Source models
+and their physical parameters are not changed.
 It is explicitly not a policy camera: the bound models contain only `wrist_cam`,
 which looks away from the pile at the home-pose reset. These are TRAIN start-state
 visualizations, not policy evaluations, expert references, or SFT qualification.

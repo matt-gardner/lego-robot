@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 
 from so101.native_pile_dashboard_images import boxed_image
+import so101.native_pile_dashboard_images as renderer_module
+from so101.pile_task_runtime import PileSimulation
 from so101.task_image_roles import role_annotations
 
 
@@ -58,3 +60,27 @@ def test_actual_same_camera_segmentation_produces_visible_source_and_destination
     for row, color in zip(annotations, ([255, 221, 0], [40, 220, 255])):
         x, y, _, _ = row["target_bbox_xyxy"]
         assert image[y, x].tolist() == color
+
+
+@pytest.mark.skipif(os.environ.get("MUJOCO_GL") != "osmesa", reason="CPU GL integration")
+def test_large_compiled_extent_does_not_clip_admitted_task_geometry(tmp_path, monkeypatch):
+    xml = """<mujoco><statistic extent="57"/>
+    <worldbody><geom name="table" type="plane" size="1 1 .01"/>
+    <body name="target" pos=".22 0 .02"><geom type="box" size=".02 .02 .02"/></body>
+    </worldbody></mujoco>"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    sim = PileSimulation(model, data, None, {"target": model.body("target").id})
+    (tmp_path / "model.xml").write_text(xml)
+    (tmp_path / "integration_state.json").write_text("{}")
+    problem = {"root": tmp_path, "task": {
+        "task_id": "view", "task_type": "view", "target_instance_id": "target"}}
+    monkeypatch.setattr(renderer_module, "load_problems", lambda entry: [problem])
+    monkeypatch.setattr(renderer_module, "create_simulation", lambda problem: sim)
+    monkeypatch.setattr(renderer_module, "restore_scene", lambda *args: None)
+    monkeypatch.setattr(renderer_module, "reset_problem", lambda *args: None)
+    receipt = renderer_module.render_scene({"split": "train", "files_sha256": {}}, tmp_path / "images")
+    assert receipt["tasks"][0]["target_visible_pixels"] > 100
+    assert receipt["tasks"][0]["target_bbox_status"] == "visible"
+    assert receipt["tasks"][0]["camera_provenance"]["near_clip"] < .002
