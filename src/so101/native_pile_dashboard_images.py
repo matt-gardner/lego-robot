@@ -2,6 +2,7 @@
 import argparse
 from collections import Counter
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -19,10 +20,34 @@ from so101.task_image_roles import role_annotations
 
 
 CHANNEL = "native-pile-camera-images-v1"
+MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+LEGACY_IMPLEMENTATION_SHA = "83f7316e60b0c51afc291613c3f263fb5a0922491f20089b753d74b6eb3d65f9"
+LEGACY_RENDER_SOURCE_SHA = "a22658107064c5966935eb1beacead8a7a6ea1cfb8329826a69295eb3a95abb2"
 
 
 def digest(body):
     return hashlib.sha256(body).hexdigest()
+
+
+def render_source_sha():
+    return digest("\n".join(inspect.getsource(function) for function in (
+        boxed_image, save_image, render_scene)).encode())
+
+
+def publish_manifest(manifest, directory, root, output):
+    body = json.dumps(manifest, allow_nan=False, separators=(",", ":")).encode()
+    if len(body) > MAX_MANIFEST_BYTES:
+        raise ValueError(f"Camera manifest exceeds consumer read limit: "
+                         f"{len(body)} > {MAX_MANIFEST_BYTES} bytes; current publication unchanged")
+    sha = digest(body)
+    path = directory / f"{sha}.json"
+    if path.exists():
+        if path.read_bytes() != body:
+            raise ValueError("Immutable camera manifest changed")
+    else:
+        atomic_json(path, manifest, compact=True)
+    atomic_json(output, {"path": str(path.relative_to(root)), "sha256": sha})
+    return path
 
 
 def image_index(row, relative):
@@ -66,14 +91,17 @@ def render_scene(entry, directory):
     if not problems or entry["split"] != "train":
         raise ValueError("Rendering requires a nonempty admitted TRAIN scene")
     directory.mkdir(parents=True, exist_ok=True)
-    implementation = digest(Path(__file__).read_bytes())
+    implementation = render_source_sha()
     contract = {"admission_sha256": digest(json.dumps(entry, sort_keys=True).encode()),
                 "implementation_sha256": implementation, "mujoco_version": mujoco.__version__}
     completed = directory / "scene.json"
     if completed.exists():
         receipt = json.loads(completed.read_bytes())
         if receipt["contract"] != contract:
-            raise ValueError("Existing scene render contract changed")
+            # Accept the original file fingerprint only for this exact rendering implementation.
+            legacy = {**contract, "implementation_sha256": LEGACY_IMPLEMENTATION_SHA}
+            if implementation != LEGACY_RENDER_SOURCE_SHA or receipt["contract"] != legacy:
+                raise ValueError("Existing scene render contract changed")
         for image in [receipt["pile"], *receipt["tasks"]]:
             if digest((directory / image["image_file"]).read_bytes()) != image["sha256"]:
                 raise ValueError("Existing scene image changed")
@@ -241,10 +269,7 @@ def publish(snapshot, snapshot_sha, root, output, limit_scenes=None):
                        "input_snapshot": str(snapshot), "implementation_sha256": digest(Path(__file__).read_bytes())},
         "image_coverage": counts, "problems": problems, "admitted_piles": piles, "groups": [], "buckets": [],
     }
-    manifest_path = directory / f'{manifest["snapshot_id"]}.json'
-    atomic_json(manifest_path, manifest)
-    atomic_json(output, {"path": str(manifest_path.relative_to(root)),
-                         "sha256": digest(manifest_path.read_bytes())})
+    manifest_path = publish_manifest(manifest, directory, root, output)
     print(json.dumps({**counts, "manifest": str(manifest_path), "input_sha256": snapshot_sha}), flush=True)
     return manifest
 

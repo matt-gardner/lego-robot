@@ -1,3 +1,4 @@
+import json
 import os
 
 import mujoco
@@ -8,6 +9,7 @@ from so101.native_pile_dashboard_images import boxed_image
 import so101.native_pile_dashboard_images as renderer_module
 from so101.pile_task_runtime import PileSimulation
 from so101.task_image_roles import role_annotations
+from so101.bucket_dashboard import BucketDashboard
 
 
 def test_boxes_are_drawn_at_exclusive_bounds_and_invisible_roles_stay_unboxed():
@@ -29,6 +31,42 @@ def test_destination_box_has_distinct_color():
         {"role": "destination", "target_bbox_xyxy": [1, 1, 5, 5]},
     ]))
     assert image[1, 1].tolist() == [40, 220, 255]
+
+
+def test_compact_manifest_boundary_preserves_last_valid_publication(tmp_path, monkeypatch):
+    manifest = {"kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "original",
+                "problems": [], "groups": [], "buckets": []}
+    size = len(json.dumps(manifest, separators=(",", ":")).encode())
+    monkeypatch.setattr(renderer_module, "MAX_MANIFEST_BYTES", size)
+    output = tmp_path / "current.json"
+    path = renderer_module.publish_manifest(manifest, tmp_path, tmp_path, output)
+    assert path.stat().st_size == size
+    assert BucketDashboard(tmp_path).publication("current.json")["manifest"]["snapshot_id"] == "original"
+    pointer = output.read_bytes()
+    with pytest.raises(ValueError, match="current publication unchanged"):
+        renderer_module.publish_manifest({**manifest, "snapshot_id": "original+"},
+                                         tmp_path, tmp_path, output)
+    assert output.read_bytes() == pointer
+
+
+@pytest.mark.parametrize("changed_rendering", [False, True])
+def test_legacy_receipts_reused_only_for_identical_rendering(tmp_path, monkeypatch, changed_rendering):
+    entry = {"split": "train", "files_sha256": {}}
+    image = b"immutable rendered image"
+    (tmp_path / "image.png").write_bytes(image)
+    receipt = {"contract": {
+        "admission_sha256": renderer_module.digest(json.dumps(entry, sort_keys=True).encode()),
+        "implementation_sha256": renderer_module.LEGACY_IMPLEMENTATION_SHA,
+        "mujoco_version": mujoco.__version__},
+        "pile": {"image_file": "image.png", "sha256": renderer_module.digest(image)}, "tasks": []}
+    (tmp_path / "scene.json").write_text(json.dumps(receipt))
+    monkeypatch.setattr(renderer_module, "load_problems", lambda entry: [{}])
+    if changed_rendering:
+        monkeypatch.setattr(renderer_module, "render_source_sha", lambda: "changed rendering")
+        with pytest.raises(ValueError, match="render contract changed"):
+            renderer_module.render_scene(entry, tmp_path)
+    else:
+        assert renderer_module.render_scene(entry, tmp_path) == receipt
 
 
 @pytest.mark.skipif(os.environ.get("MUJOCO_GL") != "osmesa", reason="CPU GL integration")

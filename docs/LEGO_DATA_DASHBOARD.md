@@ -44,6 +44,12 @@ and renders serially with `MUJOCO_GL=osmesa` (CPU only). Pass `--snapshot`,
 permits a bounded first batch. Repeating the same command verifies and reuses
 completed scene receipts. Changing the renderer contract requires a new output
 version, not overwriting existing completed derivatives.
+Render fingerprints cover rendering functions, independently of publication
+formatting; the original full-file fingerprint is accepted only for the exact
+compatible rendering implementation. Manifests use compact JSON and byte-hash
+filenames. The producer checks the consumer's 32 MiB artifact bound before
+activating a pointer; an oversized manifest fails explicitly and leaves the
+previous publication current. Existing immutable manifests are never rewritten.
 
 The `publications/native-pile-camera-images-v1/current.json` channel points to
 an immutable hash-pinned manifest under `native-pile-camera-images-v1/<input SHA>`.

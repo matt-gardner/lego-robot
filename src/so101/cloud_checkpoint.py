@@ -18,11 +18,12 @@ def fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def atomic_json(path: Path, value: Any) -> None:
+def atomic_json(path: Path, value: Any, *, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     with temporary.open("w") as stream:
-        json.dump(value, stream, allow_nan=False)
+        json.dump(value, stream, allow_nan=False,
+                  separators=(",", ":") if compact else None)
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
