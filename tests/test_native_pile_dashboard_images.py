@@ -49,6 +49,36 @@ def test_compact_manifest_boundary_preserves_last_valid_publication(tmp_path, mo
     assert output.read_bytes() == pointer
 
 
+def test_partitioned_population_preserves_images_and_rejects_oversized_activation(tmp_path, monkeypatch):
+    image = b"\x89PNG\r\n\x1a\ncamera"
+    (tmp_path / "task.png").write_bytes(image)
+    rows = [{"id": f"task{i}", "initial_images": [
+        {"path": "task.png", "sha256": renderer_module.digest(image)}]} for i in range(12)]
+    manifest = {"kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": "partitioned",
+                "problems": rows, "groups": [], "buckets": []}
+    monkeypatch.setattr(renderer_module, "MAX_MANIFEST_BYTES", 1024)
+    monkeypatch.setattr(renderer_module, "MAX_PROBLEM_SHARD_BYTES", 700)
+    output = tmp_path / "current.json"
+    path = renderer_module.publish_manifest(manifest, tmp_path, tmp_path, output, partition=True)
+    header = json.loads(path.read_bytes())
+    assert path.stat().st_size <= 1024
+    assert header["problems"] == []
+    assert len(header["problem_shards"]) > 1
+    browser = BucketDashboard(tmp_path)
+    assert [r["id"] for r in browser.snapshot()["problems"]["problems"]] == [r["id"] for r in rows]
+    assert browser.image("task0", 0) == (image, "image/png")
+    pointer = output.read_bytes()
+    monkeypatch.setattr(renderer_module, "MAX_PROBLEM_SHARD_TOTAL_BYTES", 1)
+    with pytest.raises(ValueError, match="total byte limit"):
+        renderer_module.publish_manifest(manifest, tmp_path, tmp_path, output, partition=True)
+    assert output.read_bytes() == pointer
+    assert browser.image("task0", 0) == (image, "image/png")
+    shard = tmp_path / header["problem_shards"][0]["path"]
+    shard.write_bytes(shard.read_bytes().replace(b"task0", b"TASK0"))
+    with pytest.raises(ValueError, match="hash mismatch"):
+        browser.snapshot()
+
+
 @pytest.mark.parametrize("changed_rendering", [False, True])
 def test_legacy_receipts_reused_only_for_identical_rendering(tmp_path, monkeypatch, changed_rendering):
     entry = {"split": "train", "files_sha256": {}}

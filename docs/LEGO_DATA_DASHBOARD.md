@@ -50,6 +50,12 @@ compatible rendering implementation. Manifests use compact JSON and byte-hash
 filenames. The producer checks the consumer's 32 MiB artifact bound before
 activating a pointer; an oversized manifest fails explicitly and leaves the
 previous publication current. Existing immutable manifests are never rewritten.
+Native-camera task populations use `problem_shards` with authenticated root-relative
+paths, byte lengths and row counts. Each shard is limited to 4 MiB, with at most
+128 shards and 64 MiB total shard bytes. The top-level artifact retains the
+32 MiB bound. The reader reconstructs the same problem rows and rejects changed
+hashes, escaping paths, inconsistent counts and oversized shard collections.
+Deploy the compatible reader before activating a partitioned publication.
 
 The `publications/native-pile-camera-images-v1/current.json` channel points to
 an immutable hash-pinned manifest under `native-pile-camera-images-v1/<input SHA>`.

@@ -11,6 +11,10 @@ import mujoco
 import numpy as np
 from PIL import Image, ImageDraw
 
+from so101.bucket_dashboard import (
+    MAX_BUCKET_ARTIFACT_BYTES, MAX_PROBLEM_SHARD_BYTES,
+    MAX_PROBLEM_SHARD_TOTAL_BYTES, MAX_PROBLEM_SHARDS,
+)
 from so101.capture_pile_task_images import integration_state
 from so101.cloud_checkpoint import atomic_json
 from so101.lego_scene import restore_scene, runtime_model_sha256
@@ -20,7 +24,7 @@ from so101.task_image_roles import role_annotations
 
 
 CHANNEL = "native-pile-camera-images-v1"
-MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+MAX_MANIFEST_BYTES = MAX_BUCKET_ARTIFACT_BYTES
 LEGACY_IMPLEMENTATION_SHA = "83f7316e60b0c51afc291613c3f263fb5a0922491f20089b753d74b6eb3d65f9"
 LEGACY_RENDER_SOURCE_SHA = "a22658107064c5966935eb1beacead8a7a6ea1cfb8329826a69295eb3a95abb2"
 
@@ -34,18 +38,52 @@ def render_source_sha():
         boxed_image, save_image, render_scene)).encode())
 
 
-def publish_manifest(manifest, directory, root, output):
+def publish_manifest(manifest, directory, root, output, *, partition=False):
     body = json.dumps(manifest, allow_nan=False, separators=(",", ":")).encode()
+    shard_files = []
+    if partition and manifest["problems"]:
+        empty = {"kind": "lego-data-bucket-problems", "schema_version": 1, "problems": []}
+        empty_size = len(json.dumps(empty, separators=(",", ":")).encode())
+        batch, size = [], empty_size
+        batches = []
+        for problem in manifest["problems"]:
+            row_size = len(json.dumps(problem, allow_nan=False, separators=(",", ":")).encode())
+            if empty_size + row_size > MAX_PROBLEM_SHARD_BYTES:
+                raise ValueError("Single camera problem exceeds shard byte limit; current publication unchanged")
+            if size + row_size + bool(batch) > MAX_PROBLEM_SHARD_BYTES:
+                batches.append(batch)
+                batch, size = [], empty_size
+            size += row_size + bool(batch)
+            batch.append(problem)
+        if batch:
+            batches.append(batch)
+        if not 1 <= len(batches) <= MAX_PROBLEM_SHARDS:
+            raise ValueError("Camera problem shard count exceeds limit; current publication unchanged")
+        descriptors, total = [], 0
+        for batch in batches:
+            shard = {**empty, "problems": batch}
+            shard_body = json.dumps(shard, allow_nan=False, separators=(",", ":")).encode()
+            sha = digest(shard_body)
+            path = directory / "problems" / f"{sha}.json"
+            total += len(shard_body)
+            shard_files.append((path, shard, shard_body))
+            descriptors.append({"path": str(path.relative_to(root)), "sha256": sha,
+                                "bytes": len(shard_body), "problem_count": len(batch)})
+        if total > MAX_PROBLEM_SHARD_TOTAL_BYTES:
+            raise ValueError("Camera problem shards exceed total byte limit; current publication unchanged")
+        manifest = {**manifest, "problems": [], "problem_shards": descriptors}
+        body = json.dumps(manifest, allow_nan=False, separators=(",", ":")).encode()
     if len(body) > MAX_MANIFEST_BYTES:
         raise ValueError(f"Camera manifest exceeds consumer read limit: "
                          f"{len(body)} > {MAX_MANIFEST_BYTES} bytes; current publication unchanged")
     sha = digest(body)
     path = directory / f"{sha}.json"
-    if path.exists():
-        if path.read_bytes() != body:
-            raise ValueError("Immutable camera manifest changed")
-    else:
-        atomic_json(path, manifest, compact=True)
+    for artifact, value, expected in [*shard_files, (path, manifest, body)]:
+        if artifact.exists():
+            if artifact.read_bytes() != expected:
+                raise ValueError("Immutable camera manifest or shard changed")
+        else:
+            atomic_json(artifact, value, compact=True)
     atomic_json(output, {"path": str(path.relative_to(root)), "sha256": sha})
     return path
 
@@ -269,7 +307,7 @@ def publish(snapshot, snapshot_sha, root, output, limit_scenes=None):
                        "input_snapshot": str(snapshot), "implementation_sha256": digest(Path(__file__).read_bytes())},
         "image_coverage": counts, "problems": problems, "admitted_piles": piles, "groups": [], "buckets": [],
     }
-    manifest_path = publish_manifest(manifest, directory, root, output)
+    manifest_path = publish_manifest(manifest, directory, root, output, partition=True)
     print(json.dumps({**counts, "manifest": str(manifest_path), "input_sha256": snapshot_sha}), flush=True)
     return manifest
 

@@ -61,6 +61,25 @@ def test_duplicate_ids_are_not_merged(tmp_path):
         BucketDashboard(tmp_path).snapshot()
 
 
+@pytest.mark.parametrize(("field", "value", "error"), [
+    ("path", "../outside.json", "escapes"),
+    ("sha256", None, "descriptor"),
+    ("bytes", 4 * 1024 * 1024 + 1, "descriptor"),
+    ("problem_count", 2, "differs from descriptor"),
+])
+def test_sharded_population_retains_path_hash_size_and_count_guards(tmp_path, field, value, error):
+    body = json.dumps({"kind": "lego-data-bucket-problems", "schema_version": 1,
+                       "problems": [{"id": "one"}]}).encode()
+    (tmp_path / "shard.json").write_bytes(body)
+    descriptor = {"path": "shard.json", "sha256": hashlib.sha256(body).hexdigest(),
+                  "bytes": len(body), "problem_count": 1}
+    publish(tmp_path, {"kind": "lego-data-buckets", "schema_version": 1,
+                      "problems": [], "groups": [], "problem_shards": [
+                          {**descriptor, field: value}]})
+    with pytest.raises(ValueError, match=error):
+        BucketDashboard(tmp_path).snapshot()
+
+
 def test_camera_publication_keeps_single_pile_image_alongside_boxed_tasks(tmp_path):
     image = b"\x89PNG\r\n\x1a\ncamera"
     directory = publish(tmp_path, {

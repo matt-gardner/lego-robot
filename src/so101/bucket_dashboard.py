@@ -6,6 +6,10 @@ from pathlib import Path
 import threading
 
 LOGGER = logging.getLogger(__name__)
+MAX_BUCKET_ARTIFACT_BYTES = 32 * 1024 * 1024
+MAX_PROBLEM_SHARD_BYTES = 4 * 1024 * 1024
+MAX_PROBLEM_SHARD_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_PROBLEM_SHARDS = 128
 
 def validate_annotation(row, width, height):
     status, box, pixels = (row[key] for key in
@@ -74,7 +78,8 @@ class BucketDashboard:
     def response(self) -> bytes:
         return self.cached()[1] if self._cache_thread else json.dumps(self.snapshot()).encode()
 
-    def read(self, relative: str, expected: str | None = None, limit: int = 32 * 1024 * 1024) -> bytes:
+    def read(self, relative: str, expected: str | None = None,
+             limit: int = MAX_BUCKET_ARTIFACT_BYTES) -> bytes:
         path = (self.root / relative).resolve()
         if Path(relative).is_absolute() or not path.is_relative_to(self.root):
             raise ValueError("Bucket artifact path escapes publication root")
@@ -388,9 +393,40 @@ class BucketDashboard:
             raise ValueError("Bucket problems population is missing")
         if not isinstance(manifest.get("groups"), list):
             raise ValueError("Bucket measurement groups are missing")
+        rows = manifest["problems"]
+        if "problem_shards" in manifest:
+            shards = manifest["problem_shards"]
+            if rows or not isinstance(shards, list) or not 1 <= len(shards) <= MAX_PROBLEM_SHARDS:
+                raise ValueError("Invalid sharded bucket population")
+            total = 0
+            for descriptor in shards:
+                if (not isinstance(descriptor, dict)
+                        or not isinstance(descriptor.get("path"), str)
+                        or not isinstance(descriptor.get("sha256"), str)
+                        or len(descriptor["sha256"]) != 64
+                        or any(c not in "0123456789abcdef" for c in descriptor["sha256"])
+                        or type(descriptor.get("bytes")) is not int
+                        or not 0 < descriptor["bytes"] <= MAX_PROBLEM_SHARD_BYTES
+                        or type(descriptor.get("problem_count")) is not int
+                        or descriptor["problem_count"] <= 0):
+                    raise ValueError("Invalid bucket problem shard descriptor")
+                total += descriptor["bytes"]
+            if total > MAX_PROBLEM_SHARD_TOTAL_BYTES:
+                raise ValueError("Bucket problem shards exceed total byte limit")
+            rows = []
+            for descriptor in shards:
+                body = self.read(descriptor["path"], descriptor["sha256"], limit=descriptor["bytes"])
+                shard = json.loads(body)
+                if (not isinstance(shard, dict) or len(body) != descriptor["bytes"]
+                        or shard.get("kind") != "lego-data-bucket-problems"
+                        or shard.get("schema_version") != 1
+                        or not isinstance(shard.get("problems"), list)
+                        or len(shard["problems"]) != descriptor["problem_count"]):
+                    raise ValueError("Bucket problem shard differs from descriptor")
+                rows.extend(shard["problems"])
         problems = []
         identities = set()
-        for problem in manifest["problems"]:
+        for problem in rows:
             identity = problem["id"]
             if not isinstance(identity, str) or identity in identities:
                 raise ValueError("Bucket problem identity missing or duplicated")
