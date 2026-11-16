@@ -5,6 +5,7 @@ import pytest
 from scripts.audit_legacy_lego_dependencies import FILES, digest
 from scripts.retire_legacy_lego_directory import retire
 from scripts.stage_training_reset_closure import stage
+from scripts.relocate_legacy_lego_directory import relocate
 
 
 def test_training_closure_is_staged_under_exact_canonical_parent_and_hash_checked(tmp_path):
@@ -45,3 +46,21 @@ def test_retirement_never_deletes_active_sources_or_broad_data_root(tmp_path):
     assert candidate.exists()
     with pytest.raises(ValueError, match="contained legacy"):
         retire(root, root / "data", audit, apply=True)
+
+
+def test_atomic_relocation_preserves_open_files_and_historical_ancestor_paths(tmp_path):
+    root = tmp_path / "lego"
+    source = root / "data/old-run"
+    source.mkdir(parents=True)
+    original = source / "receipt.json"
+    original.write_bytes(b"frozen receipt")
+    destination = root / "piles/measurements/current"
+    with original.open("rb") as stream:
+        inode = source.stat().st_ino
+        relocate(root, source, destination)
+        assert stream.read() == b"frozen receipt"
+    assert source.is_symlink()
+    assert destination.stat().st_ino == inode
+    assert original.read_bytes() == b"frozen receipt"
+    (source / "new.json").write_bytes(b"next finalized receipt")
+    assert (destination / "new.json").read_bytes() == b"next finalized receipt"
