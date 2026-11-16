@@ -97,6 +97,13 @@ def render_pathtrace(
     table_z = float(description["table_z_m"])
     if not np.isfinite(table_z):
         raise ValueError("Table height must be finite")
+    table_center = description.get("table_center_m", [0, 0, table_z])
+    table_size = description.get("table_half_size_m", [2, 2])
+    table_yaw = float(description.get("table_yaw_deg", 0))
+    if (np.shape(table_center) != (3,) or np.shape(table_size) != (2,)
+            or not np.isfinite([*table_center, *table_size, table_yaw]).all()
+            or min(table_size) <= 0):
+        raise ValueError("Table center, orientation and positive half sizes must be finite")
     mi.set_variant(variant)
     dr.set_thread_count(profile["threads"])
     scene = {
@@ -111,8 +118,9 @@ def render_pathtrace(
         },
         "table": {
             "type": "rectangle",
-            "to_world": mi.ScalarTransform4f.translate([0, 0, table_z])
-            @ mi.ScalarTransform4f.scale([2, 2, 1]),
+            "to_world": mi.ScalarTransform4f.translate(table_center)
+            @ mi.ScalarTransform4f.rotate([0, 0, 1], table_yaw)
+            @ mi.ScalarTransform4f.scale([*table_size, 1]),
             "bsdf": {"type": "roughplastic", "alpha": profile["table_roughness"],
                      "diffuse_reflectance": {"type": "rgb", "value": profile["table_linear_rgb"]}},
         },

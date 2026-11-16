@@ -1,5 +1,34 @@
 # Saved-pile appearance rendering
 
+## Canonical dashboard piles
+
+`so101.render_canonical_piles` reads `piles/pile_NNNN` directly from the
+canonical data root. It renders one CPU path-traced `rendered.png` per pile
+from the saved baseline integration state, not from an arbitrary task reset:
+
+```bash
+PYTHONPATH=src MUJOCO_GL=osmesa python -m so101.render_canonical_piles \
+  --root /path/to/lego-robot-data --scratch /tmp/canonical-pile-render
+```
+
+Use the isolated Linux simulation runtime with Mitsuba, trimesh, OSMesa and
+LLVM available. The default pinned path-tracing profile is 1000 by 750 pixels,
+1024 samples and four CPU threads. Processing is serial and checks disk and
+memory headroom before each pile. Missing images are processed first.
+The scratch directory freezes the pile population and hashes of the five
+model/state/scene files; reuse it when continuing the same batch.
+
+Each completed pile receives `render_receipt.json`, an updated image descriptor
+in `pile.json`, and freshly measured piece boxes from the same geometric camera
+at the output resolution. Primary-ray checks compare exported geometry with
+MuJoCo segmentation before rendering. Existing images without this rendering
+receipt are replaced, not assumed photorealistic. Completed matching receipts
+are reused only after checking image and metadata hashes. Source models,
+saved physics, task JSON and qualification are unchanged; no task images are
+generated. Temporary world-space meshes are removed after each render.
+The running dashboard reads these canonical files on refresh; no dashboard
+redeployment is required for new images.
+
 `so101.render_pile` rerenders an existing `model.xml` and
 `settled-state.npz` without stepping, repositioning or freezing objects.
 It is independent of the versioned wrist-camera profiles and does not
