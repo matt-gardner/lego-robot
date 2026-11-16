@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from so101.trajectory_progress import (
-    ProgressState, progress_potential, progress_reward, short_horizon,
+    ProgressState, progress_potential, progress_reward, reward_percentage, short_horizon,
 )
 
 
@@ -65,3 +65,16 @@ def test_regressing_rollouts_still_have_a_ranked_learning_signal(reference):
     slight = progress_reward([start, slight_retreat, large_retreat], reference)
     large = progress_reward([start, large_retreat, large_retreat], reference)
     assert large["reward"] < slight["reward"] < 0
+
+
+def test_reward_percentage_uses_remaining_ceiling_without_hiding_retreat(reference):
+    start = reference[0]
+    lifted = replace(reference[-1], target_position=(0., 0., .05))
+    complete = progress_reward([start, lifted], reference)
+    assert complete["reward_percent_of_max"] == pytest.approx(100.)
+    assert reward_percentage(.5, 1.)["reward_percent_of_max"] == 50.
+    assert reward_percentage(-.25, 1.)["reward_percent_of_max"] == -25.
+    with pytest.raises(ValueError, match="below the ceiling"):
+        reward_percentage(0., 2.)
+    with pytest.raises(ValueError, match="exceeds"):
+        reward_percentage(3., 0.)

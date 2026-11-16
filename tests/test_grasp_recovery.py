@@ -392,6 +392,39 @@ def test_full_state_checkpoint_needs_configs_not_pretrained_weights(tmp_path, mo
         modeling.load_entity_checkpoint(path, "cpu", full_state=True)
 
 
+def test_full_state_checkpoint_preserves_trained_precision_and_parameter_aliases(tmp_path, monkeypatch):
+    def policy_with_alias():
+        policy, _ = grasp_policy()
+        prefix = policy.model.vlm_with_expert.prefix
+        prefix.register_buffer("calibration", torch.tensor([1.00001]))
+        policy.model.tied_prefix = prefix
+        return policy
+
+    policy = policy_with_alias()
+    with torch.no_grad():
+        policy.model.vlm_with_expert.prefix.weight.fill_(1.00001)
+    path = tmp_path / "checkpoint"
+    modeling.save_entity_checkpoint(path, policy, policy.model.entity_config, "fake", {})
+    monkeypatch.setattr(modeling.SmolVLAConfig, "from_pretrained",
+                        lambda _: SimpleNamespace(load_vlm_weights=True, device="cpu"))
+
+    class ConfigOnlyPolicy:
+        def __new__(cls, config):
+            restored = policy_with_alias()
+            restored.model.vlm_with_expert.prefix.bfloat16()
+            restored.model.vlm_with_expert.language.bfloat16()
+            return restored
+
+    monkeypatch.setattr(modeling, "SmolVLAPolicy", ConfigOnlyPolicy)
+    monkeypatch.setattr(modeling, "attach_entity_modules",
+                        lambda restored, config: restored.model.init_entity_modules(config))
+    restored, _, _ = modeling.load_entity_checkpoint(path, "cpu", full_state=True)
+    assert restored.model.tied_prefix.weight is restored.model.vlm_with_expert.prefix.weight
+    for key, value in policy.state_dict().items():
+        assert restored.state_dict()[key].dtype == value.dtype
+        torch.testing.assert_close(restored.state_dict()[key], value, rtol=0, atol=0)
+
+
 def test_default_partial_checkpoint_keeps_pretrained_missing_weights(tmp_path, monkeypatch):
     policy, _ = grasp_policy()
     path = tmp_path / "checkpoint"

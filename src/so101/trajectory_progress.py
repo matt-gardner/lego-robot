@@ -47,6 +47,15 @@ def progress_potential(state: ProgressState, reference: tuple[ProgressState, ...
     return value
 
 
+def reward_percentage(reward: float, initial_potential: float) -> dict[str, float]:
+    maximum = 2. - initial_potential
+    if not math.isfinite(reward) or not math.isfinite(maximum) or maximum <= 0:
+        raise ValueError("Reward percentage requires a finite reward and a start below the ceiling")
+    if reward > maximum + 1e-9:
+        raise ValueError("Reward exceeds the defined physical-progress ceiling")
+    return {"max_possible_reward": maximum, "reward_percent_of_max": 100. * reward / maximum}
+
+
 def progress_reward(states: list[ProgressState], reference: tuple[ProgressState, ...],
                     *, invalid: bool = False, wrong_object: bool = False) -> dict:
     if len(states) < 2:
@@ -56,7 +65,8 @@ def progress_reward(states: list[ProgressState], reference: tuple[ProgressState,
     penalty = .25 * (int(invalid) + int(wrong_object) + int(drop))
     # Including the reset state clips every wholly regressing rollout to zero.
     best = max(values[1:])
-    return {"reward": best - values[0] - penalty,
+    reward = best - values[0] - penalty
+    return {"reward": reward, **reward_percentage(reward, values[0]),
             "initial_potential": values[0], "best_potential": best,
             "final_potential": values[-1], "penalty": penalty, "lost_grip": drop}
 

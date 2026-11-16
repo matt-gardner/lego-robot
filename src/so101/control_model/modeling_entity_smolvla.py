@@ -727,6 +727,12 @@ def load_entity_checkpoint(
         key in source_state and source_state[key].shape == value.shape
         for key, value in target_state.items()
     ):
+        if full_state:
+            # Config-only backbones may default to BF16, rounding trained FP32 updates.
+            # Convert storage before copying, preserving tied parameter identities.
+            for name, tensor in list(policy.named_parameters()) + list(policy.named_buffers()):
+                if name in source_state and tensor.dtype != source_state[name].dtype:
+                    tensor.data = tensor.data.to(dtype=source_state[name].dtype)
         policy.load_state_dict(source_state)
     else:
         if full_state:

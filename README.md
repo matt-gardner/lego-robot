@@ -1068,7 +1068,9 @@ For an explicitly complete checkpoint, the recovery trainer, standard collection
 SFT trainer (`train_entity_sim --resume CHECKPOINT`), and paired evaluator
 accept `--full-state-checkpoint`. This constructs the
 actor from its original source configuration/processor and strictly loads every
-saved model tensor, without fetching pretrained base weights. Original pinned
+saved model tensor, without fetching pretrained base weights. Full-state
+restoration preserves each saved tensor's precision, including FP32 backbone
+updates that would be rounded by a BF16 constructor. Original pinned
 configuration/tokenizer/processor files must still be available; set
 `HF_HUB_OFFLINE=1` for an offline run. Missing or incompatible tensors fail rather
 than receiving randomly initialized replacements. Omit this flag for historical
@@ -1186,6 +1188,11 @@ lost-grip, invalid-command and wrong-object penalties. Excluding the reset state
 from that maximum preserves negative, ranked rewards when every action retreats,
 instead of clipping every failed trajectory to zero. Terminal native success is unchanged.
 The initial one-parent pilot is feasibility evidence, not generalization.
+Training logs also report reward as `100 * reward / (2 - initial_potential)`.
+This is the reward function's global ceiling (secure 5 cm lift), not a claim
+that a short rollout can attain it. Negative percentages remain visible.
+Every complete assistance-band cycle reports an equally weighted mean and
+the individual band means; compare those curves rather than mixing changing bands.
 
 The prepared November 16 pilot uses five groups of four rollouts per arm,
 full-model denoising GRPO, fresh AdamW at `1e-6`, and the original best SFT7296
@@ -1205,6 +1212,25 @@ python3 scripts/sync_gpu_dashboard.py \
 These are owned current-run connection details, not authority to replace an
 instance or replay a completed job. Preserve and verify model/optimizer/RNG,
 reward diagnostics and native evaluation artifacts before terminating it.
+
+The authorized overnight continuation preserves the five-update model and
+Adam/RNG state, adds 100 progress-only groups, and checkpoints every ten groups.
+It tracks training reward before attempting broader starts or longer rollouts:
+
+```bash
+python3 scripts/sync_gpu_dashboard.py \
+  --host 172.31.32.120 --instance-id i-06d87971bf494f988 \
+  --job-id 77a951d1f11144f0a4f16488e027eedd \
+  --known-hosts /tmp/grasp-replay-238/known_hosts \
+  --container-name lego-progress-overnight-248 \
+  --remote-root /opt/dlami/nvme/grasp-replay-238/progress-overnight-output \
+  --output /mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/grasp-progress-rl-overnight-20261116 \
+  --launch-command /opt/dlami/nvme/grasp-replay-238/progress-overnight-command.json
+```
+
+`--arms progress --resume-state STATE --steps 105 --checkpoint-every 10`
+continues that arm without resetting its optimizer or resampling the prior five
+groups. Loading must preserve the exported policy digest exactly.
 
 With `--calibrate-assistance --batch-rollouts --group-size 4`, synchronous
 calibration retries the **same problem**: four passes reduce assistance; four
