@@ -271,7 +271,7 @@ async function start() {
           row.addEventListener("click",()=>{
             document.getElementById("bucket").value=id;
             document.getElementById("task").value="";
-            shown=24;saveFilters();render();
+            saveFilters();render();
           });
           overview.append(row);
       const opt=node("option",bucketLabel(b?.label || id));opt.value=id;document.getElementById("bucket").append(opt);
@@ -283,10 +283,9 @@ async function start() {
       if(typeof preferences[id]==="string" &&
         (id==="search" || (id==="bucket" ? bucketIds : [...new Set(problems.map(p=>p.task))]).includes(preferences[id]))) element.value=preferences[id];
     }
-    let shown=Number.isInteger(preferences.shown) && preferences.shown>=24 ? preferences.shown : 24;
     function saveFilters() {
       for (const id of ["bucket","task","search"]) preferences[id]=document.getElementById(id).value;
-      preferences.shown=shown;save();
+      save();
     }
     function render() {
       const bucket=document.getElementById("bucket").value,task=document.getElementById("task").value,q=document.getElementById("search").value.toLowerCase();
@@ -303,10 +302,8 @@ async function start() {
       }
       hierarchy.sort((a,b)=>compareBuckets(a.bucket,b.bucket));
       const pileCount=hierarchy.reduce((n,b)=>n+b.piles.length,0);
-      document.getElementById("count").textContent=`${filtered.length} matching problems in ${pileCount} piles; showing ${Math.min(shown,pileCount)} piles.`;
-      let remaining=shown;
+      document.getElementById("count").textContent=`${filtered.length} matching problems in ${pileCount} piles.`;
       for (const group of hierarchy) {
-        if (!remaining) break;
         const bucketSection=node("details",undefined,"bucket-group");
         rememberDetails(bucketSection,`bucket-open:${group.bucket}`,true);
         const label=bucketLabel(buckets.find(b=>b.id===group.bucket)?.label || group.bucket).replace(/^native:/,"");
@@ -314,7 +311,7 @@ async function start() {
         const grid=node("div",undefined,"pile-grid");
         bucketSection.append(grid);
         container.append(bucketSection);
-        for (const [pileIndex,pile] of group.piles.slice(0,remaining).entries()) {
+        for (const [pileIndex,pile] of group.piles.entries()) {
           if(pile.admission){grid.append(admissionCard(pile.admission));continue;}
           const pileSection=node("article",undefined,"pile-group");
           const representative=pile.tasks.find(p=>p.initial_images?.length) || pile.tasks[0];
@@ -413,12 +410,9 @@ async function start() {
           selectTask(restored<0 ? 0 : restored);
           }
         }
-        remaining=Math.max(0,remaining-group.piles.length);
       }
-      document.getElementById("more").hidden=shown>=pileCount;
     }
-    for (const id of ["bucket","task","search"]) document.getElementById(id).addEventListener("input",()=>{shown=24;saveFilters();render();});
-    document.getElementById("more").addEventListener("click",()=>{shown+=24;saveFilters();render();});
+    for (const id of ["bucket","task","search"]) document.getElementById(id).addEventListener("input",()=>{saveFilters();render();});
     render();
     if(typeof setInterval!=="undefined") setInterval(async()=>{
       if(document.getElementById("pile-dialog").open) return;

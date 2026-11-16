@@ -175,6 +175,18 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   pending.listeners.click();
   assert.equal(elements.get("bucket").value,"current:40-pieces");
   assert.equal(elements.get("problems").children.length,1);
+  payload.admitted_piles=Array.from({length:30},(_,index)=>({
+    id:`admission:${index}`,tags:{piece_count:40},initial_images:[],
+  }));
+  saved.clear();elements.clear();
+  vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
+    {document,localStorage,fetch:async()=>({ok:true,json:async()=>payload}),console});
+  await new Promise(resolve=>setImmediate(resolve));
+  const allPiles=elements.get("problems").children.find(e=>e.children[0].textContent==="40 pieces · 30 piles");
+  assert.equal(allPiles.children[1].children.length,30);
+  assert.match(elements.get("count").textContent,/32 piles/);
+  assert.equal(elements.has("more"),false);
+  payload.admitted_piles=[{id:"admission:new",tags:{piece_count:40},initial_images:[]}];
   payload.manifest.datasets=[{dataset_id:"pool",current_measurement_series_id:"prior",
     measurement_series:[
       {series_id:"prior",label:"Prior measurements",groups:[{problem_id:"first",assistance:.95,attempts:16,successes:8}]},
