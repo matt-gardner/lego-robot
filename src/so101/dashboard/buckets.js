@@ -51,42 +51,6 @@ function targetBox(image) {
         box[2]<=box[0] || box[3]<=box[1]) throw new Error("Invalid published target bounding box");
     return box;
   }
-  function taskImage(problem,image,index,snapshot) {
-    const figure=node("figure",undefined,"task-image"),frame=node("div",undefined,"target-frame");
-    const img=node("img");img.loading="lazy";img.alt=`${problem.task} target in initial pile`;
-    img.src=`api/buckets/image?problem=${encodeURIComponent(problem.id)}&index=${index}&snapshot=${encodeURIComponent(snapshot)}`;
-    img.addEventListener("error",()=>{frame.replaceChildren(node("p","Task image unavailable / failed integrity check","missing"));});
-    frame.append(img);
-    let caption;
-    try {
-      const annotations=image.target_annotations ?? image.provenance?.target_annotations ??
-        [{...image,role:"source_object"}];
-      if (!Array.isArray(annotations) || !annotations.length) throw new Error("Invalid published target annotations");
-      const captions=[];
-      for (const annotation of annotations) {
-      if (!["source_object","destination"].includes(annotation.role)) throw new Error("Invalid published target annotation role");
-      const label=annotation.role==="destination" ? "Destination goal marker (cyan)" : "Source object (yellow)";
-      const box=targetBox({...annotation,width:image.width,height:image.height});
-      if (box) {
-        const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg"),rect=document.createElementNS(ns,"rect");
-        svg.setAttribute("viewBox",`0 0 ${image.width} ${image.height}`);
-        svg.setAttribute("aria-label","Visible target bounding box from renderer segmentation");
-        const title=document.createElementNS(ns,"title");title.textContent=label;rect.append(title);
-        for (const [key,value] of Object.entries({x:box[0],y:box[1],width:box[2]-box[0],height:box[3]-box[1],fill:"none",stroke:annotation.role==="destination" ? "#00e5ff" : "#ffdd00","stroke-width":2,"vector-effect":"non-scaling-stroke"})) rect.setAttribute(key,value);
-        svg.append(rect);frame.append(svg);
-        captions.push(`${label} · visible segmentation`);
-      } else {
-        const state=annotation.target_bbox_status ?? annotation.provenance?.target_bbox_status;
-        const pixels=annotation.target_visible_pixels ?? annotation.provenance?.initial_visible_target_pixels;
-        captions.push(`${label} · ${state==="not_visible" || pixels===0 ? "not visible in this camera · no box" : "bounding box not measured yet"}`);
-      }
-      }
-      if (["push","place"].includes(problem.task) && !annotations.some(a=>a.role==="destination")) captions.push("Destination bounding box not measured yet");
-      caption=captions.join(" · ");
-    } catch(error) {caption=error.message;}
-    figure.append(frame,node("figcaption",`${image.camera || "Camera unspecified"} · initial state · ${caption}`));
-    return figure;
-  }
 function node(tag, text, cls) {
   const e = document.createElement(tag);
   if (text !== undefined) e.textContent = text;
@@ -247,7 +211,7 @@ async function start() {
     };
     const bucketIds=[...new Set([...buckets.map(b=>b.id),...problems.map(p=>p.bucket),...admitted.map(admissionBucket)])].sort();
     const overview=node("table"), heading=node("tr");
-    for (const label of ["Bucket", "Problems", "Success vs assistance", "Measured coverage by task", "Initial images"]) heading.append(node("th",label));
+    for (const label of ["Bucket", "Problems", "Success vs assistance", "Measured coverage by task", "Pile images / pieces"]) heading.append(node("th",label));
     overview.append(heading);
     for (const id of bucketIds) {
       const b=buckets.find(x=>x.id===id), ps=problems.filter(p=>p.bucket===id);
@@ -267,7 +231,7 @@ async function start() {
       draw();
       const ap=admitted.filter(p=>admissionBucket(p)===id);
       row.append(node("td",bucketLabel(b?.label || id)),node("td",ps.length ? String(ps.length) : "Tasks pending"),chart,coverage,
-        node("td",ap.length ? `${ps.filter(p=>p.initial_images?.length).length}/${ps.length} task images; ${ap.filter(p=>p.initial_images.length).length}/${ap.length} admitted pile previews` : `${ps.filter(p=>p.initial_images?.length).length}/${ps.length}`));
+        node("td",`${ap.filter(p=>p.initial_images.length).length}/${ap.length} pile images; ${ap.reduce((n,p)=>n+(p.pieces?.length || 0),0)} pieces`));
           row.addEventListener("click",()=>{
             document.getElementById("bucket").value=id;
             document.getElementById("task").value="";
