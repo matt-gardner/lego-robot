@@ -1174,6 +1174,38 @@ Recover the exported checkpoint, optimizer/RNG state and dataset provenance
 before shutdown. A live finite supervision cron complements, but never replaces,
 the managed mirror.
 
+`python -m so101.train_progress_rl` runs a bounded sparse-vs-progress GRASP
+pilot from the same complete checkpoint and seeds. It resets at saved
+70/75/80/85/90% assistance anchors, but scores against the measured recovery
+trajectory, not an assumed linear assistance clock. Rollouts use half the
+average demonstrated five-percent interval, capped at eight actions. Progress
+uses target-relative gripper pose, opening, target position and measured jaw
+contacts; a secure lift beyond the reference is advancement, not overshoot.
+The best post-action potential change is paid once per rollout, with explicit
+lost-grip, invalid-command and wrong-object penalties. Excluding the reset state
+from that maximum preserves negative, ranked rewards when every action retreats,
+instead of clipping every failed trajectory to zero. Terminal native success is unchanged.
+The initial one-parent pilot is feasibility evidence, not generalization.
+
+The prepared November 16 pilot uses five groups of four rollouts per arm,
+full-model denoising GRPO, fresh AdamW at `1e-6`, and the original best SFT7296
+policy. Run its managed launcher persistently and verify the first refresh:
+
+```bash
+python3 scripts/sync_gpu_dashboard.py \
+  --host 172.31.32.120 --instance-id i-06d87971bf494f988 \
+  --job-id 77a951d1f11144f0a4f16488e027eedd \
+  --known-hosts /tmp/grasp-replay-238/known_hosts \
+  --container-name lego-progress-rl-241-v2 \
+  --remote-root /opt/dlami/nvme/grasp-replay-238/progress-output-v2 \
+  --output /mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/grasp-progress-rl-20261116-v2 \
+  --launch-command /opt/dlami/nvme/grasp-replay-238/progress-command-v2.json
+```
+
+These are owned current-run connection details, not authority to replace an
+instance or replay a completed job. Preserve and verify model/optimizer/RNG,
+reward diagnostics and native evaluation artifacts before terminating it.
+
 With `--calibrate-assistance --batch-rollouts --group-size 4`, synchronous
 calibration retries the **same problem**: four passes reduce assistance; four
 failures increase it; only mixed groups contribute training gradients.
