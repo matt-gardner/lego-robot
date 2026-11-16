@@ -212,7 +212,7 @@ async function start() {
         if(pile.initial_images.length) {
           const image=node("img");image.loading="lazy";image.alt="Admitted pile preview";
           image.style="width:100%;height:auto";
-          image.src=`api/buckets/image?problem=${encodeURIComponent(pile.id)}&index=0&snapshot=${encodeURIComponent(pile.dataset_snapshot_id)}`;
+          image.src=`api/buckets/image?problem=${encodeURIComponent(pile.id)}&index=0`;
           image.addEventListener("error",()=>image.replaceWith(node("p","Pile preview unavailable / failed integrity check","missing")));
           card.append(image);
         } else card.append(node("p","Pile preview not rendered yet","missing"));
@@ -318,11 +318,11 @@ async function start() {
           const scene=representative.tags?.scene || {};
           const summary=node("button",undefined,"pile-card"), preview=node("div",undefined,"pile-preview");
           summary.type="button";
-          const previewSource=cameraPiles.get(pile.id) || representative;
-          const image=previewSource.initial_images?.[0];
+          const previewSource=cameraPiles.get(pile.id);
+          const image=previewSource?.initial_images?.[0];
           if (image) {
           const img=node("img");img.loading="lazy";img.alt=`Initial pile ${pileIndex+1}`;
-          img.src=`api/buckets/image?problem=${encodeURIComponent(previewSource.id)}&index=0&snapshot=${encodeURIComponent(previewSource.dataset_snapshot_id || data.manifest.snapshot_id)}`;
+          img.src=`api/buckets/image?problem=${encodeURIComponent(previewSource.id)}&index=0`;
           img.addEventListener("error",()=>{img.replaceWith(node("p","Initial image unavailable / failed integrity check","missing"));});
           preview.append(img);
           } else preview.append(node("p","Initial scene images not published.","missing"));
@@ -342,72 +342,58 @@ async function start() {
           if(image) summary.append(node("small",`Renderer: ${image.renderer || image.backend || "unspecified"}`));
           pileSection.append(summary);
           grid.append(pileSection);
-          const taskContent=node("div");
-          const stage=node("div",undefined,"task-stage"), controls=node("div",undefined,"carousel-controls");
-          const previous=node("button","Previous"), position=node("span"), next=node("button","Next");
-          const strip=node("div",undefined,"task-strip");
-          strip.setAttribute("aria-label","Choose task");
-          const slides=[], thumbnails=[];
-          let selected=0;
-          function selectTask(index) {
-            selected=(index+slides.length)%slides.length;
-            preferences[`selected-task:${group.bucket}:${pile.id}`]=pile.tasks[selected].id;save();
-            slides.forEach((slide,i)=>{slide.hidden=i!==selected;});
-            thumbnails.forEach((thumb,i)=>thumb.setAttribute("aria-pressed",String(i===selected)));
-            position.textContent=`Task ${selected+1} of ${slides.length}`;
-            thumbnails[selected]?.scrollIntoView?.({block:"nearest",inline:"nearest"});
-          }
-          previous.addEventListener("click",()=>selectTask(selected-1));
-          next.addEventListener("click",()=>selectTask(selected+1));
-          strip.addEventListener("keydown",event=>{
-            if(event.key==="ArrowRight" || event.key==="ArrowLeft") {
-              event.preventDefault();selectTask(selected+(event.key==="ArrowRight"?1:-1));
-              thumbnails[selected].focus();
-            }
-          });
-          controls.append(previous,position,next);
-          taskContent.append(stage,controls,strip);
           summary.addEventListener("click",()=>{
-            buildTasks();
+            buildPieces();
             const dialog=document.getElementById("pile-dialog");
-            document.getElementById("pile-title").textContent=`${label} · Pile ${pileIndex+1} · ${pile.tasks.length} tasks`;
-            document.getElementById("pile-tasks").replaceChildren(taskContent);
+            document.getElementById("pile-title").textContent=`${label} · Pile ${pileIndex+1} · ${previewSource?.pieces?.length ?? 0} pieces`;
+            document.getElementById("pile-tasks").replaceChildren(pieceContent);
             dialog.showModal();
           });
-          let built=false;
-          function buildTasks() {
-          if(built)return;
-          built=true;
-          for (const p of pile.tasks) {
-        const card=node("article",undefined,"problem");
-        const target=(p.tags?.target_instance_id || p.source?.task_id || "").match(/(?:object|brick)_(\d+)/);
-        const dimensions=p.tags?.target?.part_dimensions_m;
-        const targetLabel=target ? `Object ${Number(target[1])+1}` : "Target";
-        const taskTitle=`${p.task} · ${targetLabel}${dimensions ? " · "+dimensions.map(x=>(x*1000).toFixed(1)).join(" × ")+" mm" : ""}`;
-        const thumb=node("button",undefined,"task-thumbnail");
-        thumb.type="button";thumb.setAttribute("aria-label",taskTitle);
-        const thumbnailImage=p.initial_images?.[0];
-        if(thumbnailImage) thumb.append(taskImage(p,thumbnailImage,0,p.dataset_snapshot_id || data.manifest.snapshot_id));
-        thumb.append(node("span",taskTitle));
-        const slideIndex=slides.length;
-        thumb.addEventListener("click",()=>selectTask(slideIndex));
-        thumbnails.push(thumb);strip.append(thumb);
-        for (const [index,image] of (p.initial_images || []).entries()) {
-          card.append(taskImage(p,image,index,p.dataset_snapshot_id || data.manifest.snapshot_id));
-        }
-        if (!p.initial_images?.length) card.append(node("p","Task image not published yet","missing"));
-        card.append(node("h3",taskTitle));
-        card.append(node("p",`Feasibility: ${p.feasibility?.status || "unmeasured"}. Low policy success does not prove infeasibility or solvability.`));
-        const measured=groupFor(p);
-        stats(card,measured);
-        const failures=measured.reduce((n,g)=>n+Math.max(0,(g.attempts ?? g.trajectories?.length ?? 0)-(g.successes ?? 0)),0);
-        card.append(node("p",`Observed unsuccessful rollouts: ${measured.length ? failures : "unmeasured"}. Feasibility vs policy failure attribution: ${p.failure_attribution_status || "unmeasured"}. Visibility / reach: ${p.tags?.visibility ?? "unmeasured"} / ${p.tags?.reach ?? "unmeasured"}.`));
-        json(card,"Tags / provenance / measurement and failure evidence",p,d=>rememberDetails(d,`task-provenance:${p.id}`));
-        json(card,"Raw measured groups (invalid actions, policy vs feasibility failures)",groupFor(p),d=>rememberDetails(d,`task-groups:${p.id}`));
-        slides.push(card);stage.append(card);
-          }
-          const restored=pile.tasks.findIndex(p=>p.id===preferences[`selected-task:${group.bucket}:${pile.id}`]);
-          selectTask(restored<0 ? 0 : restored);
+          const pieceContent=node("div");
+          let piecesBuilt=false;
+          function buildPieces() {
+            if(piecesBuilt)return;
+            piecesBuilt=true;
+            const pieces=previewSource?.pieces || [];
+            if(!image || !pieces.length) {
+              pieceContent.append(node("p","Pile image / piece coordinates unavailable","missing"));
+              return;
+            }
+            const figure=node("div",undefined,"target-frame"), img=node("img");
+            img.alt="Admitted pile with selected piece highlighted";
+            img.src=`api/buckets/image?problem=${encodeURIComponent(previewSource.id)}&index=0`;
+            img.addEventListener("error",()=>figure.replaceChildren(node("p","Pile image unavailable","missing")));
+            const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+            svg.setAttribute("viewBox",`0 0 ${previewSource.piece_image_width} ${previewSource.piece_image_height}`);
+            svg.setAttribute("aria-label","Selected piece coordinates in the pile camera");
+            figure.append(img,svg);
+            const description=node("p"), cards=node("div",undefined,"piece-cards");
+            const buttons=[];
+            function selectPiece(index) {
+              const piece=pieces[index];
+              svg.replaceChildren();
+              const box=targetBox({...piece,width:previewSource.piece_image_width,height:previewSource.piece_image_height});
+              if(box) {
+                const rect=document.createElementNS("http://www.w3.org/2000/svg","rect");
+                for(const [key,value] of Object.entries({x:box[0],y:box[1],width:box[2]-box[0],height:box[3]-box[1],
+                  fill:"none",stroke:"#ffdd00","stroke-width":2,"vector-effect":"non-scaling-stroke"})) rect.setAttribute(key,value);
+                svg.append(rect);
+              }
+              description.textContent=`${piece.entity_id} · position (m): ${piece.position_m.map(x=>x.toFixed(4)).join(", ")} · ${
+                box ? `pile-image box: ${box.join(", ")}` : "not visible in this pile camera; no box"}`;
+              buttons.forEach((button,i)=>button.setAttribute("aria-pressed",String(i===index)));
+              preferences[`selected-piece:${pile.id}`]=piece.id;save();
+            }
+            for(const [index,piece] of pieces.entries()) {
+              const button=node("button",piece.entity_id,"piece-card");
+              button.type="button";
+              button.addEventListener("click",()=>selectPiece(index));
+              button.addEventListener("focus",()=>selectPiece(index));
+              buttons.push(button);cards.append(button);
+            }
+            pieceContent.append(figure,description,cards);
+            const restored=pieces.findIndex(piece=>piece.id===preferences[`selected-piece:${pile.id}`]);
+            selectPiece(restored<0 ? 0 : restored);
           }
         }
       }

@@ -39,7 +39,7 @@ test("hierarchy groups target tasks by exact scene within each bucket",()=>{
   assert.deepEqual(grouped[0].piles[0].tasks.map(p=>p.id),["a","b"]);
   assert.equal(grouped[1].piles[0].tasks[0].id,"d");
 });
-test("page enumerates unmeasured tasks and binds initial images to snapshot",async()=>{
+test("piece cards overlay pile-camera coordinates without task images and retain measurement charts",async()=>{
   class Element {
     constructor(){this.children=[];this.value="";this.listeners={};this.textContent="";}
     append(...children){this.children.push(...children);}
@@ -70,6 +70,10 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
         {id:"old",bucket:"corpus:old",task:"grasp",source:{kind:"legacy"},initial_images:[]}]},
     calibration:{protocol:{rollouts_per_group:4},groups:[{problem_id:"first",assistance:0,attempts:4,successes:4}]},
     admitted_piles:[{id:"admission:camera",scene_id:"scene-first",image_kind:"admitted-pile-camera",
+      piece_image_width:320,piece_image_height:240,pieces:[
+        {id:"object_0",entity_id:"object_0",position_m:[.1,.2,.3],target_bbox_xyxy:[12,20,100,150]},
+        {id:"object_1",entity_id:"object_1",position_m:[.2,.3,.4],target_bbox_status:"not_visible",target_bbox_xyxy:null},
+      ],
       tags:{piece_count:3},dataset_snapshot_id:"camera-snapshot",initial_images:[{camera:"external"}]}],
   };
   vm.runInNewContext(fs.readFileSync(require.resolve("../src/so101/dashboard/buckets.js"),"utf8"),
@@ -82,16 +86,15 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   assert.equal(bucketSection.open,true);
   const pileCard=bucketSection.children[1].children[0];
   assert.match(pileCard.children[0].children[0].children[0].src,/problem=admission%3Acamera/);
-  assert.match(pileCard.children[0].children[0].children[0].src,/snapshot=camera-snapshot/);
+  assert.ok(!pileCard.children[0].children[0].children[0].src.includes("snapshot="));
   assert.equal(pileCard.className,"pile-group");
   assert.ok(!pileCard.open);
   assert.equal(pileCard.children.length,1);
   pileCard.children[0].listeners.click();
   assert.equal(elements.get("pile-dialog").open,true);
   const carousel=elements.get("pile-tasks").children[0];
-  assert.equal(carousel.children[0].className,"task-stage");
-  assert.equal(carousel.children[0].children[0].hidden,false);
-  assert.equal(carousel.children[2].className,"task-strip");
+  assert.equal(carousel.children[0].className,"target-frame");
+  assert.equal(carousel.children[2].className,"piece-cards");
   assert.equal(carousel.children[2].children[0]["aria-pressed"],"true");
   const all=[];
   function collect(e){all.push(e);for(const child of e.children || [])collect(child);}
@@ -100,14 +103,14 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   bucketSection.children[1].children[1].children[0].listeners.click();
   collect(elements.get("pile-tasks"));
   assert.ok(all.some(e=>e.textContent==="Pile 1"));
-  assert.ok(all.some(e=>e.textContent==="push · Target"));
-  assert.ok(all.some(e=>e["aria-label"]==="Visible target bounding box from renderer segmentation"));
+  assert.ok(all.some(e=>e.textContent==="object_0"));
+  assert.ok(all.some(e=>e["aria-label"]==="Selected piece coordinates in the pile camera"));
   assert.ok(all.some(e=>e.x===12 && e.y===20 && e.width===88 && e.height===130));
-  assert.ok(all.some(e=>e.x===200 && e.y===100 && e.width===30 && e.height===30 && e.stroke==="#00e5ff"));
-  assert.ok(all.some(e=>e.textContent.includes("Destination goal marker (cyan) · visible segmentation")));
-  assert.ok(all.some(e=>e.src==="api/buckets/image?problem=first&index=0&snapshot=snapshot"));
+  assert.ok(!all.some(e=>e.src?.includes("problem=first")));
   assert.ok(all.some(e=>e.textContent==="Initial scene images not published."));
-  assert.ok(all.some(e=>e.textContent==="Unmeasured: no valid rollout counts published."));
+  carousel.children[2].children[1].listeners.click();
+  assert.equal(carousel.children[0].children[1].children.length,0);
+  assert.match(carousel.children[1].textContent,/not visible.*no box/);
   const overview=elements.get("populations").children[0];
   assert.equal(overview.children.length,2);
   assert.equal(elements.get("bucket").children.length,1);
@@ -144,9 +147,9 @@ test("page enumerates unmeasured tasks and binds initial images to snapshot",asy
   const updated=[];
   function gather(e){updated.push(e);for(const child of e.children || [])gather(child);}
   gather(elements.get("pile-tasks"));
-  assert.ok(updated.some(e=>e.textContent.includes("Destination goal marker (cyan) · not visible in this camera · no box")));
+  assert.ok(updated.some(e=>e.textContent.includes("not visible in this pile camera; no box")));
   assert.ok(!updated.some(e=>e.stroke==="#00e5ff"));
-  assert.ok(updated.some(e=>e.stroke==="#ffdd00"));
+  assert.ok(!updated.some(e=>e.className==="task-thumbnail"));
   const section=elements.get("problems").children[0];
   section.open=false;section.listeners.toggle();
   elements.get("search").value="first";
