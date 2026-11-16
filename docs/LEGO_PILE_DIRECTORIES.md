@@ -50,6 +50,17 @@ Unknown parents, task hash mismatches and corrupted retained copies are errors,
 not silently skipped outcomes. Each updated task is installed atomically; an
 interrupted refresh can be safely repeated. Source receipts must remain immutable.
 
+The host runs this refresh through `lego-canonical-assistance.service` and
+`lego-canonical-assistance.timer`, every two minutes after the preceding run ends.
+Systemd prevents overlapping runs. The pinned published adapter reads fast-v4
+receipts; its protected filesystem allows writes only beneath the canonical
+`piles/` directory. CPU is capped at 50%, memory at 128 MiB, and each invocation
+has a two-minute timeout. Failed exports remain visible in the service journal.
+This is a data export, not an assistance job launcher or a worker-restart watchdog.
+The frozen assistance runtime, source inventories and task protocols are unchanged.
+Small receipt files are copied byte-for-byte and installed atomically so export
+also works across read-only/read-write mount boundaries; model files remain linked.
+
 This layout does not yet promise standalone XML asset closure: original XML can
 retain absolute mesh paths. Original compiled models and active source paths must
 remain available until consumer migration and reset validation are complete.
