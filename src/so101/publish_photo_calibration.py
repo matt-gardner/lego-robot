@@ -5,20 +5,9 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import struct
 
-from so101.cloud_checkpoint import atomic_json
-
-
-def copy_image(image: Path, directory: Path, expected: str) -> str:
-    asset = directory / "assets" / image.name
-    asset.parent.mkdir(parents=True, exist_ok=True)
-    if not asset.exists():
-        shutil.copyfile(image, asset)
-    if hashlib.sha256(asset.read_bytes()).hexdigest() != expected:
-        raise ValueError("Published task image asset changed")
-    return str(asset.relative_to(directory))
+from so101.bucket_store import current_manifest, publish_current
 
 
 def retain_native_inventory(manifest: dict, original: dict, source: Path,
@@ -42,12 +31,7 @@ def retain_native_inventory(manifest: dict, original: dict, source: Path,
             raise ValueError("Native inventory scene differs from its pinned provenance")
         problem["measurement_scope"] = scope
         problem["population_provenance"] = provenance
-        for image in problem.get("initial_images", []):
-            relative = Path(image["path"])
-            path = (source.parent / relative).resolve()
-            if relative.is_absolute() or not path.is_relative_to(source.parent.resolve()):
-                raise ValueError("Native image escapes its pinned snapshot")
-            image["path"] = copy_image(path, directory, image["sha256"])
+        problem["initial_images"] = []
     historical = [
         {**row, "measurement_scope": scope, "provenance": provenance}
         for row in original["groups"] if row["problem_id"] in identities
@@ -80,37 +64,18 @@ def publication_pointer(output: Path, publication_id: str | None) -> Path:
     if publication_id is not None and (
             not publication_id or publication_id in (".", "..") or Path(publication_id).name != publication_id):
         raise ValueError("Publication identity must be a single directory name")
-    return output / "current.json" if publication_id is None else (
-        output / "publications" / publication_id / "current.json"
-    )
+    return output / "current.sqlite3"
 
 
 def publish_manifest(manifest: dict, directory: Path, output: Path, publication_id: str | None) -> dict:
-    current = publication_pointer(output, publication_id)
-    destination = directory / "manifest.json"
-    if not destination.exists():
-        atomic_json(destination, manifest)
-    digest = hashlib.sha256(destination.read_bytes()).hexdigest()
-    relative = str(destination.relative_to(output))
-    pointer = {"schema_version": 1, "snapshot_id": manifest["snapshot_id"], "path": relative,
-               "sha256": digest, "manifest_path": relative, "manifest_sha256": digest}
-    atomic_json(current, pointer)
-    return pointer
+    publication_pointer(output, publication_id)
+    channel = publication_id or manifest["dataset_id"]
+    path = publish_current(output, manifest, directory, channel)
+    return {"path": path.name, "snapshot_id": manifest["snapshot_id"]}
 
 
 def previous_manifest(output: Path, publication_id: str | None) -> dict | None:
-    pointer_path = publication_pointer(output, publication_id)
-    if not pointer_path.exists():
-        return None
-    pointer = json.loads(pointer_path.read_text())
-    relative = Path(pointer["path"])
-    path = (output / relative).resolve()
-    if relative.is_absolute() or not path.is_relative_to(output.resolve()):
-        raise ValueError("Previous publication escapes its output directory")
-    content = path.read_bytes()
-    if hashlib.sha256(content).hexdigest() != pointer["sha256"]:
-        raise ValueError("Previous publication differs from its pinned hash")
-    return json.loads(content)
+    return current_manifest(output, publication_id) if publication_id else None
 
 
 def retain_measurement_series(manifest: dict, previous: dict | None,
@@ -178,7 +143,7 @@ def publish_native_channel(original: dict, source: Path, source_bytes: bytes,
                            implementation: bytes, output: Path) -> dict:
     identity = "native-" + original["provenance"]["native_pool_sha256"]
     snapshot_id = hashlib.sha256(implementation + b"native-only" + source_bytes).hexdigest()
-    directory = output / "snapshots" / snapshot_id
+    directory = output / "staging" / identity
     manifest = {
         "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": snapshot_id,
         "dataset_id": identity, "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -201,14 +166,14 @@ def publish(pool_path: Path, references_path: Path | None, output: Path,
         raise ValueError("Unsupported task population source kind")
     scope = f"{source_kind}-assistance-calibration"
     publication_pointer(output, publication_id)
-    previous = previous_manifest(output, publication_id)
-    if previous is not None and previous.get("measurement_series") and measurement_series_id is None:
-        raise ValueError("Retained measurement history requires an explicit series identity for updates")
     pool_bytes = pool_path.read_bytes()
     reference_bytes = references_path.read_bytes() if references_path is not None else b""
     pool = json.loads(pool_bytes)
     references = json.loads(reference_bytes) if reference_bytes else None
     pool_sha = hashlib.sha256(pool_bytes).hexdigest()
+    previous = previous_manifest(output, publication_id or source_kind + "-" + pool_sha)
+    if previous is not None and previous.get("measurement_series") and measurement_series_id is None:
+        raise ValueError("Retained measurement history requires an explicit series identity for updates")
     if (pool.get("kind") != "lego-pile-task-pool" or pool.get("status") != "complete"
             or (references is not None and (references.get("kind") != "pile-expert-references"
             or references.get("pool_sha256") != pool_sha
@@ -341,7 +306,7 @@ def publish(pool_path: Path, references_path: Path | None, output: Path,
     snapshot_id = hashlib.sha256(
         implementation + dataset_id.encode() + pool_bytes + reference_bytes + measurement_bytes + image_digest.digest(),
     ).hexdigest()
-    directory = output / "snapshots" / snapshot_id
+    directory = output / "staging" / dataset_id
     manifest = {
         "kind": "lego-data-buckets", "schema_version": 1, "snapshot_id": snapshot_id,
         "dataset_id": dataset_id,
@@ -406,13 +371,6 @@ def publish(pool_path: Path, references_path: Path | None, output: Path,
             }, sort_keys=True).encode(),
         ).hexdigest()
         manifest["snapshot_id"] = snapshot_id
-        directory = output / "snapshots" / snapshot_id
-    for problem, receipt, image in images:
-        problem["initial_images"].append({
-            **receipt, "path": copy_image(image, directory, receipt["sha256"]), "renderer": receipt["backend"],
-            "provenance": receipt,
-        })
-        problem["initial_images_status"] = "published"
     if native_snapshot_path is not None:
         if publication_id is None:
             raise ValueError("Native inventory bootstrap requires an independent photo publication identity")

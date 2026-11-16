@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--publication-id", required=True)
     args = parser.parse_args()
-    print("Image publication is retired; the dashboard reads durable receipts live. "
+    print("Task image publication is retired; the dashboard uses current pile images and piece coordinates. "
           "This compatibility command only validates assets.", file=sys.stderr)
     print(json.dumps(validate_live_images(args.images)))
 

@@ -1,327 +1,88 @@
-# Workstream 2: Interactive catalog and curriculum dashboard
+# Interactive catalog and curriculum dashboard
 
-## Recognition training
+## Current bucket data
 
-The training observatory discovers nested `sft_training.json` logs recursively.
-Logs with kind `piece_recognition_sft` appear in a separate Recognition tab with
-independent selections and recognition loss versus samples seen. Dev evaluation
-shows top-1/3/5, macro top-1, category and seen/unseen accuracies with observation
-counts. Logged `train_top1/3/5` are separate minibatch measurements, never inferred
-from loss. Optional `training_evaluation` rows show full training-set checkpoint
-accuracy, not a reconstructed training history. A sibling `test_results.json`
-shows final held-out test results and selected checkpoint/selection criterion
-separately; sidecar changes invalidate the run cache even if the log is unchanged.
-Missing training or final-test measurements are explicitly labeled unpublished.
-Frozen and
-fine-tuned runs retain their relative parent paths. Recognition losses are never
-combined with action SFT or RL; action-evaluation charts are not shown for them.
+The bucket browser has one data source:
+`<bucket-dashboard-root>/current.sqlite3`. It contains the current task inventory,
+measurement records and protocols, pile records, per-piece coordinates, and the
+original retained pile-image bytes. The browser does not discover version
+directories, choose snapshots, or overlay older image publications.
 
-## GRASP policy evaluation
+`BucketDashboard` reads this database only. Its background worker serializes the
+inventory every 20 seconds; image requests use an indexed database lookup and
+verify the byte digest. Read/cache failures are logged and surfaced, not returned
+as fresh success. `/api/buckets` retains task and measurement metadata for the
+charts. `/api/buckets/image?problem=<pile ID>&index=0` serves the current pile
+image without a snapshot selector. Historical source hashes and measurement
+series identities remain scientific provenance, not selectable storage versions.
 
-The training observatory also discovers nested `grasp_evaluation.json` files
-with kind `grasp_assistance_evaluation`. These appear in **Policy evaluation**,
-separate from RL, SFT and recognition. The result publisher writes that atomic
-adapter and a checked-remote-process heartbeat after each transport refresh.
-Curves use saved-state assistance percentages and completed-rollout denominators,
-not optimizer steps. Recovery-training and recovery-heldout scenes are separate;
-recovery-heldout is not an original-SFT test split. Missing cells remain
-unmeasured. Raw `results.json` and input provenance remain unchanged.
-After each successful mirror and remote unit health check, call
+Writers call `so101.bucket_store.publish_current(root, manifest, asset_directory,
+channel=...)`. They supply decoded current task records, original protocols and
+groups, and root-contained hash-bound assets. One transaction replaces the
+channel, preserves unrelated populations/measurements, stores any new pile
+images, and removes unreferenced image bytes. Repeated updates do not accumulate
+historical inventory files. The database uses full auto-vacuum so removed images
+release pages rather than leaving an indefinitely growing file.
+
+`so101.publish_photo_calibration` writes current measurement data directly into
+the database. Independent measurement series keep their original protocols and
+counts; mirrored compatibility groups are not counted twice. Measures remain
+bound to exact task sources and pools. A result from a sampled subset is not
+silently treated as a measured rate for an entire enumerated bucket.
+
+`so101.native_pile_dashboard_images` uses a resumable `staging/native-piles`
+working directory and writes the current population through the same writer.
+Staging is renderer work, not a second browser data source. It must not be
+removed while an owning renderer is using it. Source models, admissions,
+integration states, task definitions, and physical parameters remain producer
+inputs and are not dashboard cleanup targets.
+
+## Pile and piece inspector
+
+Task-specific dashboard photos are retired. Task records keep their source,
+goal, feasibility and measurement data, but have no image assets. A pile has one
+retained image and one card per physical piece, not four cards for its task roles.
+Selecting a piece overlays its coordinates on the shared pile image.
+
+Piece bounds must come from segmentation using the **same pile camera and
+admitted initial state as that image**. Task-camera boxes must never be reused:
+the cameras differ. Piece records retain identity, world position, visible pixel
+count and exclusive pixel bounds. An occluded/offscreen piece has `not_visible`
+and no invented box. Coordinate-generation provenance binds the scene files,
+camera and retained image digest. These are TRAIN-start visualizations, not
+policy observations, expert references, SFT qualification or proof of competence.
+
+## Migration and cleanup
+
+`scripts/import_current_dashboard.py` imports a pinned complete live inventory
+and checked per-scene piece-coordinate files into the database. It checks that
+the coordinate population and pile-image digests match before committing.
+Migration must preserve current task/measurement fields and exact original
+pile-image bytes. Verify the served API and representative images after managed
+activation before removing obsolete dashboard directories.
+
+Old `snapshots`, `publications`, `initial-photo-external-v*`, task-image shards
+and unused dashboard render assets are not runtime inputs after migration.
+Cleanup must enumerate exact in-scope paths, preserve any shared/live aliases
+and separately required evidence, and never touch producer datasets, negatives,
+training/checkpoint files or another worker's active runtime.
+
+## Training observatory
+
+Training logs are independent of bucket publications. Nested `sft_training.json`
+logs with kind `piece_recognition_sft` appear in Recognition, with training
+minibatch measurements separate from held-out evaluations. A sibling
+`test_results.json` supplies final held-out results; absent results stay missing.
+Recognition loss is not combined with action SFT or RL.
+
+Nested `grasp_evaluation.json` files with kind `grasp_assistance_evaluation`
+appear in Policy evaluation, separate from RL/SFT/recognition. The mirror writes
+the atomic adapter and checked process heartbeat after each successful refresh.
+Curves use completed rollout denominators and saved-state assistance, not
+optimizer steps. Recovery-heldout is not an original-SFT test split.
+
+After a successful mirror and remote health check, call
 `so101.publish_grasp_evaluation.publish_evaluation(results_path, published_output,
-state="running")`; use `completed` after successful completion. Refresh every
-20 seconds; model weights and sample tensors are not dashboard publications.
-Recovery-fitting logs (`kind: grasp_recovery_sft`) appear in SFT with the actual
-sample count (optimizer updates times batch size), never inferred action success.
-
-## Live data buckets (schema 1)
-
-### Catalog admitted-pile camera images
-
-`so101.native_pile_dashboard_images` freezes a named published catalog pile
-snapshot by SHA256, validates each admission and its five bound scene files,
-and renders serially with `MUJOCO_GL=osmesa` (CPU only). Pass `--snapshot`,
-`--sha256`, and `--root` (the shared bucket dashboard root); `--limit-scenes`
-permits a bounded first batch. Repeating the same command verifies and reuses
-completed scene receipts. Changing the renderer contract requires a new output
-version, not overwriting existing completed derivatives.
-Render fingerprints cover rendering functions, independently of publication
-formatting; the original full-file fingerprint is accepted only for the exact
-compatible rendering implementation. Manifests use compact JSON and byte-hash
-filenames. The producer checks the consumer's 32 MiB artifact bound before
-activating a pointer; an oversized manifest fails explicitly and leaves the
-previous publication current. Existing immutable manifests are never rewritten.
-Native-camera task populations use `problem_shards` with authenticated root-relative
-paths, byte lengths and row counts. Each shard is limited to 4 MiB, with at most
-128 shards and 64 MiB total shard bytes. The top-level artifact retains the
-32 MiB bound. The reader reconstructs the same problem rows and rejects changed
-hashes, escaping paths, inconsistent counts and oversized shard collections.
-Deploy the compatible reader before activating a partitioned publication.
-
-The `publications/native-pile-camera-images-v1/current.json` channel points to
-an immutable hash-pinned manifest under `native-pile-camera-images-v1/<input SHA>`.
-It enumerates the entire selected task population, explicit missing-image counts,
-and one external-camera image per completed pile, separately from exact-reset
-task-scene camera images. Source-object boxes are yellow; visible destination-marker
-boxes are cyan. Boxes are measured from the same camera's geometry segmentation;
-offscreen/occluded entities retain `not_visible` and no invented box. Pile overview
-images are never substituted for task camera frames. The task camera has a fixed
-look-at point at (.22, 0, the model's table height), distance .45 m, azimuth 135
-degrees and elevation -65 degrees, with MuJoCo's actual projection recorded.
-Both cameras use appearance-only metric clipping at 1 mm and 5 m; compiled
-scene extents can otherwise put the near plane beyond the pile. Source models
-and their physical parameters are not changed.
-It is explicitly not a policy camera: the bound models contain only `wrist_cam`,
-which looks away from the pile at the home-pose reset. These are TRAIN start-state
-visualizations, not policy evaluations, expert references, or SFT qualification.
-The consumer adds this channel alongside current selected pools and retains the
-single pile image even when corresponding task images are present. Source data,
-frozen validation sets, negatives, and producer previews remain untouched.
-
-Distance-assisted child pilots (`tags.task_assistance.kind:
-direct-task-distance-v2`) remain available in API metadata but are not rendered
-as sections below the bucket table. Numeric expert-prefix assistance zero does
-not mean an original unassisted physical start. Pilot groups never enter
-original bucket charts.
-An explicit `provenance.supersedes_native_pool_sha256` hides the overlapping
-predecessor pilot from the current view without deleting its historical files.
-Shared manifest qualification notices and recorded counts remain unchanged in
-the API. Bucket/pile browser sections are ordered by numeric piece count.
-
-The read-only `/buckets` page reads `--bucket-dashboard-root`, defaulting to
-`data/bucket_dashboard` beside the configured outputs root. Shared data uses
-`outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/bucket_dashboard`
-in the shared data workspace (writable by the producer without permissions changes).
-The running dashboard precomputes its inventory, serialized API response and
-problem/image lookup in one background cache worker at startup and every
-20 seconds. HTTP requests reuse that snapshot; individual image requests do not
-rebuild or rescan the inventory. Original image bytes remain hash-checked.
-Cache refresh errors are logged and surfaced explicitly, not hidden as fresh
-data. The browser builds task modal contents only when a pile is opened.
-The dashboard composes ordinary producer files during these background refreshes.
-No renderer or generator session needs to run a dashboard publisher.
-The renderer writes atomic completed per-task receipts and assets under
-`initial-photo-external-v<N>/<pool SHA>/`; higher positive numeric versions take
-precedence per completed task, not per entire batch. Within a version,
-`_roles-v1/<task>.json` takes precedence over that task's original receipt.
-Invalid selected receipts fail explicitly rather than hiding behind older data.
-Photoreal receipts accept explicit `mitsuba-llvm_ad_rgb` and
-`mitsuba-cuda_ad_rgb` backends, preserving the reported backend label and the
-same task/reset, annotation, and asset-hash validation for either renderer.
-The reader validates pool, canonical source,
-scene hash, target, reset invariants, annotations and image hashes, then serves
-the original asset without copying it. A metrics callback replacing a legacy
-snapshot cannot erase these images.
-
-`live-metrics/<scope>/results.json` contains the live inference result file.
-It is joined only to its exact `input_sha256.native_pool`; horizon and scope
-are explicit. Its groups replace the legacy current metrics rather than mixing
-50-step screening with archived 300-step outcomes. Multiple current result
-files for the same pool fail explicitly instead of combining protocols.
-Actual transport of remote result bytes is separate from dashboard publishing.
-Current selector inventories also join existing shared
-`publications/*/current.json` measurements by exact pool SHA and validate each
-measured problem's task, canonical source and scene hash. The shared protocol,
-progress and groups are preserved; unmeasured pools remain unmeasured. Rates
-describe only the sampled problems, not the entire enumerated pool.
-Retained `measurement_series` entries contain independent `series_id`, `label`,
-`protocol`, `groups`, `progress`, `complete`, `provenance` and optional scopes.
-`current_measurement_series_id` selects the compatibility top-level groups;
-`latest_measurement_series_id` identifies a successor without replacing history.
-All retained series for the exact selected pool are aggregated together in the
-chart and task measurements, as requested by Matt. The mirrored top-level groups
-are not counted a second time. Original series IDs and protocols remain attached
-to each group for provenance. All groups are validated against selected sources.
-
-Tasks are read immediately from each admitted pile's hash-pinned `problem.json`,
-without waiting for a complete pool or rendered preview. Active generator
-admissions under `photo-task-progression-collective-v1` and
-`catalog-diverse-20-v1` and `catalog-diverse-larger-v1` are discovered
-independently of renderer progress.
-Canonical task IDs deduplicate selected-pool tasks. All admitted tasks appear
-in their piece-count bucket and carousel; matching images attach only to their
-exact task. Missing images and unmeasured policy rates remain separate states.
-The reader discovers `pile-previews-v1/<admission SHA>/admission.json`, validates
-the pin and scene problem hash, and shows an explicit pending state until an
-atomic task receipt and original PNG arrive in that directory. Receipt pool SHA
-means admission SHA in this channel, not a complete pool. These previews never
-add task populations or policy groups, and are served through the same bounded,
-hash-checked image endpoint with an `admission:<SHA>` identity.
-
-`--bucket-curriculum-root` defaults to the existing read-only
-`/mnt/data/lego-curriculum` mount. The generator's atomic
-`current-task-pools.json` (`kind: lego-current-task-pools`, `schema_version: 1`,
-`pools: [{manifest_path,sha256,scenes,task_count,piece_counts}]`) selects current
-complete TRAIN pools directly. Paths under the canonical producer prefix
-`/mnt/dockyard/lego-robot-data/data/lego_curriculum` are mapped into that mount,
-without changing canonical task identities. Missing matching images remain
-unrendered, never substituted from a previous task/reset. Pool hashes, scene
-problem hashes and population counts are checked. No recursive search or mtime
-guessing selects historical/subset pools.
-
-Until that generator selection exists, old inventories remain readable via
-the compatibility snapshot format. `current.json` points to
-`{"path":"snapshots/<id>/manifest.json","sha256":"<manifest bytes SHA256>"}`.
-These legacy snapshots are not required for new generator or renderer updates.
-The manifest has `kind: lego-data-buckets`, `schema_version: 1`,
-`generated_at`, `measurement_status` (screening/calibrating/qualified),
-`provenance` (generator/source/grader/protocol hashes), `protocol`, `buckets`,
-`problems`, and `groups`. Unknown extension fields are retained.
-
-Buckets enumerate every bucket/task population independently of measured samples:
-`{id,label,population_total,tasks:[{task,population_total}]}`. Problems enumerate
-the entire population, with stable `id`, `bucket_id`, `task`, source identity and
-hash, split, native scene/task IDs where applicable, tags, provenance,
-`feasibility:{status,evidence}`, and `initial_images`. Missing measurements,
-physical qualification, visibility/reach and images are explicitly unmeasured.
-Image entries contain snapshot-relative `path`, byte `sha256`, `camera`, actual
-`width/height` and renderer/protocol provenance; PNG/JPEG only, no upscaling claim.
-Images are hash-checked and served only through exact selected problem identity.
-
-Groups join by `problem_id`; legacy raw groups may join the exact
-bucket/task/source/problem_index tuple. Preserve assistance, attempts (rollouts),
-successes, invalid actions, trajectories, seed, measurement status and
-`mixed_group_yield:{eligible,total}`. Feasibility failure attribution is null
-unless measured; observed unsuccessful rollouts do not establish infeasibility.
-Pilot four-rollout groups are screening only, never calibrated qualification.
-The page shows app-derived Wilson 95% descriptive intervals (without accounting
-for group/seed correlation), actual within-group mixed yield, per-problem curves
-and within-bucket observed spread. Piece count/proxy tags are not difficulty,
-and pooled 50% success does not imply per-problem learnability. No GPU queries,
-model loads, old deleted renders or temporary paths are used.
-The primary overview has one row per bucket, with a small chart in a table cell:
-assistance percent on the x axis and success rate on the y axis, both 0–100%.
-Task types have distinct colors; points show measured rates with descriptive
-Wilson intervals and exact numerator/denominator tooltips, without interpolation.
-Hovering or keyboard-focusing a task legend label enlarges its points and grays
-out other tasks' points and intervals; leaving restores the full chart.
-Per-task sampled-problem coverage and rollout counts sit beside the chart.
-Unmeasured buckets retain an explicit missing state instead of zero-valued points.
-Clicking a row filters the pile inspector to its bucket.
-The dashboard excludes historical `source.kind=legacy` problems and `corpus:`
-bucket summaries from the overview, selectors and problem inspector. This is a
-display-only retirement; producer snapshots, calibration and underlying data are
-unchanged. The remaining published population currently comprises native buckets.
-Below the table, the inspector groups bucket → pile → target-specific task.
-Pile identity is the source scene ID (or an explicit pile/scene ID); missing
-identity stays separate rather than merging unrelated problems. Pagination counts
-piles, not tasks, so a pile's matching tasks stay together. Collapsible bucket
-sections contain pile cards with one initial pile image and meaningful scene
-tags (piece/shape/color counts, colors, obstructions and available tasks).
-Click a pile card to reveal target tasks, labeled by action, object number and
-dimensions when available. Technical identities remain in provenance, not card
-headings. Task details expand to measurements and provenance.
-
-An optional top-level `progress` object distinguishes expert qualification from
-policy measurements: `phase`, `reference_attempts`, `reference_accepted`,
-`policy_calibration_status`, `policy_rollouts`, `pool_sha256`. The page labels
-reference acceptance as **not model pass rate** and zero policy rollouts as no
-policy rates measured yet. A new pool publishes its own population/protocol and
-empty groups until measured, never recycled old-pool screening outcomes.
-
-Independent datasets publish `publications/<dataset>/current.json` in the same
-shared root, each pointing to a root-relative hash-pinned snapshot. The dashboard
-automatically discovers these pointers on every API read, retains all datasets
-and their protocol/progress, and joins measurements only to exact problem IDs.
-This is the legacy inventory fallback, superseded by `current-task-pools.json`.
-Duplicate problem identities fail explicitly rather than mixing datasets.
-Root `current.json` remains a compatibility fallback only when no dataset pointers
-exist. The browser refreshes publications every 20 seconds unless a pile modal is
-open, preserving inspection; manual Refresh is also available.
-Pile cards open a native dialog with close/Escape/backdrop dismissal instead of
-expanding in the grid.
-The dialog presents one selected task with a large annotated image at the top
-and a horizontally scrolling strip of smaller task thumbnails below. Previous,
-Next, thumbnail clicks and arrow keys change the selection; task measurements
-and provenance remain attached to the selected task.
-
-Each task image can publish `target_bbox_xyxy` in image pixels
-`[xmin,ymin,xmax_exclusive,ymax_exclusive]`, `target_visible_pixels` and
-`target_bbox_status` (visible/not_visible/unmeasured), directly or in image
-provenance. Boxes must be measured from exact target-geometry segmentation for
-the hash-bound RGB image and actual dimensions. The task inspector overlays
-these boxes at responsive image scale; absent/zero-visible targets show explicit
-unmeasured/not-visible states, not guessed or amodal boxes.
-
-Push/place images support `target_annotations` (image-level or in provenance),
-with independent `source_object` and `destination` roles using those same box
-and visibility fields. Source boxes are yellow; destination boxes are cyan,
-with a textual legend. The destination is visible goal-marker geometry, not
-a second LEGO object or an inferred tolerance region. Include `entity_id`,
-`entity_kind`, `bbox_semantics` and the original `goal` for provenance.
-Legacy singular boxes remain source-only; missing destination measurements
-are explicitly labeled.
-
-The buckets page remembers bucket collapse state, provenance disclosure state,
-bucket/task/search filters, the loaded pile count and each pile's selected task
-in browser-local storage across manual and automatic refreshes. Removed filter
-values and task identities fall back to the available publication. Storage
-failures are logged without preventing browsing.
-
-Approved by Matt November 8, 2026. A dedicated worker owns dashboard discovery,
-browsing, feedback and activation, not collection or part qualification.
-
-## Outcome
-
-Show the available parts catalog and current/historical data generations.
-Use `LEGO_PARTS_CATALOG.md` for the catalog contract and
-`LEGO_CURRICULUM.md` for scene/example metadata. Show imported, prepared,
-verified and unavailable parts separately; loading a mesh is not physical
-qualification or demonstrated robot competence.
-
-Each example needs a stable ID, generation/release ID, category, task, part IDs,
-scene family, split, renderer/catalog fingerprints, geometry/configuration
-tags, expert acceptance and visual-audit status. Filter by those fields and
-show current work, rejected attempts and prior immutable generations without
-rewriting historical labels. Distinguish legacy final-success, clean expert,
-post-failure recovery and not-in-training examples.
-
-Expose wrist and external video, selected-object identity, acceptance evidence,
-and the failed parent of a recovery without presenting failed actions as SFT
-targets. Support parts previews and explicit preparation failure reasons.
-
-## Feedback
-
-Attach comments and "looks wrong" feedback to exact immutable part/example IDs
-and versions, optionally a frame/time and issue category. Persist feedback
-with delivery state and idempotency identity. Route through the request monitor
-to the appropriate catalog, realism or curriculum owner; confirm delivery or
-show the actual failure. Do not silently acknowledge undelivered comments.
-
-Preserve existing access controls. Coordinate missing Dockyard/request-monitor
-functionality with the Work Scheduler rather than inventing an unauthenticated
-agent-message endpoint or writing under Matt's identity.
-
-## Implementation and activation
-
-Reuse the existing dashboard and data browser, keeping current run views and
-labels intact. The browser reads directory episode metadata and immutable EpisodeStorage
-SQLite releases through its read-only adapter; hidden staging paths are excluded.
-
-Physical-pair raster derivatives retain source example/family IDs and splits,
-but have distinct artifact-bound release and dashboard view IDs. They must carry
-`physical_pair_render` provenance and a matching `qualification.json` with
-image/sample validation and storage hash. These views are labeled **Derived CPU
-raster**, never original camera recordings or additional unique training data.
-Physical source acceptance, image/sample qualification, visual audit and training
-admission remain separate claims.
-
-Publication verification uses `/api/lego?release=<artifact-bound-release-id>&item=<source-example-id>`
-for provenance/frame identity, and `/api/data/all?archive_release=<artifact-bound-release-id>`
-for the exact derivative-only population. Its returned dashboard item ID selects
-details and native video through the existing `view=examples&item=<dashboard-id>`
-endpoints. Native encoding reads archived derivative images without rerunning
-physics. Original releases and their IDs/labels remain unchanged. A published
-acknowledgment requires immutable publication and live projection/media evidence;
-staging or physical success alone does not satisfy it.
-
-Managed catalog status uses `/api/lego?inventory=parts` to verify immutable parts
-publications without transferring unrelated example qualification receipts.
-This projection retains complete parts release summaries and qualification notices;
-the default inventory and selected-release browser responses are unchanged. The
-managed verifier retains its response-size and release-count limits and rejects
-non-parts rows explicitly. Its release counts describe the parts inventory only;
-data/media verification remains separate.
-
-Own frontend/backend dashboard changes, focused tests, managed activation and
-live verification. Coordinate file ownership with realism and curriculum
-workers. No GPU, training, hardware motion or deletion of historical data.
+state="running")`; use `completed` after completion. Refresh every 20 seconds.
+Raw results/provenance remain unchanged; model weights and sample tensors are
+not dashboard publications.

@@ -66,21 +66,21 @@ def test_new_photo_progress_is_not_a_policy_rate_and_rejects_other_pool(tmp_path
     annotation = images / "receipt.json"
     annotation.write_text(json.dumps(receipt))
     result = publish(pool, reference, output, images_paths=[images])
-    assert result["problems_with_images"] == 1
-    assert BucketDashboard(output).image(identity, 0)[0] == image.read_bytes()
-    assert BucketDashboard(output).snapshot()["problems"]["problems"][0]["initial_images"][0][
-        "target_bbox_xyxy"] == [1, 0, 4, 3]
-    previous_pointer = (output / "current.json").read_bytes()
+    assert result["problems_with_images"] == 0
+    with pytest.raises(ValueError, match="Unknown"):
+        BucketDashboard(output).image(identity, 0)
+    assert BucketDashboard(output).snapshot()["problems"]["problems"][0]["initial_images"] == []
+    previous_pointer = BucketDashboard(output).snapshot()
     receipt["width"] = 6
     annotation.write_text(json.dumps(receipt))
     with pytest.raises(ValueError, match="unchanged reset receipt"):
         publish(pool, reference, output, images_paths=[images])
-    assert (output / "current.json").read_bytes() == previous_pointer
+    assert BucketDashboard(output).snapshot() == previous_pointer
     data["pool_sha256"] = "other-pool"
     reference.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="immutable task pool"):
         publish(pool, reference, output)
-    assert (output / "current.json").read_bytes() == previous_pointer
+    assert BucketDashboard(output).snapshot() == previous_pointer
 
 
 def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(tmp_path):
@@ -114,12 +114,12 @@ def test_policy_counts_only_real_rollouts_and_rejects_changed_policy_iteration(t
     measurements.write_text(json.dumps(value))
     publish(pool, reference, output, measurements)
     assert BucketDashboard(output).snapshot()["calibration"]["groups"][0]["planned_attempts"] == 8
-    previous_pointer = (output / "current.json").read_bytes()
+    previous_pointer = BucketDashboard(output).snapshot()
     row["policy_step"] = 1
     measurements.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="bound task"):
         publish(pool, reference, output, measurements)
-    assert (output / "current.json").read_bytes() == previous_pointer
+    assert BucketDashboard(output).snapshot() == previous_pointer
 
 
 @pytest.mark.parametrize("kind", ["photo", "native"])
@@ -226,7 +226,10 @@ def test_new_measurement_series_retains_prior_counts_without_pooling_or_duplicat
     assert prior["protocol"]["repeats"] == 16
     assert current["protocol"]["bucket_screening"] is True
     assert current["protocol"]["problems_per_bucket"] == 4
-    assert snapshot["calibration"]["groups"] == prior["groups"]
+    assert [group["attempts"] for group in snapshot["calibration"]["groups"]] == [16, 1]
+    assert {group["measurement_series_id"] for group in snapshot["calibration"]["groups"]} == {
+        prior["series_id"], current["series_id"],
+    }
     assert manifest["current_measurement_series_id"] == prior["series_id"]
     assert manifest["latest_measurement_series_id"] == "new"
     publish(pool, reference, output, measurements, measurement_series_id="new")
@@ -234,12 +237,12 @@ def test_new_measurement_series_retains_prior_counts_without_pooling_or_duplicat
     assert len(repeated["measurement_series"]) == 2
     assert sum(group["attempts"] for series in repeated["measurement_series"]
                for group in series["groups"]) == 17
-    pointer = (output / "current.json").read_bytes()
+    pointer = BucketDashboard(output).snapshot()
     row["rollouts"] = []
     measurements.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="discards or changes"):
         publish(pool, reference, output, measurements, measurement_series_id="new")
-    assert (output / "current.json").read_bytes() == pointer
+    assert BucketDashboard(output).snapshot() == pointer
     with pytest.raises(ValueError, match="explicit series"):
         publish(pool, reference, output, measurements)
 
@@ -277,17 +280,18 @@ def test_channels_keep_native_inventory_images_and_scoped_history_without_legacy
     source.write_text(json.dumps(original))
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     publish(pool, reference, output)
-    previous_pointer = (output / "current.json").read_bytes()
+    previous_pointer = BucketDashboard(output).snapshot()
     result = publish(pool, reference, output, native_snapshot_path=source,
                      native_snapshot_sha256=digest, publication_id="photo-test")
     snapshot = BucketDashboard(output).snapshot()
     assert result["problems"] == 1
     assert len(snapshot["problems"]["problems"]) == 4
-    assert len(list((output / "publications").glob("*/current.json"))) == 2
-    assert (output / "current.json").read_bytes() == previous_pointer
+    assert len(snapshot["manifest"]["datasets"]) == 2
+    assert not (output / "snapshots").exists()
     assert len(snapshot["problems"]["buckets"]) == 4
     assert {row["source"]["kind"] for row in snapshot["problems"]["problems"]} == {"native", "photo"}
-    assert BucketDashboard(output).image("native-3", 0)[0] == image.read_bytes()
+    with pytest.raises(ValueError, match="Unknown"):
+        BucketDashboard(output).image("native-3", 0)
     datasets = {row["dataset_id"]: row for row in snapshot["manifest"]["datasets"]}
     assert datasets["photo-test"]["progress"]["policy_rollouts"] == 0
     assert datasets["native-native-pool"]["progress"]["historical_native_policy_rollouts"] == 4
@@ -297,13 +301,13 @@ def test_channels_keep_native_inventory_images_and_scoped_history_without_legacy
         "provenance": {"snapshot_id": "original", "manifest_sha256": digest,
                        "native_pool_sha256": "native-pool"},
     }]
-    previous_pointer = (output / "current.json").read_bytes()
+    previous_pointer = BucketDashboard(output).snapshot()
     with pytest.raises(ValueError, match="pinned SHA256"):
         publish(pool, reference, output, native_snapshot_path=source,
                 native_snapshot_sha256="changed", publication_id="photo-test")
-    assert (output / "current.json").read_bytes() == previous_pointer
+    assert BucketDashboard(output).snapshot() == previous_pointer
     (original_directory / "scene-3.json").write_text("changed")
     with pytest.raises(ValueError, match="pinned provenance"):
         publish(pool, reference, output, native_snapshot_path=source,
                 native_snapshot_sha256=digest, publication_id="photo-test")
-    assert (output / "current.json").read_bytes() == previous_pointer
+    assert BucketDashboard(output).snapshot() == previous_pointer

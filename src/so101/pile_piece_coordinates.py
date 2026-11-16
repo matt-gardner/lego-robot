@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import mujoco
+from mujoco import MjvCamera, mjtCamera, mjtObj  # pyright: ignore[reportAttributeAccessIssue]
 import numpy as np
 from PIL import Image
 
@@ -28,7 +29,7 @@ def piece_coordinates(sim, renderer, instances):
         entity = instance["instance_id"]
         body = sim.model.body(instance["body_name"]).id
         geoms = np.flatnonzero(sim.model.geom_bodyid == body)
-        mask = ((segmentation[:, :, 1] == mujoco.mjtObj.mjOBJ_GEOM)
+        mask = ((segmentation[:, :, 1] == mjtObj.mjOBJ_GEOM)
                 & np.isin(segmentation[:, :, 0], geoms))
         pieces.append({
             "id": entity, "entity_id": entity,
@@ -60,8 +61,8 @@ def generate(entry, receipt, image_path):
                       json.loads((problems[0]["root"] / "integration_state.json").read_bytes()),
                       (problems[0]["root"] / "model.xml").read_text())
         before = integration_state(sim).copy()
-        camera = mujoco.MjvCamera()
-        camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+        camera = MjvCamera()
+        camera.type = mjtCamera.mjCAMERA_FREE
         centers = np.array([sim.data.xpos[body] for body in sim.registry.values()])
         camera.lookat[:] = np.mean(centers, axis=0)
         camera.distance = max(.40, float(np.max(np.linalg.norm(centers - camera.lookat, axis=1))) * 3)

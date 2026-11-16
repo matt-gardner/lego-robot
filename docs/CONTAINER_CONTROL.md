@@ -101,7 +101,7 @@ Its root-owned `/etc/lego-robot-control/dashboard-deploy.json` manifest selects
 `repository` (a private bare published-source mirror), `baseline` and
 `baseline_sha256` (a frozen compatible dependency tree), `releases`, `override`,
 `python`, `health_url`, and the exact `paths` allowlist. The installed scope is
-`rl_dashboard.py`, `training_data_browser.py`, `lego_data_browser.py`,
+`rl_dashboard.py`, `bucket_dashboard.py`, `bucket_store.py`, `training_data_browser.py`, `lego_data_browser.py`,
 `part_preview.py`, `generation_order.py`, and the ten `dashboard/` assets.
 Producer modules remain frozen; scope/dependency changes require an operator
 manifest update. Coding containers cannot replace the helper or manifest.

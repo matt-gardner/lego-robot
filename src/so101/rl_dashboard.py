@@ -422,7 +422,7 @@ class RunStore:
             previous = (cached or {}).get("latest_train")
             if has_timestamp:
                 last_step_at = completed_at
-            elif latest and previous and latest["step"] == previous["step"]:
+            elif cached is not None and latest and previous and latest["step"] == previous["step"]:
                 last_step_at = cached["last_step_at"]
             else:
                 last_step_at = stat.st_mtime if latest else None
@@ -551,7 +551,6 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                 notice: str = "", lego_catalog_root: Path | None = None,
                 lego_episode_root: Path | None = None,
                 bucket_dashboard_root: Path | None = None,
-                bucket_curriculum_root: Path | None = None,
                 cache_buckets: bool = False) -> ThreadingHTTPServer:
     base_path = base_path.rstrip("/")
     if not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*", base_path):
@@ -560,8 +559,7 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
     browser = TrainingDataBrowser(root.resolve().parent)
     lego_browser = LegoDataBrowser(root.resolve().parent, lego_catalog_root, lego_episode_root)
     browser.curriculum = lego_browser
-    buckets = BucketDashboard(bucket_dashboard_root or root.resolve().parent / "data" / "bucket_dashboard",
-                              bucket_curriculum_root)
+    buckets = BucketDashboard(bucket_dashboard_root or root.resolve().parent / "data" / "bucket_dashboard")
     assets = {
         "/": ("index.html", "text/html; charset=utf-8"),
         "/dashboard.js": ("dashboard.js", "text/javascript; charset=utf-8"),
@@ -598,13 +596,12 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
                         query = parse_qs(urlsplit(self.path).query)
                         body, content_type = buckets.image(
                             query["problem"][0], int(query["index"][0]),
-                            query.get("snapshot", [None])[0],
                         )
                         self.send_body(200, body, content_type)
                     else:
                         self.send_body(200, buckets.response(), "application/json")
                 except FileNotFoundError:
-                    self.respond(404, {"error": "Bucket snapshot or initial image has not been published"})
+                    self.respond(404, {"error": "Current bucket data or initial image has not been published"})
                 except (ValueError, KeyError, TypeError, IndexError) as error:
                     LOGGER.warning("Invalid bucket publication/request: %s", error)
                     self.respond(400, {"error": str(error)})
@@ -777,9 +774,7 @@ def main() -> None:
     parser.add_argument("--lego-episode-root", type=Path,
                         help="Read-only directory containing immutable episode SQLite releases")
     parser.add_argument("--bucket-dashboard-root", type=Path,
-                        help="Read-only directory containing current.json bucket snapshot pointer")
-    parser.add_argument("--bucket-curriculum-root", type=Path, default=Path("/mnt/data/lego-curriculum"),
-                        help="Read-only generator files, including current-task-pools.json")
+                        help="Read-only directory containing the current.sqlite3 dashboard store")
     args = parser.parse_args()
     if not args.root.is_dir():
         parser.error(f"Run directory does not exist: {args.root}")
@@ -787,7 +782,7 @@ def main() -> None:
     try:
         server = make_server(args.root, args.host, args.port, args.base_path, args.notice,
                              args.lego_catalog_root, args.lego_episode_root, args.bucket_dashboard_root,
-                             args.bucket_curriculum_root, cache_buckets=True)
+                             cache_buckets=True)
     except ValueError as error:
         parser.error(str(error))
     print(f"RL dashboard: http://{args.host}:{server.server_port}{args.base_path.rstrip('/')}/",
