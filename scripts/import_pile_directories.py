@@ -32,9 +32,13 @@ def identity(value: dict) -> str:
 
 
 def atomic_json(path: Path, value: dict) -> None:
+    atomic_bytes(path, json.dumps(value, separators=(",", ":"), allow_nan=False).encode())
+
+
+def atomic_bytes(path: Path, body: bytes) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w") as stream:
-        json.dump(value, stream, separators=(",", ":"), allow_nan=False)
+    with temporary.open("wb") as stream:
+        stream.write(body)
         stream.flush()
         os.fsync(stream.fileno())
     parent = path.parent.stat()
@@ -132,7 +136,10 @@ def attach_receipt(task: dict, directory: Path, root: Path,
     target = directory / "assistance" / f"{sha}.json"
     make_directory(target.parent, root)
     if not target.exists():
-        hardlink(path, target)
+        body = path.read_bytes()
+        if hashlib.sha256(body).hexdigest() != sha:
+            raise ValueError("Assistance receipt changed during export")
+        atomic_bytes(target, body)
     if digest(target) != sha:
         raise ValueError("Assistance receipt changed during export")
     reference = {
