@@ -1,4 +1,3 @@
-import fcntl
 import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -83,8 +82,7 @@ def test_current_catalog_replaces_without_retaining_history(tmp_path):
     assert publish(archive, output, "current", (), previous=path) == path
     validate(path.parent)
     assert source.stat().st_ino == original_inode
-    assert sorted(p.name for p in output.iterdir()) == [
-        ".catalog-publish.lock", ".catalog.lock", "current"]
+    assert sorted(p.name for p in output.iterdir()) == ["current"]
 
 
 def test_current_catalog_restores_previous_on_install_failure(tmp_path, monkeypatch):
@@ -106,31 +104,29 @@ def test_current_catalog_restores_previous_on_install_failure(tmp_path, monkeypa
         publish(archive, output, "current", (), previous=path)
     assert path.read_bytes() == original
     validate(path.parent)
-    assert sorted(p.name for p in output.iterdir()) == [
-        ".catalog-publish.lock", ".catalog.lock", "current"]
+    assert sorted(p.name for p in output.iterdir()) == ["current"]
 
 
-def test_publication_allows_readers_during_staging_but_excludes_at_install(tmp_path, monkeypatch):
+def test_publication_keeps_old_manifest_readable_until_atomic_install_without_locks(tmp_path, monkeypatch):
     archive = tmp_path / "source.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr("ldraw/parts/1.dat", "0 Official test\n")
     output = tmp_path / "catalogs"
     path = publish(archive, output, "current", ())
+    original = path.read_bytes()
     original_validate = catalog_module.validate
     original_replace = catalog_module.os.replace
     observed = []
 
     def check_staging(release):
         if release.name.startswith(".catalog-staging-"):
-            with (output / ".catalog.lock").open("a+b") as reader:
-                fcntl.flock(reader.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
-                observed.append("staging")
+            assert path.read_bytes() == original
+            observed.append("staging")
         return original_validate(release)
 
     def check_install(source, target):
-        with (output / ".catalog.lock").open("a+b") as reader:
-            with pytest.raises(BlockingIOError):
-                fcntl.flock(reader.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        assert path.read_bytes() == original
+        assert not list(output.glob("*.lock"))
         observed.append("install")
         return original_replace(source, target)
 
@@ -140,16 +136,12 @@ def test_publication_allows_readers_during_staging_but_excludes_at_install(tmp_p
     assert observed == ["staging", "install"]
 
 
-def test_catalog_reader_holds_shared_lock_until_assets_are_consumed(tmp_path):
+def test_legacy_catalog_reader_context_never_creates_lock_files(tmp_path):
     manifest = tmp_path / "current/catalog.json"
     with catalog_module.catalog_read_lock(manifest) as pinned:
         assert pinned == manifest
-        with (tmp_path / ".catalog.lock").open("a+b") as competitor:
-            with pytest.raises(BlockingIOError):
-                fcntl.flock(competitor.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    with (tmp_path / ".catalog.lock").open("a+b") as competitor:
-        fcntl.flock(competitor.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        fcntl.flock(competitor.fileno(), fcntl.LOCK_UN)
+        assert not manifest.parent.exists()
+    assert not list(tmp_path.iterdir())
 
 
 def test_current_requalification_retires_only_replaced_asset(tmp_path, monkeypatch):

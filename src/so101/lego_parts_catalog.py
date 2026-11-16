@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import errno
-import fcntl
 import hashlib
 import inspect
 import json
@@ -400,21 +399,8 @@ def conversion_sha256() -> str:
 
 @contextmanager
 def catalog_read_lock(manifest: Path):
-    """Keep catalog paths stable through loading, asset reads and compilation."""
-    manifest = Path(manifest).absolute()
-    with _catalog_lock(manifest.parent.parent, exclusive=False):
-        yield manifest
-
-
-@contextmanager
-def _catalog_lock(output: Path, *, exclusive: bool, name: str = ".catalog.lock"):
-    output.mkdir(parents=True, exist_ok=True)
-    with (output / name).open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-        try:
-            yield lock.fileno()
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    """Compatibility context for older callers; catalog reads do not acquire locks."""
+    yield Path(manifest).absolute()
 
 
 def publish(archive: Path, output: Path, catalog_id: str,
@@ -422,18 +408,6 @@ def publish(archive: Path, output: Path, catalog_id: str,
             previous: Path | None = None,
             next_undecorated: int | None = None,
             requalify_previous: bool = False) -> Path:
-    with _catalog_lock(output, exclusive=True, name=".catalog-publish.lock"):
-        with _catalog_lock(output, exclusive=False) as asset_lock:
-            return _publish(archive, output, catalog_id, part_ids, previous,
-                            next_undecorated, requalify_previous, asset_lock)
-
-
-def _publish(archive: Path, output: Path, catalog_id: str,
-            part_ids: tuple[str, ...] = DEFAULT_PARTS,
-            previous: Path | None = None,
-            next_undecorated: int | None = None,
-            requalify_previous: bool = False,
-            asset_lock: int | None = None) -> Path:
     if str(safe_path(catalog_id)) != catalog_id or "/" in catalog_id:
         raise ValueError("catalog_id must be a single directory name")
     output.mkdir(parents=True, exist_ok=True)
@@ -612,8 +586,6 @@ def _publish(archive: Path, output: Path, catalog_id: str,
                     target.parent.mkdir(parents=True, exist_ok=True)
                     writable.update(target.parents[:len(target.relative_to(destination).parts) - 1])
                     immutable_copy(path, target)
-                if asset_lock is not None:
-                    fcntl.flock(asset_lock, fcntl.LOCK_EX)
                 staging.chmod(0o755)
                 os.replace(staging / "catalog.json", destination / "catalog.json")
                 retained_assets = {a["path"] for e in entries for a in e.get("assets", [])}
@@ -633,8 +605,6 @@ def _publish(archive: Path, output: Path, catalog_id: str,
             staging.chmod(0o755)
             shutil.rmtree(staging)
         else:
-            if asset_lock is not None:
-                fcntl.flock(asset_lock, fcntl.LOCK_EX)
             os.rename(staging, destination)
         return destination / "catalog.json"
     except BaseException:

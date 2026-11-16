@@ -39,22 +39,19 @@ November 10 that historical catalog versions are not required. Use
 batches. Stage and validate additions, leave unchanged assets in place, then
 atomically replace only `catalog.json`; do not accumulate releases. Newly converted
 MJCF assets use content-hashed filenames. A failed index installation leaves the
-previous index usable. Superseded part assets are removed only under the exclusive
-asset lock after the new index is installed.
+previous index usable. Superseded part assets are removed after the new index is
+installed.
 Consumers resolve the current catalog at problem creation and record part IDs and
 content/asset hashes, rejecting incompatible assets rather than silently replacing
 geometry in existing problems. Hash provenance does not require retaining old
 catalog directories.
 
-Readers must hold `so101.lego_parts_catalog.catalog_read_lock(manifest)` across
-loading the manifest and all asset reads, snapshot creation or MuJoCo compilation.
-The yielded path is the manifest path. Releasing it does not pin filesystem assets:
-finish copying/compiling before leaving the context. Preparation and qualification
-hold a shared `.catalog.lock`, allowing consumers to read the current catalog.
-Publication upgrades to an exclusive lock only for installation and superseded-tree
-cleanup, waiting for existing asset readers to finish. A separate
-`.catalog-publish.lock` serializes publishers throughout staging and installation;
-no historical catalog trees are required.
+There is one publishing session. Readers and the publisher do not acquire catalog
+locks or create lock files. A read overlapping asset installation or retirement may
+fail and can be retried; readers must still reject missing or incompatible assets.
+The legacy `catalog_read_lock(manifest)` context remains a lock-free compatibility
+wrapper for existing consumers. Atomic index replacement, asset hashes and
+qualification checks remain unchanged; no historical catalog trees are required.
 
 ```json
 {
