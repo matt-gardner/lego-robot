@@ -1232,6 +1232,26 @@ python3 scripts/sync_gpu_dashboard.py \
 continues that arm without resetting its optimizer or resampling the prior five
 groups. Loading must preserve the exported policy digest exactly.
 
+The next serial stage resumes the completed group-105 model and full state,
+continues through group 205 at learning rate `1e-6`, and checkpoints every twenty
+groups to bound recovery traffic. It keeps the same GPU, starting positions and
+eight-action horizon; this is continued training, not a curriculum-success claim.
+Its prepared command binds the completed predecessor read-only:
+
+```bash
+python3 scripts/sync_gpu_dashboard.py \
+  --host 172.31.32.120 --instance-id i-06d87971bf494f988 \
+  --job-id 77a951d1f11144f0a4f16488e027eedd \
+  --known-hosts /tmp/grasp-replay-238/known_hosts \
+  --container-name lego-progress-overnight-252 \
+  --remote-root /opt/dlami/nvme/grasp-replay-238/progress-overnight-output-02 \
+  --output /mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/grasp-progress-rl-overnight-02-20261116 \
+  --launch-command /opt/dlami/nvme/grasp-replay-238/progress-overnight-command-02.json
+```
+
+Reconcile the existing container before using either command; neither is an
+instruction to duplicate an active or completed stage.
+
 With `--calibrate-assistance --batch-rollouts --group-size 4`, synchronous
 calibration retries the **same problem**: four passes reduce assistance; four
 failures increase it; only mixed groups contribute training gradients.
