@@ -1,10 +1,9 @@
 """Read-only access to the single current dashboard data source."""
 import logging
 from pathlib import Path
-import sqlite3
 import threading
 
-from so101.bucket_store import current_image, current_inventory, current_response
+from so101.pile_directory import current_image, current_inventory, current_response
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,7 +54,7 @@ class BucketDashboard:
             with self._cache_lock:
                 self._cache = body
                 self._cache_error = None
-        except (OSError, ValueError, KeyError, TypeError, IndexError, sqlite3.Error) as error:
+        except (OSError, ValueError, KeyError, TypeError, IndexError) as error:
             LOGGER.exception("Cannot refresh current dashboard")
             with self._cache_lock:
                 self._cache_error = error
