@@ -38,7 +38,7 @@ def test_cache_surfaces_read_failure_instead_of_serving_stale_success(tmp_path):
     current(tmp_path)
     browser = BucketDashboard(tmp_path)
     browser.refresh_cache()
-    assert browser.cached()[0]["manifest"]["snapshot_id"] == "current"
+    assert json.loads(browser.cached())["manifest"]["snapshot_id"] == "current"
     (tmp_path / "current.sqlite3").unlink()
     browser.refresh_cache()
     with pytest.raises(OSError, match="database operation"):
@@ -51,3 +51,18 @@ def test_image_digest_is_checked_on_read(tmp_path):
         db.execute("UPDATE images SET body=?", (b"changed",))
     with pytest.raises(ValueError, match="hash mismatch"):
         BucketDashboard(tmp_path).image("pile", 0)
+
+
+def test_refresh_keeps_only_serialized_inventory_and_does_not_decode_large_documents(tmp_path, monkeypatch):
+    current(tmp_path)
+    browser = BucketDashboard(tmp_path)
+
+    def reject_decode(*args):
+        raise AssertionError("Cache refresh must not retain a second decoded inventory")
+
+    monkeypatch.setattr("so101.bucket_dashboard.current_inventory", reject_decode)
+    browser.refresh_cache()
+    before = browser.cached()
+    browser.refresh_cache()
+    assert isinstance(before, bytes)
+    assert browser.cached() == before

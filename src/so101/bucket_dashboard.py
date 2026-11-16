@@ -1,11 +1,10 @@
 """Read-only access to the single current dashboard data source."""
-import json
 import logging
 from pathlib import Path
 import sqlite3
 import threading
 
-from so101.bucket_store import current_image, current_inventory
+from so101.bucket_store import current_image, current_inventory, current_response
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,10 +51,9 @@ class BucketDashboard:
 
     def refresh_cache(self) -> None:
         try:
-            document = self.snapshot()
-            body = json.dumps(document).encode()
+            body = current_response(self.root)
             with self._cache_lock:
-                self._cache = (document, body)
+                self._cache = body
                 self._cache_error = None
         except (OSError, ValueError, KeyError, TypeError, IndexError, sqlite3.Error) as error:
             LOGGER.exception("Cannot refresh current dashboard")
@@ -74,7 +72,7 @@ class BucketDashboard:
             return self._cache
 
     def response(self) -> bytes:
-        return self.cached()[1] if self._cache_thread else json.dumps(self.snapshot()).encode()
+        return self.cached() if self._cache_thread else current_response(self.root)
 
     def snapshot(self) -> dict:
         return current_inventory(self.root)

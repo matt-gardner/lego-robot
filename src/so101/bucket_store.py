@@ -66,6 +66,14 @@ def current_inventory(root: Path) -> dict:
         return inventory(db)
 
 
+def current_response(root: Path) -> bytes:
+    with connection(root) as db:
+        row = db.execute("SELECT body FROM inventory WHERE singleton=1").fetchone()
+        if row is None:
+            raise ValueError("Current dashboard inventory has not been initialized")
+        return row[0].encode()
+
+
 def current_manifest(root: Path, channel: str) -> dict | None:
     if not (root / "current.sqlite3").exists():
         return None

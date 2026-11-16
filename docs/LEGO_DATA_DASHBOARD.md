@@ -8,8 +8,9 @@ measurement records and protocols, pile records, per-piece coordinates, and the
 original retained pile-image bytes. The browser does not discover version
 directories, choose snapshots, or overlay older image publications.
 
-`BucketDashboard` reads this database only. Its background worker serializes the
-inventory every 20 seconds; image requests use an indexed database lookup and
+`BucketDashboard` reads this database only. Its background worker caches the
+already serialized inventory every 20 seconds; it does not retain decoded copies
+of the large task population during refresh. Image requests use an indexed database lookup and
 verify the byte digest. Read/cache failures are logged and surfaced, not returned
 as fresh success. `/api/buckets` retains task and measurement metadata for the
 charts. `/api/buckets/image?problem=<pile ID>&index=0` serves the current pile
