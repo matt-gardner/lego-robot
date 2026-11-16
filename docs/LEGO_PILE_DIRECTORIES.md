@@ -2,7 +2,8 @@
 
 The canonical layout is `lego-robot-data/pieces/` for the catalog and
 `lego-robot-data/piles/pile_0001/` for each pile. The directory migration is
-in progress; the live dashboard has not yet switched from its existing store.
+in progress. The dashboard reads these directories directly; the previous SQLite
+store is retained only as migration evidence, not as a read fallback.
 
 Each pile contains the original `model.mjb`, `model.xml`, `problem.json`,
 `integration_state.json`, and `scene_plan.json`, plus `pile.json`. If an original
@@ -36,3 +37,8 @@ The initial importer refuses to overwrite an already completed canonical tree.
 This layout does not yet promise standalone XML asset closure: original XML can
 retain absolute mesh paths. Original compiled models and active source paths must
 remain available until consumer migration and reset validation are complete.
+
+The initial migration preserved 155 piles and 32,336 primary tasks, with 95 original
+pile images and 465 saved assistance variants. The other 60 piles explicitly lack
+rendered images. Legacy producer and assistance runtimes still require coordinated
+publication/consumer transitions before their old directories can be retired.
