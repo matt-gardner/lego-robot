@@ -28,6 +28,10 @@ saved physics, task JSON and qualification are unchanged; no task images are
 generated. Temporary world-space meshes are removed after each render.
 The running dashboard reads these canonical files on refresh; no dashboard
 redeployment is required for new images.
+Use `--replace-existing` explicitly when upgrading the rendering implementation;
+it still verifies the existing image/metadata bindings before replacing them.
+The area light is kept above the camera, scaling its distance and dimensions
+together so tall-scene views cannot see the lighting panel instead of the pile.
 
 `so101.render_pile` rerenders an existing `model.xml` and
 `settled-state.npz` without stepping, repositioning or freezing objects.

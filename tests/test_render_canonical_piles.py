@@ -65,6 +65,14 @@ def test_canonical_render_preserves_sources_and_reuses_verified_image(tmp_path):
     body, mime = current_image(tmp_path, "pile_0001", 0)
     assert mime == "image/png" and body.startswith(b"\x89PNG")
     assert render_one(directory, profile, tmp_path, expected) == "reused"
+    receipt_path = directory / "render_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["contract"]["implementation_sha256"] = "previous-implementation"
+    atomic_json(receipt_path, receipt)
+    with pytest.raises(ValueError, match="contract differs"):
+        render_one(directory, profile, tmp_path, expected)
+    assert render_one(directory, profile, tmp_path, expected,
+                      replace_existing=True) == "rendered"
     np.testing.assert_array_equal(snapshot["qpos"], data.qpos)
     (directory / "rendered.png").write_bytes(b"corrupted")
     with pytest.raises(ValueError, match="Published image/metadata differs"):

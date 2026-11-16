@@ -34,6 +34,18 @@ def linear_rgb(rgb) -> np.ndarray:
     return np.where(values <= .04045, values / 12.92, ((values + .055) / 1.055) ** 2.4)
 
 
+def camera_safe_key(profile: dict, camera: dict, table_z: float) -> tuple[list, float]:
+    target = np.array([0., 0., table_z])
+    origin = np.asarray(profile["key_origin"], dtype=float)
+    half_size = float(profile["key_half_size"])
+    lower_height = origin[2] - table_z - np.sqrt(2) * half_size
+    if lower_height <= 0 or half_size <= 0 or not np.isfinite(origin).all():
+        raise ValueError("Area light must have a finite positive clearance above the table")
+    # Homothetic scaling preserves the light's angular size and surface radiance.
+    scale = max(1., (camera["origin"][2] + .1 - table_z) / lower_height)
+    return (target + scale * (origin - target)).tolist(), half_size * scale
+
+
 def check_segmentation_alignment(mi, dr, loaded, description, segmentation_path, width, height):
     with np.load(segmentation_path) as archive:
         segmentation = archive["segmentation"]
@@ -104,6 +116,7 @@ def render_pathtrace(
             or not np.isfinite([*table_center, *table_size, table_yaw]).all()
             or min(table_size) <= 0):
         raise ValueError("Table center, orientation and positive half sizes must be finite")
+    key_origin, key_half_size = camera_safe_key(profile, description["camera"], table_z)
     mi.set_variant(variant)
     dr.set_thread_count(profile["threads"])
     scene = {
@@ -128,8 +141,8 @@ def render_pathtrace(
         "key": {
             "type": "rectangle",
             "to_world": mi.ScalarTransform4f.look_at(
-                origin=profile["key_origin"], target=[0, 0, table_z], up=[0, 1, 0],
-            ) @ mi.ScalarTransform4f.scale([profile["key_half_size"]] * 2 + [1]),
+                origin=key_origin, target=[0, 0, table_z], up=[0, 1, 0],
+            ) @ mi.ScalarTransform4f.scale([key_half_size] * 2 + [1]),
             "emitter": {"type": "area", "radiance": profile["key_radiance"]},
         },
     }
@@ -174,6 +187,7 @@ def render_pathtrace(
         "implementation_sha256": file_hash(Path(__file__)),
         "mesh_sha256": {str(path): digest for path, digest, _ in meshes},
         "mesh_count": len(meshes), "camera": description["camera"], "settings": profile,
+        "actual_key_origin": key_origin, "actual_key_half_size": key_half_size,
         "input_sha256": input_hashes,
         "image_sha256": file_hash(output / "pile.png"),
         "segmentation_alignment": alignment,

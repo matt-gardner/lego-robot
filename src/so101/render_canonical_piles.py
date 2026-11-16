@@ -43,7 +43,7 @@ def source_hashes(directory):
     return {name: file_hash(directory / name) for name in SOURCE_FILES}
 
 
-def render_one(directory, profile_path, scratch, expected):
+def render_one(directory, profile_path, scratch, expected, *, replace_existing=False):
     if source_hashes(directory) != expected:
         raise ValueError(f"Frozen source changed: {directory}")
     pile = read_json(directory / "pile.json")
@@ -61,13 +61,14 @@ def render_one(directory, profile_path, scratch, expected):
     receipt_path = directory / "render_receipt.json"
     if receipt_path.exists():
         receipt = read_json(receipt_path)
-        if receipt["contract"] != contract:
+        if receipt["contract"] != contract and not replace_existing:
             raise ValueError(f"Existing photoreal render contract differs: {directory}")
         if (file_hash(directory / "rendered.png") != receipt["image_sha256"]
                 or pile["rendered"]["sha256"] != receipt["image_sha256"]
                 or pile["piece_coordinates"]["pile_image_sha256"] != receipt["image_sha256"]):
             raise ValueError(f"Published image/metadata differs: {directory}")
-        return "reused"
+        if receipt["contract"] == contract:
+            return "reused"
     admit_render(scratch)
     started = time.monotonic()
     model = mujoco.MjModel.from_binary_path(str(directory / "model.mjb"))
@@ -161,6 +162,8 @@ def main():
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--replace-existing", action="store_true",
+                        help="Replace verified images whose rendering implementation changed")
     args = parser.parse_args()
     if os.environ.get("MUJOCO_GL") != "osmesa" or mujoco.__version__ != "3.17.0":
         raise ValueError("CPU OSMesa MuJoCo 3.17 runtime required")
@@ -177,7 +180,8 @@ def main():
     for index, directory in enumerate(directories):
         if args.limit is not None and index >= args.limit:
             break
-        result = render_one(directory, args.profile, args.scratch, frozen[directory.name])
+        result = render_one(directory, args.profile, args.scratch, frozen[directory.name],
+                            replace_existing=args.replace_existing)
         print(json.dumps({"pile": directory.name, "status": result}), flush=True)
 
 

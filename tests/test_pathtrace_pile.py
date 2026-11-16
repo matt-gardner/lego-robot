@@ -7,7 +7,20 @@ import subprocess
 import numpy as np
 import pytest
 
-from so101.pathtrace_pile import DEFAULT_PROFILE, camera_frame, linear_rgb, render_pathtrace
+from so101.pathtrace_pile import (
+    DEFAULT_PROFILE, camera_frame, camera_safe_key, linear_rgb, render_pathtrace,
+)
+
+
+def test_area_light_stays_above_tall_scene_camera_without_changing_angular_size():
+    profile = json.loads(DEFAULT_PROFILE.read_text())
+    origin, half_size = camera_safe_key(profile, {"origin": [.7, -.5, 1.55]}, -.003)
+    assert origin[2] - np.sqrt(2) * half_size >= 1.65
+    target = np.array([0, 0, -.003])
+    np.testing.assert_allclose(
+        (np.asarray(origin) - target) / half_size,
+        (np.asarray(profile["key_origin"]) - target) / profile["key_half_size"],
+    )
 
 
 def test_unknown_backend_is_rejected_before_rendering(tmp_path):
