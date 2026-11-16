@@ -692,6 +692,34 @@ def test_feedback_sign_in_stays_at_origin_root_on_both_browser_pages(tmp_path, b
 
 
 @pytest.mark.parametrize("base_path", ["", "/so101", "/lego-robot"])
+def test_component_design_documents_are_linked_and_served(tmp_path, base_path):
+    server = make_server(tmp_path, "127.0.0.1", 0, base_path)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}{base_path}"
+    try:
+        with urlopen(f"{base}/design") as response:
+            page = response.read().decode()
+            assert response.headers["Content-Type"] == "text/html; charset=utf-8"
+        assert f'href="{base_path}/design" aria-current="page"' in page
+        assert f'href="{base_path}/design.css"' in page
+        assert '<!-- dashboard-header -->' not in page
+        for component in ("parts", "piles", "rendering", "recognition", "learning", "explorer"):
+            assert f'<article id="{component}"' in page
+            assert f'href="#{component}"' in page
+        assert page.count('class="design-document"') == 6
+        with urlopen(f"{base}/design.css") as response:
+            assert response.headers["Content-Type"] == "text/css; charset=utf-8"
+            assert b"@media print" in response.read()
+        with urlopen(base) as response:
+            assert f'href="{base_path}/design">Design</a>' in response.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join()
+
+
+@pytest.mark.parametrize("base_path", ["", "/so101", "/lego-robot"])
 def test_http_serves_assets_and_observes_new_runs_without_restart(tmp_path, base_path):
     server = make_server(tmp_path, "127.0.0.1", 0, base_path)
     worker = threading.Thread(target=server.serve_forever, daemon=True)

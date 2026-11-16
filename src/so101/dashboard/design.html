@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en" data-base-path="">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Component designs · LEGO robotics</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <link rel="stylesheet" href="/design.css">
+</head>
+<body>
+  <a class="skip-link" href="#design-content">Skip to design documents</a>
+  <!-- dashboard-header -->
+  <div class="design-layout">
+    <aside class="design-index" aria-label="Component designs">
+      <p class="eyebrow">System design</p>
+      <nav aria-label="Design document contents">
+        <a href="#overview">How it fits together</a>
+        <a href="#parts">01 · Parts &amp; collision models</a>
+        <a href="#piles">02 · Piles &amp; task data</a>
+        <a href="#rendering">03 · Rendering &amp; cameras</a>
+        <a href="#recognition">04 · Recognition</a>
+        <a href="#learning">05 · Manipulation learning</a>
+        <a href="#explorer">06 · Data explorer</a>
+      </nav>
+      <p class="design-note">Six components, matching the LEGO projects on the Work board. Dockyard is supporting infrastructure, not a seventh robotics experiment.</p>
+      <p class="design-note">Reviewed 16 November 2026.<br>Design intent and evidence boundaries, not a live progress report.</p>
+    </aside>
+    <main id="design-content">
+      <section id="overview" class="design-intro" aria-labelledby="overview-title">
+        <p class="eyebrow">Architecture / human edition</p>
+        <h2 id="overview-title">From a part definition to a robot that can use it.</h2>
+        <p class="design-lead">The goal is closed-loop manipulation: identify a piece, act on that piece, observe what actually happened, and continue. These documents explain the responsibilities and interfaces that make the evidence trustworthy.</p>
+        <ol class="design-flow" aria-label="Main data flow">
+          <li><a href="#parts">Parts</a><span>Identity &amp; physical geometry</span></li>
+          <li><a href="#piles">Piles &amp; tasks</a><span>Reproducible physical problems</span></li>
+          <li><a href="#rendering">Rendering</a><span>Images &amp; measured visibility</span></li>
+          <li><a href="#recognition">Recognition</a><span>Visual identity &amp; uncertainty</span></li>
+          <li><a href="#learning">Learning</a><span>Actions &amp; physical outcomes</span></li>
+        </ol>
+        <p>The <a href="#explorer">Data Explorer</a> cuts across this flow: it makes inputs, coverage, outcomes and failures inspectable. Recognition can help select or describe a target; its classification result is not proof that the manipulation policy can act on it.</p>
+        <div class="design-callout"><strong>The central rule: do not promote one kind of evidence into another.</strong> A converted part is not necessarily physically usable. An admitted pile is not an expert demonstration. A convincing image is not camera calibration. A successful assisted state is not autonomous policy success.</div>
+        <details class="design-context">
+          <summary>Reading the implementation boundary</summary>
+          <p>These are component designs grounded in the Work projects and repository interfaces. “Current” describes a checked implementation or published contract; “direction” describes intended work, not a completion claim. In particular, the canonical <code>pieces/</code> and <code>piles/</code> directory migration is in progress at this review. The dashboard's previous SQLite cache is a migration input, not the intended long-term source of truth.</p>
+        </details>
+      </section>
+
+      <article id="parts" class="design-document" aria-labelledby="parts-title">
+        <header><span class="design-number">01 / Foundation</span><h2 id="parts-title">Parts &amp; collision models</h2><p class="design-deck">Turn a broad LEGO catalog into physically meaningful, traceable simulation assets.</p></header>
+        <h3>Purpose and boundary</h3>
+        <p>This component owns part identity, source reconstruction, visual meshes, contact geometry and physical qualification. It does not generate piles or decide which parts a learned policy can grasp. A catalog entry can exist without being eligible for simulation; unavailable and rejected entries remain visible with reasons.</p>
+        <h3>How it works</h3>
+        <p>Start from the official LDraw library, retaining source files, dependencies, licenses and hashes. Resolve nested subparts and transforms, then convert coordinates and scale into MuJoCo metres. Separate the surface used for appearance from the geometry used for contact. A whole-part convex hull is not an acceptable shortcut when it fills a cavity or erases a grasp-relevant opening.</p>
+        <p>Qualification progresses from valid source and loadable geometry to finite dynamics, plausible settling and contact checks. Each level answers a narrower question than “this part works”: older settling evidence must not be relabeled as closed-solid fidelity or successful robotic grasping. Conversion failures and negative examples are part of the catalog, not noise to delete.</p>
+        <h3>Contract with other components</h3>
+        <p>The canonical-directory direction is <code>pieces/catalog.json</code> plus declared part assets under <code>pieces/parts/&lt;id&gt;/</code>. Each usable part exposes a standalone MuJoCo template, dimensions, identity, status and hashes of its complete asset closure. A consumer resolves and compiles or copies that closure while holding the catalog's reader lock. Merely remembering a filename does not protect it from a later publication.</p>
+        <p>Publishers stage and validate changes before installing the current index. Existing scenes bind the geometry they used; a new catalog must not silently change a saved pile. Removing obsolete assets is safe only when the installed index and active readers no longer need them.</p>
+        <h3>Decisions and tradeoffs</h3>
+        <p>Favor progressive breadth over waiting for the entire library to qualify, but never mix “imported” with “verified.” Favor material-preserving geometry over cheap hulls; its extra collision cost is a real performance constraint, to be measured rather than hidden by changing the physical problem.</p>
+        <div class="design-acceptance"><h3>What good looks like</h3><p>A downstream user can explain exactly which part and geometry entered a scene, reproduce it, and understand any exclusion. The remaining engineering question is how to expand collision coverage and settling throughput without losing cavities, contacts or identity.</p></div>
+        <footer class="design-sources">Source map: <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/LEGO_PARTS_CATALOG.md">Catalog contract</a> · <code>lego_parts_catalog.py</code> · Work project “LEGO Parts &amp; Collision Models”</footer>
+      </article>
+
+      <article id="piles" class="design-document" aria-labelledby="piles-title">
+        <header><span class="design-number">02 / Physical problems</span><h2 id="piles-title">Piles &amp; task data</h2><p class="design-deck">Create varied, reproducible starting problems, then measure what assistance actually changes.</p></header>
+        <h3>Purpose and boundary</h3>
+        <p>This component assembles qualified parts into physical scenes and defines VIEW, GRASP, PUSH and PLACE tasks for individual piece instances. It owns admission, reset fidelity, task semantics and assistance measurements. It does not equate admission with task solvability, expert quality or permission to train.</p>
+        <h3>How it works</h3>
+        <p>Sample part identities, counts, colors and arrangements, including obstacle scenes. Insert or drop parts under an explicit generation profile, then allow native physics to settle them. Admission checks meaningful stationarity, contact/support conditions and exact saved-state restoration. Rejected proposals retain reasons; interrupted or externally killed attempts are operational failures, not evidence that a pile is intrinsically difficult.</p>
+        <p>Persist the compiled model, XML, full integration state, scene plan, task definitions and source bindings. Persistent instance IDs distinguish two copies of the same catalog part. Every target can receive tasks, including occluded pieces: visibility is a later measurement, not an admission shortcut.</p>
+        <h3>Task and assistance contract</h3>
+        <p>The canonical direction is <code>piles/pile_0001/</code> with MuJoCo files, <code>pile.json</code>, an optional <code>rendered.png</code>, and <code>tasks/task_001.json</code>. A task records its piece instance and part ID, actual initial arm position, destination when applicable, definition and measurement provenance. Missing values are explicit; the migration must not invent coordinates or camera coverage.</p>
+        <p>Assistance is a named construction protocol, not a universal difficulty percentage. Keep its level, constructor identity, source and validation evidence together. Static constructed checkpoints are not collision-free executed trajectories. Compact breakdown receipts contain measurements and hashes; they are not full arm-state vectors. A claimed held grasp additionally needs advancing native physics, bilateral retention and bounded slip—not a frozen contact predicate.</p>
+        <h3>Decisions and tradeoffs</h3>
+        <p>Measure harder portions of tasks before selecting training windows. Retain prior outcomes when a protocol changes, and distinguish old snapshot-only results from newer dynamic-hold checks. Process missing tasks without silently retrying failures under new semantics. Resource backpressure pauses work without weakening admission or discarding source data.</p>
+        <div class="design-acceptance"><h3>What good looks like</h3><p>Each selected task has an accounted outcome or explicit pending state, exact reset and interpretable assistance evidence. Coverage, diversity and admission throughput are measured separately; none alone establishes policy competence.</p></div>
+        <footer class="design-sources">Source map: <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/LEGO_CURRICULUM.md">Curriculum</a> · <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/LEGO_PILE_ASSISTANCE_BREAKDOWNS.md">Assistance protocols</a> · <code>pile_task_runtime.py</code></footer>
+      </article>
+
+      <article id="rendering" class="design-document" aria-labelledby="rendering-title">
+        <header><span class="design-number">03 / Observations</span><h2 id="rendering-title">Rendering &amp; cameras</h2><p class="design-deck">Make images useful and convincing without breaking their relationship to geometry.</p></header>
+        <h3>Purpose and boundary</h3>
+        <p>This component turns saved simulation states into RGB observations and camera-bound annotations. It owns visual appearance, camera composition, segmentation and projection. It must not improve an image by changing the underlying physical problem, and it cannot claim real-camera calibration from a few reference stills.</p>
+        <h3>Two distinct uses</h3>
+        <p>Policy observations should match the robot's actual camera and deployment interface. The wrist-appearance work uses real reference images to guide tabletop texture, illumination, softness and visible gripper appearance. Display images have a different job: an external pile camera lets a person inspect the whole scene. That convenient view is explicitly not a wrist-policy frame.</p>
+        <p>Appearance profiles have reproducible identities. Geometric camera changes require consistent RGB, segmentation, boxes and metric depth. Photometric processing belongs on RGB only; it must not distort the label masks. Keep rendering separate from physics stepping and assert that state and physical model properties remain unchanged.</p>
+        <h3>The pile-image contract</h3>
+        <p>The dashboard uses one retained image per rendered pile and piece cards rather than stored task-specific images. Each piece carries a stable identity, world position, visible pixel count and image-coordinate box measured in that pile camera. Selecting a card overlays its coordinates on the shared image. Occluded pieces remain selectable but show no fabricated visible box.</p>
+        <p>Never reuse a task-camera box on an external pile image. The implemented coordinate migration reconstructed each retained pile camera and required exact RGB and camera-provenance agreement before extracting segmentation. Hashes bind the resulting coordinates to the image and scene files. Existing task-specific dashboard rasters have been retired; this does not remove source tasks, measurements or training observations.</p>
+        <h3>Decisions and tradeoffs</h3>
+        <p>Use a simple verified raster path when it answers the inspection need; photorealism is a separate appearance goal, not permission to rewrite geometry or resume a stopped producer. Reuse unchanged pile images and recompute only geometry-bound metadata when appropriate. Keep missing image coverage visible instead of substituting an overview or another camera under a misleading label.</p>
+        <div class="design-acceptance"><h3>What good looks like</h3><p>A displayed highlight identifies the same physical piece in the same camera as the pixels beneath it. Realism is assessed against references; policy transfer still requires independent real-world evidence.</p></div>
+        <footer class="design-sources">Source map: <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/LEGO_RENDERER_REALISM.md">Appearance design</a> · <code>pile_piece_coordinates.py</code> · <code>task_image_roles.py</code> · Work project “LEGO Rendering &amp; Cameras”</footer>
+      </article>
+
+      <article id="recognition" class="design-document" aria-labelledby="recognition-title">
+        <header><span class="design-number">04 / Visual understanding</span><h2 id="recognition-title">Recognition</h2><p class="design-deck">Identify a visible LEGO piece without mistaking dataset shortcuts for visual understanding.</p></header>
+        <h3>Purpose and boundary</h3>
+        <p>Recognition maps a selected visual region to a catalog identity and, where useful, a broader family or kind. It does not choose motor commands or establish that a part can be grasped. A ranking score is not calibrated confidence, and a category prediction is not automatically a safe fallback action.</p>
+        <h3>Data and model contract</h3>
+        <p>Queries come from saved piles with verified exact part labels. Camera-orbit views are multiple views of a static scene, not a history of robot motion. Group related piles, retasked derivatives and duplicate imagery before splitting training, development and test sets. The unit of independence is the source family, not an individual crop or adjacent camera view.</p>
+        <p>The documented experiment compares query features to multiple canonical rendered views per catalog identity. Family/kind heads offer additional supervision, while their heuristic labels remain distinguishable from a reviewed taxonomy. Recognition experiments do not train the manipulation action expert through an implicit action loss.</p>
+        <h3>Current design direction</h3>
+        <p>The earlier whole-scene experiments collapsed to majority-class behavior; their accuracy is a failure baseline, not a successful recognizer. The proposed follow-on isolates the final-frame target crop, preserves its aspect ratio, and balances sampling across identities. It tests a frozen visual backbone with a learned projection against the original canonical anchors. Changing both crops and sampling makes this a practical baseline, not a clean causal ablation.</p>
+        <p>First prove that a tiny training-only subset can be fitted. Then select on development data and evaluate the final held-out test once. Neither a tiny-set fit nor repeated views of one part establish generalization. The follow-on's prepared design is not a claim that execution is currently authorized or complete.</p>
+        <h3>Evaluation and decisions</h3>
+        <p>Report per-identity support, actual sampling counts, prediction distribution, exact-ID top-k, and both macro and micro accuracy. Macro gives each identity equal weight; micro weights each observation equally. Separate seen from unseen identity support and training-set fit from held-out results. Compare against majority and other simple baselines before attributing changes to architecture.</p>
+        <div class="design-acceptance"><h3>What good looks like</h3><p>Recognition works beyond frequent IDs and memorized scene families, and its failure modes are visible. Only then consider whether it improves target selection or manipulation on independently measured tasks.</p></div>
+        <footer class="design-sources">Source map: <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/PIECE_CLASSIFIER_DESIGN.md">Recognition experiment design</a> · Work project “LEGO Recognition”</footer>
+      </article>
+
+      <article id="learning" class="design-document" aria-labelledby="learning-title">
+        <header><span class="design-number">05 / Closed-loop action</span><h2 id="learning-title">Manipulation learning</h2><p class="design-deck">Learn actions that achieve physical goals, not just attractive losses or assisted snapshots.</p></header>
+        <h3>Purpose and boundary</h3>
+        <p>The manipulation component learns and evaluates VIEW, GRASP, PUSH and PLACE behavior. Its first narrow acceptance target is to grasp the selected loose piece and retain it above the table. Sorting and longer plans build on reliable primitives; part recognition, dataset production and high-level planning are separate responsibilities.</p>
+        <h3>Observation and action contract</h3>
+        <p>An entity-conditioned policy receives the skill, role-tagged target information, camera observations and robot state. Source frame identity prevents a stale box being applied to a different view. The policy predicts bounded action chunks; execute a short prefix, observe again and replan. Privileged simulator state may support expert construction or grading, but must not leak into learned-policy observations.</p>
+        <p>The physical controller remains the safety boundary for real execution: joint conventions, motion limits, serialization and human takeover are not delegated to model confidence. Simulation success and natural-looking videos do not establish safe robot transfer.</p>
+        <h3>Learning stages and evidence</h3>
+        <p>Supervised fine-tuning (SFT) learns from accepted action demonstrations. Selecting difficult task windows should follow measured assistance breakdowns and independent replay qualification; an admitted TRAIN start or a static assistance receipt is not a demonstration. Keep source-family splits and frozen validation separate from training and report the exact populations used.</p>
+        <p>Teacher-free rollouts and reinforcement learning (RL) test what the policy actually does. Compare paired starting states and original checkpoints when assessing a change. The current short-horizon progress-RL pilot is an experiment, not evidence of solved grasping. A shaped reward is an optimization signal; native task success, retained grasp and task-specific failure evidence remain the outcome measures.</p>
+        <h3>Decisions and tradeoffs</h3>
+        <p>Short windows can make useful credit assignment tractable, but may learn only part of a task. Measure full-task controls as well as local progress. Prove that optimization really occurred with finite nonzero gradients and changed policy weights; changing logs or reward values is not an update. Assistance can expose learnable states, but success at high assistance must remain separate from unassisted recovery and held-out generalization.</p>
+        <div class="design-acceptance"><h3>What good looks like</h3><p>The policy acts on the intended piece and meets native physical goals on held-out tasks, with assistance and failure rates reported honestly. Run authorization, compute budgets and shutdown are operational constraints, not evidence that the experiment succeeded.</p></div>
+        <footer class="design-sources">Source map: <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/CONTROL_MODEL_PLAN.md">Control architecture</a> · <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/PROJECT_PLAN.md">System goals</a> · Work project “LEGO Manipulation Learning”</footer>
+      </article>
+
+      <article id="explorer" class="design-document" aria-labelledby="explorer-title">
+        <header><span class="design-number">06 / Inspection &amp; explanation</span><h2 id="explorer-title">Data Explorer</h2><p class="design-deck">Make the system understandable without creating a second, competing dataset.</p></header>
+        <h3>Purpose and boundary</h3>
+        <p>The dashboard is the human inspection layer for catalog parts, piles, piece annotations, measurements and experiments. It should answer “what exists, how was it produced, what was measured, and what is missing?” It does not produce absent measurements, infer solvability from a picture, or start experiments because a chart looks promising.</p>
+        <h3>Source of truth and publication</h3>
+        <p>The intended canonical layout is a directly readable <code>pieces/</code> catalog and per-pile directories containing the MuJoCo scene, optional rendered image and first-class task JSON. This migration is being implemented; a past versioned publication or SQLite projection is not the future authority. Preserve actual source and protocol identities while removing redundant dashboard copies.</p>
+        <p>Readers must understand the difference between persisted state vectors, compact measurement summaries and absent fields. All listed piles remain inspectable even when an image or piece-coordinate set is missing. In the migration audit, image coverage is partial across the broader inventory; do not make a rendered subset appear to be the entire dataset.</p>
+        <h3>Interaction and evidence contract</h3>
+        <p>Show all matching piles without pagination. A pile opens one shared image with selectable piece cards and camera-correct coordinate overlays. Keep task definitions and measurements for coverage and assistance charts, not duplicate task-image cards. Filters and selection should remain useful across refreshes; keyboard focus must work as well as clicking.</p>
+        <p>Charts join measurements to their actual task and protocol. A missing result is unmeasured, not zero success. Preserve denominators and separate historical protocols or assistance constructions rather than silently pooling incomparable evidence. Training views distinguish training, development, held-out tests and unassisted evaluation; recognition metrics must not masquerade as manipulation success.</p>
+        <h3>Reliability and feedback</h3>
+        <p>Keep source paths contained, verify declared assets, and bound reads. Serve large inventories without holding duplicate decoded copies across refreshes. A failed refresh must be visible rather than presenting stale state as newly validated. Authenticated feedback binds to a specific retained target; delivery to an owner is not acknowledgement or completion. Dockyard supplies coordination and access infrastructure without becoming the robotics dataset.</p>
+        <div class="design-acceptance"><h3>What good looks like</h3><p>A person can move from a claim to its actual input, protocol and outcome without knowing agent history. This Design section explains the stable boundaries; live data pages show changing counts and progress.</p></div>
+        <footer class="design-sources">Source map: <a href="https://github.com/matt-gardner/lego-robot/blob/main/docs/LEGO_DATA_DASHBOARD.md">Dashboard interfaces</a> · <code>rl_dashboard.py</code> · Work project “LEGO Data Explorer”</footer>
+      </article>
+      <footer class="design-end">Design documents follow the six LEGO Work projects. Runtime incidents and experiment receipts belong in their live views and Work records, not in this architecture guide. <a href="#overview">Back to overview ↑</a></footer>
+    </main>
+  </div>
+</body>
+</html>

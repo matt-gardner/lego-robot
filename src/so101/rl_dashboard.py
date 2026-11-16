@@ -531,12 +531,13 @@ def dashboard_header(path: str) -> str:
         "/lego": ("PARTS", "LEGO parts"),
         "/examples": ("RECORDINGS", "Recorded examples"),
         "/buckets": ("DATA BUCKETS", "Data buckets"),
+        "/design": ("DESIGN", "Component designs"),
     }
     section, title = pages[path]
     links = "".join(
         f'<a href="{route}"' + (' aria-current="page"' if route == path else "") + f'>{label}</a>'
         for route, label in (("/lego", "Parts"), ("/data", "Data"), ("/buckets", "Data buckets"),
-                             ("/examples", "Recorded examples"), ("/", "Training"))
+                             ("/examples", "Recorded examples"), ("/", "Training"), ("/design", "Design"))
     )
     status = ('<div class="connection"><span id="connection">Connecting</span>'
               '<span id="updated"></span></div>') if path == "/" else ""
@@ -575,6 +576,8 @@ def make_server(root: Path, host: str, port: int, base_path: str = "",
         "/buckets": ("buckets.html", "text/html; charset=utf-8"),
         "/buckets.js": ("buckets.js", "text/javascript; charset=utf-8"),
         "/buckets.css": ("buckets.css", "text/css; charset=utf-8"),
+        "/design": ("design.html", "text/html; charset=utf-8"),
+        "/design.css": ("design.css", "text/css; charset=utf-8"),
     }
 
     class Handler(BaseHTTPRequestHandler):
