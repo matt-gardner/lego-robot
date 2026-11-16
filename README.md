@@ -1251,14 +1251,17 @@ python3 scripts/sync_gpu_dashboard.py \
 
 The third serial stage preserves the completed group-205 state and continues
 through group 505, still at `1e-6`, horizon eight and checkpoint cadence twenty.
+The fourth preserves the completed group-505 model, Adam and RNG state, then
+continues through group 705 at `3e-6` to test escape from the reward plateau,
+without broadening starts or lengthening the horizon.
 Use the same host, instance, job and known-hosts arguments above, substituting:
 
-| Argument | Third-stage value |
-| --- | --- |
-| `--container-name` | `lego-progress-overnight-254` |
-| `--remote-root` | `/opt/dlami/nvme/grasp-replay-238/progress-overnight-output-03` |
-| `--output` | `/mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/grasp-progress-rl-overnight-03-20261116` |
-| `--launch-command` | `/opt/dlami/nvme/grasp-replay-238/progress-overnight-command-03.json` |
+| Argument | Third-stage value | Fourth-stage value |
+| --- | --- | --- |
+| `--container-name` | `lego-progress-overnight-254` | `lego-progress-overnight-256` |
+| `--remote-root` | `/opt/dlami/nvme/grasp-replay-238/progress-overnight-output-03` | `/opt/dlami/nvme/grasp-replay-238/progress-overnight-output-04` |
+| `--output` | `/mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/grasp-progress-rl-overnight-03-20261116` | `/mnt/dockyard/lego-robot-data/outputs/entity_smolvla_sft_sweep_24576_direct_82b32533/grasp-progress-rl-overnight-04-20261116` |
+| `--launch-command` | `/opt/dlami/nvme/grasp-replay-238/progress-overnight-command-03.json` | `/opt/dlami/nvme/grasp-replay-238/progress-overnight-command-04.json` |
 
 Reconcile the existing container before using any command; none is an
 instruction to duplicate an active or completed stage.
