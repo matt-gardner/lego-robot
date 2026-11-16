@@ -135,3 +135,40 @@ def test_saved_assistance_state_is_attached_to_exact_parent_without_requalificat
     variant["tags"]["parent_task_id"] = "missing-parent"
     with pytest.raises(ValueError, match="no primary parent"):
         migration.export(legacy, tmp_path / "invalid", [])
+
+
+def test_refresh_attaches_only_finalized_receipts_idempotently_without_changing_task_state(tmp_path, monkeypatch):
+    _, definition, legacy, _ = source_fixture(tmp_path, monkeypatch)
+    root = tmp_path / "canonical"
+    migration.export(legacy, root, [])
+    task_path = root / "piles/pile_0001/tasks/task_001.json"
+    original = json.loads(task_path.read_bytes())
+    assistance = tmp_path / "fast-v4"
+    receipts = assistance / "receipts"
+    receipts.mkdir(parents=True)
+    receipt = {
+        "status": "unavailable", "inventory_sha256": "older-measurement-inventory",
+        "retained_from": {"inventory_sha256": "original"},
+        "source_binding": {"scene_id": "scene", "task_id": definition["task_id"],
+                           "task_sha256": migration.identity(definition)},
+        "levels": [],
+    }
+    (receipts / "job.json").write_text(json.dumps(receipt))
+    (receipts / "inflight.json.tmp").write_text("unfinished")
+    assert migration.refresh_assistance(root, [assistance]) == {
+        "receipts": 1, "attached": 1, "tasks_updated": 1}
+    updated = json.loads(task_path.read_bytes())
+    reference = updated.pop("assistance_breakdowns")[0]
+    original.pop("assistance_breakdowns")
+    assert updated == original
+    assert reference["measurement_inventory_sha256"] == "older-measurement-inventory"
+    assert reference["retained_from"] == receipt["retained_from"]
+    assert reference["status"] == "unavailable"
+    assert not reference["checkpoint_states_persisted"]
+    previous_mtime = task_path.stat().st_mtime_ns
+    assert migration.refresh_assistance(root, [assistance])["attached"] == 0
+    assert task_path.stat().st_mtime_ns == previous_mtime
+    receipt["source_binding"]["task_sha256"] = "different"
+    (receipts / "bad.json").write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="different source task"):
+        migration.refresh_assistance(root, [assistance])

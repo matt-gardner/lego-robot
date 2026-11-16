@@ -34,6 +34,22 @@ the reader rejects an incomplete tree. Do not remove the marker after a failed
 import. Resume with the same inputs, or inspect the reported source mismatch.
 The initial importer refuses to overwrite an already completed canonical tree.
 
+For ongoing assistance outcomes, run:
+
+```sh
+PYTHONPATH=src:. python scripts/import_pile_directories.py \
+  --root /path/to/lego-robot-data --refresh-assistance \
+  --assistance-root /path/to/frozen-assistance-run
+```
+
+Only finalized `receipts/*.json` files are consumed. Batch indexes, status files,
+temporary writes and coordinator locks are not read. Existing task state and
+qualification remain unchanged; outcomes retain their original inventory labels
+and lineage. Repeating the refresh does not rewrite unchanged task records.
+Unknown parents, task hash mismatches and corrupted retained copies are errors,
+not silently skipped outcomes. Each updated task is installed atomically; an
+interrupted refresh can be safely repeated. Source receipts must remain immutable.
+
 This layout does not yet promise standalone XML asset closure: original XML can
 retain absolute mesh paths. Original compiled models and active source paths must
 remain available until consumer migration and reset validation are complete.

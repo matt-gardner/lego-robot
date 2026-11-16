@@ -121,6 +121,70 @@ def saved_checkpoints(document: dict) -> dict:
     return checkpoints
 
 
+def attach_receipt(task: dict, directory: Path, root: Path,
+                   path: Path, sha: str, receipt: dict) -> bool:
+    definition = task["task_definition"]
+    binding = receipt["source_binding"]
+    if (binding["scene_id"] != task["source"]["scene_id"]
+            or binding["task_id"] != definition["task_id"]
+            or binding["task_sha256"] != identity(definition)):
+        raise ValueError("Assistance receipt belongs to a different source task")
+    target = directory / "assistance" / f"{sha}.json"
+    make_directory(target.parent, root)
+    if not target.exists():
+        hardlink(path, target)
+    if digest(target) != sha:
+        raise ValueError("Assistance receipt changed during export")
+    reference = {
+        "path": f"../assistance/{sha}.json", "sha256": sha,
+        "measurement_inventory_sha256": receipt["inventory_sha256"],
+        "status": receipt["status"], "source_binding": binding,
+        "retained_from": receipt.get("retained_from"),
+        "checkpoint_states_persisted": False,
+    }
+    for existing in task["assistance_breakdowns"]:
+        if existing["sha256"] == sha:
+            if existing != reference:
+                raise ValueError("Existing assistance reference differs from finalized receipt")
+            return False
+    task["assistance_breakdowns"].append(reference)
+    return True
+
+
+def refresh_assistance(root: Path, assistance_roots: list[Path]) -> dict:
+    from so101.pile_directory import PILE_NAME, TASK_NAME, contained, read_json
+
+    piles = contained(root, root / "piles")
+    if (piles / ".incomplete").exists():
+        raise ValueError("Canonical pile import is incomplete")
+    read_json(contained(root, piles / "metadata.json"))
+    pending = receipts_by_task(assistance_roots)
+    result = {"receipts": sum(len(rows) for rows in pending.values()),
+              "attached": 0, "tasks_updated": 0}
+    for directory in sorted(piles.iterdir()):
+        if not PILE_NAME.fullmatch(directory.name):
+            continue
+        contained(root, directory)
+        tasks = contained(root, directory / "tasks")
+        for path in sorted(tasks.iterdir()):
+            if not TASK_NAME.fullmatch(path.name):
+                continue
+            task = read_json(contained(root, path))
+            key = (task["source"]["scene_id"], task["task_definition"]["task_id"])
+            rows = pending.pop(key, [])
+            changed = False
+            for receipt_path, sha, receipt in rows:
+                if attach_receipt(task, directory, root, receipt_path, sha, receipt):
+                    result["attached"] += 1
+                    changed = True
+            if changed:
+                atomic_json(path, task)
+                result["tasks_updated"] += 1
+    if pending:
+        raise ValueError(f"{len(pending)} finalized receipt tasks have no canonical parent")
+    return result
+
+
 def export_checkpoint(record: dict, directory: Path, root: Path) -> dict:
     source = source_root(record)
     raw = json.loads((source / "problem.json").read_bytes())
@@ -238,21 +302,8 @@ def export(legacy: Path, root: Path, assistance_roots: list[Path]) -> dict:
                 for path, sha, receipt in receipts.get((scene, task_id), []):
                     if sha in seen:
                         continue
-                    if receipt["source_binding"]["task_sha256"] != identity(definition):
-                        raise ValueError("Assistance receipt belongs to a different source task")
                     seen.add(sha)
-                    target = directory / "assistance" / f"{sha}.json"
-                    make_directory(target.parent, root)
-                    hardlink(path, target)
-                    if digest(target) != sha:
-                        raise ValueError("Assistance receipt changed during export")
-                    exported["assistance_breakdowns"].append({
-                        "path": f"../assistance/{sha}.json", "sha256": sha,
-                        "measurement_inventory_sha256": receipt["inventory_sha256"],
-                        "status": receipt["status"], "source_binding": receipt["source_binding"],
-                        "retained_from": receipt.get("retained_from"),
-                        "checkpoint_states_persisted": False,
-                    })
+                    attach_receipt(exported, directory, root, path, sha, receipt)
                     result["assistance_receipts"] += 1
                 atomic_json(task_directory / f"task_{task_index:03d}.json", exported)
                 result["tasks"] += 1
@@ -292,11 +343,20 @@ def export(legacy: Path, root: Path, assistance_roots: list[Path]) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--legacy-dashboard-root", type=Path, required=True)
+    parser.add_argument("--legacy-dashboard-root", type=Path)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--assistance-root", type=Path, action="append", default=[])
+    parser.add_argument("--refresh-assistance", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(export(args.legacy_dashboard_root, args.root, args.assistance_root)))
+    if args.refresh_assistance:
+        if not args.assistance_root:
+            parser.error("--refresh-assistance requires --assistance-root")
+        result = refresh_assistance(args.root, args.assistance_root)
+    else:
+        if args.legacy_dashboard_root is None:
+            parser.error("initial import requires --legacy-dashboard-root")
+        result = export(args.legacy_dashboard_root, args.root, args.assistance_root)
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":
