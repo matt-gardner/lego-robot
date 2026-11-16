@@ -10,6 +10,7 @@ import mujoco
 import numpy as np
 
 from so101.lego_scene import body_surface_speed_bound, restore_scene
+from so101.canonical_sources import canonical_source_root
 from so101.pile_other_reset import PROFILE as OTHER_ASSISTANCE_PROFILE, validate_reset
 from so101.robot_table_clearance import require_robot_above_table
 
@@ -21,7 +22,7 @@ LABEL_RENDERER_PROFILE = "native-id-segmentation-no-msaa-v1"
 
 
 def _load_scene(entry: dict) -> tuple[Path, dict]:
-    root = Path(entry["root"])
+    root = canonical_source_root(Path(entry["root"]))
     if not root.is_absolute() or root.is_symlink():
         raise ValueError("Problem root must be an absolute non-symlink path")
     required = {"model.mjb", "model.xml", "integration_state.json", "problem.json", "scene_plan.json"}
