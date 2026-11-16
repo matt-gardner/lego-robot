@@ -1,0 +1,38 @@
+# Canonical pile directories
+
+The canonical layout is `lego-robot-data/pieces/` for the catalog and
+`lego-robot-data/piles/pile_0001/` for each pile. The directory migration is
+in progress; the live dashboard has not yet switched from its existing store.
+
+Each pile contains the original `model.mjb`, `model.xml`, `problem.json`,
+`integration_state.json`, and `scene_plan.json`, plus `pile.json`. If an original
+pile image exists, it is retained byte-for-byte as `rendered.png`; missing images
+are explicitly recorded, not synthesized. `tasks/task_001.json` retains the
+original dashboard record and task definition, piece identity, initial arm
+joint positions, reset state, destination, and assistance checkpoint references.
+
+Actual persisted assistance variants include their complete saved initial state,
+task definition, original assistance protocol, and hash-bound model files under
+`checkpoints/`. Compact measurement receipts live under `assistance/`; they are
+not executable checkpoints and are never presented as reconstructed state vectors
+or new grasp-hold qualification.
+
+`scripts/import_pile_directories.py` performs the one-time import from the old
+dashboard store. It hardlinks immutable source files without moving, modifying,
+or changing permissions on active workers' original inputs. Task revisions can
+inherit a baseline with its original scene identity only when every task has an
+exact revision-specific state and all source files match the admission hashes.
+
+`piles/metadata.json` retains shared measurement metadata. Primary tasks are read
+from their individual files by `so101.pile_directory`, not from a SQLite fallback.
+The reader streams its API projection without retaining the decoded task population.
+
+There are no data or catalog file locks. JSON installation uses atomic replacement.
+An initial import keeps a `.incomplete` marker until the complete tree is published;
+the reader rejects an incomplete tree. Do not remove the marker after a failed
+import. Resume with the same inputs, or inspect the reported source mismatch.
+The initial importer refuses to overwrite an already completed canonical tree.
+
+This layout does not yet promise standalone XML asset closure: original XML can
+retain absolute mesh paths. Original compiled models and active source paths must
+remain available until consumer migration and reset validation are complete.

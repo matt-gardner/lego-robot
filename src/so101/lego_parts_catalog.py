@@ -412,12 +412,20 @@ def publish(archive: Path, output: Path, catalog_id: str,
         raise ValueError("catalog_id must be a single directory name")
     output.mkdir(parents=True, exist_ok=True)
     destination = output / catalog_id
-    if destination.exists() and catalog_id != "current":
+    if destination.exists() and catalog_id not in {"current", "pieces"}:
         raise FileExistsError(f"Immutable catalog already exists: {destination}")
     if destination.exists() and (
             previous is None or previous.absolute() != (destination / "catalog.json").absolute()):
-        raise ValueError("Replacing current requires its catalog.json as --previous")
-    staging = Path(tempfile.mkdtemp(prefix=".catalog-staging-", dir=output))
+        raise ValueError("Replacing a mutable catalog requires its catalog.json as --previous")
+    staging_parent = output
+    if catalog_id == "pieces":
+        staging_parent = output / ".catalog-staging"
+        if (not staging_parent.is_dir()
+                or any(path.is_symlink() for path in
+                       (staging_parent, *staging_parent.absolute().parents))
+                or staging_parent.resolve().parent != output.resolve()):
+            raise ValueError("pieces requires an existing contained non-symlink .catalog-staging directory")
+    staging = Path(tempfile.mkdtemp(prefix=".catalog-staging-", dir=staging_parent))
     try:
         archive_sha = sha256(archive)
         converter_sha = sha256(Path(__file__))
@@ -605,7 +613,9 @@ def publish(archive: Path, output: Path, catalog_id: str,
             staging.chmod(0o755)
             shutil.rmtree(staging)
         else:
+            staging.chmod(0o755)
             os.rename(staging, destination)
+            destination.chmod(0o555)
         return destination / "catalog.json"
     except BaseException:
         if staging.exists():

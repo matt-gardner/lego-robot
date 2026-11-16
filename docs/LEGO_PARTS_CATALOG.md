@@ -53,6 +53,12 @@ The legacy `catalog_read_lock(manifest)` context remains a lock-free compatibili
 wrapper for existing consumers. Atomic index replacement, asset hashes and
 qualification checks remain unchanged; no historical catalog trees are required.
 
+The canonical layout uses `--output LEGO_DATA_ROOT --catalog-id pieces --previous
+LEGO_DATA_ROOT/pieces/catalog.json`. Its precreated, contained `.catalog-staging/`
+directory gives the publisher scoped staging access without making the data root
+writable. Only `current` and `pieces` are mutable names; other catalog directories
+remain immutable.
+
 ```json
 {
   "schema_version": 1,

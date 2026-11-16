@@ -107,6 +107,27 @@ def test_current_catalog_restores_previous_on_install_failure(tmp_path, monkeypa
     assert sorted(p.name for p in output.iterdir()) == ["current"]
 
 
+def test_pieces_catalog_uses_scoped_staging_and_requires_exact_previous(tmp_path):
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ldraw/parts/1.dat", "0 Official test\n")
+    output = tmp_path / "catalogs"
+    with pytest.raises(ValueError, match="non-symlink"):
+        publish(archive, output, "pieces", ())
+    staging = output / ".catalog-staging"
+    staging.mkdir()
+    path = publish(archive, output, "pieces", ())
+    with pytest.raises(ValueError, match="requires"):
+        publish(archive, output, "pieces", ())
+    assert publish(archive, output, "pieces", (), previous=path) == path
+    validate(path.parent)
+    assert not list(staging.iterdir())
+    staging.rmdir()
+    staging.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="non-symlink"):
+        publish(archive, output, "pieces", (), previous=path)
+
+
 def test_publication_keeps_old_manifest_readable_until_atomic_install_without_locks(tmp_path, monkeypatch):
     archive = tmp_path / "source.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
