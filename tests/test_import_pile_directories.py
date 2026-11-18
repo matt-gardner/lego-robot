@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import tracemalloc
 
 import pytest
 
@@ -172,3 +173,46 @@ def test_refresh_attaches_only_finalized_receipts_idempotently_without_changing_
     (receipts / "bad.json").write_text(json.dumps(receipt))
     with pytest.raises(ValueError, match="different source task"):
         migration.refresh_assistance(root, [assistance])
+
+
+def test_receipt_index_does_not_retain_decoded_population(tmp_path):
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    for index in range(128):
+        receipt = {
+            "status": "unavailable", "levels": [],
+            "source_binding": {"scene_id": "scene", "task_id": f"task-{index}"},
+            "diagnostic_tail": "x" * 65536,
+        }
+        (receipts / f"{index:04d}.json").write_text(json.dumps(receipt))
+    tracemalloc.start()
+    try:
+        pending = migration.receipts_by_task([tmp_path])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(pending) == 128
+    assert peak < 2 * 1024 * 1024
+
+
+def test_lazy_attachment_rechecks_source_even_if_canonical_receipt_already_exists(tmp_path, monkeypatch):
+    _, definition, legacy, _ = source_fixture(tmp_path, monkeypatch)
+    root = tmp_path / "canonical"
+    migration.export(legacy, root, [])
+    receipts = tmp_path / "measurement/receipts"
+    receipts.mkdir(parents=True)
+    path = receipts / "job.json"
+    receipt = {
+        "status": "unavailable", "inventory_sha256": "inventory", "levels": [],
+        "source_binding": {"scene_id": "scene", "task_id": definition["task_id"],
+                           "task_sha256": migration.identity(definition)},
+    }
+    path.write_text(json.dumps(receipt))
+    migration.refresh_assistance(root, [receipts.parent])
+    pending = migration.receipts_by_task([receipts.parent])
+    receipt["reason"] = "changed after indexing"
+    path.write_text(json.dumps(receipt))
+    directory = root / "piles/pile_0001"
+    task = json.loads((directory / "tasks/task_001.json").read_bytes())
+    with pytest.raises(ValueError, match="changed during export"):
+        migration.attach_receipt(task, directory, root, *next(iter(pending.values()))[0])

@@ -49,6 +49,9 @@ and lineage. Repeating the refresh does not rewrite unchanged task records.
 Unknown parents, task hash mismatches and corrupted retained copies are errors,
 not silently skipped outcomes. Each updated task is installed atomically; an
 interrupted refresh can be safely repeated. Source receipts must remain immutable.
+The receipt index retains only source paths and hashes, not the decoded population.
+Each payload is decoded and its hash rechecked when attached, keeping memory bounded
+as the completed receipt population grows.
 
 The host runs this refresh through `lego-canonical-assistance.service` and
 `lego-canonical-assistance.timer`, every two minutes after the preceding run ends.

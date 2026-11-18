@@ -113,7 +113,7 @@ def receipts_by_task(roots: list[Path]) -> dict:
             elif levels:
                 raise ValueError("Non-complete assistance receipt contains checkpoint levels")
             receipts[(binding["scene_id"], binding["task_id"])].append(
-                (path, hashlib.sha256(body).hexdigest(), receipt))
+                (path, hashlib.sha256(body).hexdigest()))
     return receipts
 
 
@@ -126,7 +126,11 @@ def saved_checkpoints(document: dict) -> dict:
 
 
 def attach_receipt(task: dict, directory: Path, root: Path,
-                   path: Path, sha: str, receipt: dict) -> bool:
+                   path: Path, sha: str) -> bool:
+    body = path.read_bytes()
+    if hashlib.sha256(body).hexdigest() != sha:
+        raise ValueError("Assistance receipt changed during export")
+    receipt = json.loads(body)
     definition = task["task_definition"]
     binding = receipt["source_binding"]
     if (binding["scene_id"] != task["source"]["scene_id"]
@@ -136,9 +140,6 @@ def attach_receipt(task: dict, directory: Path, root: Path,
     target = directory / "assistance" / f"{sha}.json"
     make_directory(target.parent, root)
     if not target.exists():
-        body = path.read_bytes()
-        if hashlib.sha256(body).hexdigest() != sha:
-            raise ValueError("Assistance receipt changed during export")
         atomic_bytes(target, body)
     if digest(target) != sha:
         raise ValueError("Assistance receipt changed during export")
@@ -180,8 +181,8 @@ def refresh_assistance(root: Path, assistance_roots: list[Path]) -> dict:
             key = (task["source"]["scene_id"], task["task_definition"]["task_id"])
             rows = pending.pop(key, [])
             changed = False
-            for receipt_path, sha, receipt in rows:
-                if attach_receipt(task, directory, root, receipt_path, sha, receipt):
+            for receipt_path, sha in rows:
+                if attach_receipt(task, directory, root, receipt_path, sha):
                     result["attached"] += 1
                     changed = True
             if changed:
@@ -306,11 +307,11 @@ def export(legacy: Path, root: Path, assistance_roots: list[Path]) -> dict:
                 if exported["assistance_checkpoints"]:
                     exported["assistance_checkpoint_status"] = "persisted"
                 seen = set()
-                for path, sha, receipt in receipts.get((scene, task_id), []):
+                for path, sha in receipts.get((scene, task_id), []):
                     if sha in seen:
                         continue
                     seen.add(sha)
-                    attach_receipt(exported, directory, root, path, sha, receipt)
+                    attach_receipt(exported, directory, root, path, sha)
                     result["assistance_receipts"] += 1
                 atomic_json(task_directory / f"task_{task_index:03d}.json", exported)
                 result["tasks"] += 1
